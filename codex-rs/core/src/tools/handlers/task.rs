@@ -1,18 +1,25 @@
 use std::path::Path;
+use std::sync::Arc;
 
 use anyhow::Result;
 use async_trait::async_trait;
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::client_common::tools::ResponsesApiTool;
 use crate::client_common::tools::ToolSpec;
+use crate::codex_delegate::run_codex_conversation_interactive;
 use crate::function_tool::FunctionCallError;
 use crate::subagents::SubagentRegistry;
+use crate::subagents::SubagentSession;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
 use crate::tools::registry::ToolHandler;
 use crate::tools::spec::JsonSchema;
+use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::Op;
+use codex_protocol::user_input::UserInput;
 
 pub fn create_task_tool(codex_home: &Path) -> ToolSpec {
     let registry = SubagentRegistry::new(codex_home);
@@ -108,21 +115,110 @@ impl ToolHandler for TaskHandler {
         let args: TaskArgs = serde_json::from_str(&arguments)
             .map_err(|e| FunctionCallError::Fatal(format!("Failed to parse arguments: {e}")))?;
 
-        let registry = SubagentRegistry::new(&invocation.turn.client.config().codex_home);
-        let available: Vec<String> = registry.list().iter().map(|a| a.slug.clone()).collect();
-        let available_str = if available.is_empty() {
-            "(none found)".to_string()
-        } else {
-            available.join(", ")
-        };
+        let turn = &invocation.turn;
+        let codex_home = turn.client.config().codex_home.clone();
+
+        let registry = SubagentRegistry::new(&codex_home);
+        let subagent_def = registry.get(&args.subagent_type).ok_or_else(|| {
+            let available: Vec<String> = registry.list().iter().map(|a| a.slug.clone()).collect();
+            let available_str = if available.is_empty() {
+                "(none found)".to_string()
+            } else {
+                available.join(", ")
+            };
+            FunctionCallError::RespondToModel(format!(
+                "Unknown subagent_type '{}'. Available subagents: {}. Ensure a matching .md exists in ~/.codex/agents",
+                args.subagent_type, available_str
+            ))
+        })?;
 
         let session_id = args
             .session_id
             .unwrap_or_else(|| Uuid::new_v4().to_string());
 
-        Err(FunctionCallError::RespondToModel(format!(
-            "Subagents are not yet available in this build. Requested type '{}'. Available stubs: {available_str}. Session id: {session_id}",
-            args.subagent_type,
-        )))
+        let subagent_session_ref: Arc<crate::codex::Codex> = {
+            let services = &invocation.session.services;
+            let mut sessions = services.subagent_sessions.lock().await;
+
+            if let Some(session) = sessions.get(&session_id) {
+                session.codex.clone()
+            } else {
+                let config = turn.client.config();
+                let mut sub_config = (*config).clone();
+                sub_config.base_instructions = Some(subagent_def.system_prompt.clone());
+                sub_config.codex_home = codex_home.clone();
+
+                let session_token = CancellationToken::new();
+
+                let codex = run_codex_conversation_interactive(
+                    sub_config,
+                    invocation.session.services.auth_manager.clone(),
+                    invocation.session.services.models_manager.clone(),
+                    invocation.session.clone(),
+                    invocation.turn.clone(),
+                    session_token.clone(),
+                    None,
+                )
+                .await
+                .map_err(|e| FunctionCallError::Fatal(format!("Failed to spawn subagent: {e}")))?;
+
+                let codex_arc = Arc::new(codex);
+                let session = SubagentSession {
+                    codex: codex_arc.clone(),
+                    cancellation_token: session_token,
+                    session_id: session_id.clone(),
+                };
+
+                sessions.insert(session_id.clone(), session);
+                codex_arc
+            }
+        };
+
+        let input = vec![UserInput::Text {
+            text: args.prompt.clone(),
+        }];
+        subagent_session_ref
+            .submit(Op::UserInput { items: input })
+            .await
+            .map_err(|e| {
+                FunctionCallError::Fatal(format!("Failed to submit input to subagent: {e}"))
+            })?;
+
+        let mut final_output = String::new();
+        loop {
+            let event = subagent_session_ref
+                .next_event()
+                .await
+                .map_err(|e| FunctionCallError::Fatal(format!("Subagent event error: {e}")))?;
+
+            match event.msg {
+                EventMsg::TaskComplete(tc) => {
+                    if let Some(msg) = tc.last_agent_message {
+                        final_output = msg;
+                    }
+                    break;
+                }
+                EventMsg::TurnAborted(ta) => {
+                    let reason_str = format!("Turn aborted: {:?}", ta.reason);
+                    return Err(FunctionCallError::RespondToModel(reason_str));
+                }
+                EventMsg::ExecCommandBegin(_)
+                | EventMsg::ExecCommandEnd(_)
+                | EventMsg::McpToolCallBegin(_)
+                | EventMsg::McpToolCallEnd(_) => {
+                    invocation
+                        .session
+                        .send_event(invocation.turn.as_ref(), event.msg)
+                        .await;
+                }
+                _ => {}
+            }
+        }
+
+        Ok(ToolOutput::Function {
+            success: Some(true),
+            content: final_output,
+            content_items: None,
+        })
     }
 }
