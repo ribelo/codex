@@ -152,6 +152,13 @@ pub enum CodexErr {
     #[error("Fatal error: {0}")]
     Fatal(String),
 
+    #[error("Provider error ({provider}): {message}")]
+    ProviderError {
+        provider: String,
+        message: String,
+        code: Option<String>,
+    },
+
     // -----------------------------------------------------------------
     // Automatic conversions for common external error types
     // -----------------------------------------------------------------

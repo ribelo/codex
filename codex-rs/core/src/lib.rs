@@ -28,6 +28,8 @@ pub mod exec_env;
 mod exec_policy;
 pub mod features;
 mod flags;
+pub mod gemini;
+pub mod gemini_messages;
 pub mod git_info;
 pub mod landlock;
 pub mod mcp;
