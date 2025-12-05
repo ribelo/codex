@@ -98,6 +98,97 @@ pub struct ModelProviderInfo {
     pub requires_openai_auth: bool,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct GeminiProvider {
+    pub name: String,
+    pub base_url: Option<String>,
+    pub api_key_env_var: Option<String>,
+    pub experimental_bearer_token: Option<String>,
+    #[serde(default = "default_version")]
+    pub version: String,
+    pub query_params: Option<HashMap<String, String>>,
+    pub http_headers: Option<HashMap<String, String>>,
+    pub env_http_headers: Option<HashMap<String, String>>,
+    pub project_id: Option<String>,
+    pub request_max_retries: Option<u64>,
+    pub stream_max_retries: Option<u64>,
+    pub stream_idle_timeout_ms: Option<u64>,
+}
+
+fn default_version() -> String {
+    "v1beta".to_string()
+}
+
+impl Default for GeminiProvider {
+    fn default() -> Self {
+        Self {
+            name: "Gemini".to_string(),
+            base_url: None,
+            api_key_env_var: None,
+            experimental_bearer_token: None,
+            version: default_version(),
+            query_params: None,
+            http_headers: None,
+            env_http_headers: None,
+            project_id: None,
+            request_max_retries: Some(DEFAULT_REQUEST_MAX_RETRIES),
+            stream_max_retries: Some(DEFAULT_STREAM_MAX_RETRIES),
+            stream_idle_timeout_ms: Some(DEFAULT_STREAM_IDLE_TIMEOUT_MS),
+        }
+    }
+}
+
+#[allow(dead_code)]
+impl GeminiProvider {
+    pub fn api_key(&self) -> crate::error::Result<Option<String>> {
+        if let Some(env_var) = &self.api_key_env_var {
+            std::env::var(env_var)
+                .map(|v| {
+                    let trimmed = v.trim();
+                    if trimmed.is_empty() {
+                        None
+                    } else {
+                        Some(trimmed.to_string())
+                    }
+                })
+                .map_err(|_| {
+                    crate::error::CodexErr::EnvVar(EnvVarError {
+                        var: env_var.clone(),
+                        instructions: None,
+                    })
+                })?
+                .ok_or_else(|| {
+                    crate::error::CodexErr::EnvVar(EnvVarError {
+                        var: env_var.clone(),
+                        instructions: None,
+                    })
+                })
+                .map(Some)
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn request_max_retries(&self) -> u64 {
+        self.request_max_retries
+            .unwrap_or(DEFAULT_REQUEST_MAX_RETRIES)
+            .min(MAX_REQUEST_MAX_RETRIES)
+    }
+
+    pub fn stream_max_retries(&self) -> u64 {
+        self.stream_max_retries
+            .unwrap_or(DEFAULT_STREAM_MAX_RETRIES)
+            .min(MAX_STREAM_MAX_RETRIES)
+    }
+
+    pub fn stream_idle_timeout(&self) -> Duration {
+        Duration::from_millis(
+            self.stream_idle_timeout_ms
+                .unwrap_or(DEFAULT_STREAM_IDLE_TIMEOUT_MS),
+        )
+    }
+}
+
 impl ModelProviderInfo {
     #[allow(dead_code)]
     fn build_header_map(&self) -> crate::error::Result<HeaderMap> {
