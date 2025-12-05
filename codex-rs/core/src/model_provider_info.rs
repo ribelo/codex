@@ -18,6 +18,8 @@ use std::collections::HashMap;
 use std::env::VarError;
 use std::time::Duration;
 
+use crate::default_client::CodexHttpClient;
+use crate::default_client::CodexRequestBuilder;
 use crate::error::EnvVarError;
 const DEFAULT_STREAM_IDLE_TIMEOUT_MS: u64 = 300_000;
 const DEFAULT_STREAM_MAX_RETRIES: u64 = 5;
@@ -135,6 +137,139 @@ impl Default for GeminiProvider {
             stream_max_retries: Some(DEFAULT_STREAM_MAX_RETRIES),
             stream_idle_timeout_ms: Some(DEFAULT_STREAM_IDLE_TIMEOUT_MS),
         }
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct AnthropicProvider {
+    pub name: String,
+    #[serde(default = "default_anthropic_base_url")]
+    pub base_url: String,
+    pub api_key_env_var: Option<String>,
+    pub experimental_bearer_token: Option<String>,
+    pub http_headers: Option<HashMap<String, String>>,
+    pub env_http_headers: Option<HashMap<String, String>>,
+    #[serde(default = "default_anthropic_version")]
+    pub version: String,
+    pub beta: Option<Vec<String>>,
+    pub request_max_retries: Option<u64>,
+    pub stream_max_retries: Option<u64>,
+    pub stream_idle_timeout_ms: Option<u64>,
+}
+
+fn default_anthropic_base_url() -> String {
+    "https://api.anthropic.com/v1".to_string()
+}
+
+fn default_anthropic_version() -> String {
+    "2023-06-01".to_string()
+}
+
+impl Default for AnthropicProvider {
+    fn default() -> Self {
+        Self {
+            name: "Anthropic".to_string(),
+            base_url: default_anthropic_base_url(),
+            api_key_env_var: None,
+            experimental_bearer_token: None,
+            http_headers: None,
+            env_http_headers: None,
+            version: default_anthropic_version(),
+            beta: None,
+            request_max_retries: Some(DEFAULT_REQUEST_MAX_RETRIES),
+            stream_max_retries: Some(DEFAULT_STREAM_MAX_RETRIES),
+            stream_idle_timeout_ms: Some(DEFAULT_STREAM_IDLE_TIMEOUT_MS),
+        }
+    }
+}
+
+impl AnthropicProvider {
+    pub async fn create_request_builder<'a>(
+        &'a self,
+        client: &'a CodexHttpClient,
+    ) -> crate::error::Result<CodexRequestBuilder> {
+        let url = self.get_full_url();
+        let mut builder = client.post(&url);
+
+        if let Some(token) = &self.experimental_bearer_token {
+            builder = builder.bearer_auth(token);
+        } else if let Some(key) = self.api_key()? {
+            builder = builder.header("x-api-key", key);
+        }
+
+        builder = builder.header("anthropic-version", &self.version);
+        if let Some(betas) = &self.beta {
+            builder = builder.header("anthropic-beta", betas.join(","));
+        }
+        if let Some(extra) = &self.http_headers {
+            for (header_name, value) in extra {
+                builder = builder.header(header_name.as_str(), value.as_str());
+            }
+        }
+        if let Some(env_headers) = &self.env_http_headers {
+            for (header_name, env_var) in env_headers {
+                if let Ok(val) = std::env::var(env_var) {
+                    let trimmed = val.trim();
+                    if !trimmed.is_empty() {
+                        builder = builder.header(header_name.as_str(), trimmed);
+                    }
+                }
+            }
+        }
+        Ok(builder)
+    }
+
+    pub fn api_key(&self) -> crate::error::Result<Option<String>> {
+        if let Some(env_var) = &self.api_key_env_var {
+            std::env::var(env_var)
+                .map(|v| {
+                    let trimmed = v.trim();
+                    if trimmed.is_empty() {
+                        None
+                    } else {
+                        Some(trimmed.to_string())
+                    }
+                })
+                .map_err(|_| {
+                    crate::error::CodexErr::EnvVar(EnvVarError {
+                        var: env_var.clone(),
+                        instructions: None,
+                    })
+                })?
+                .ok_or_else(|| {
+                    crate::error::CodexErr::EnvVar(EnvVarError {
+                        var: env_var.clone(),
+                        instructions: None,
+                    })
+                })
+                .map(Some)
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn get_full_url(&self) -> String {
+        format!("{}/messages", self.base_url.trim_end_matches('/'))
+    }
+
+    pub fn request_max_retries(&self) -> u64 {
+        self.request_max_retries
+            .unwrap_or(DEFAULT_REQUEST_MAX_RETRIES)
+            .min(MAX_REQUEST_MAX_RETRIES)
+    }
+
+    pub fn stream_max_retries(&self) -> u64 {
+        self.stream_max_retries
+            .unwrap_or(DEFAULT_STREAM_MAX_RETRIES)
+            .min(MAX_STREAM_MAX_RETRIES)
+    }
+
+    pub fn stream_idle_timeout(&self) -> Duration {
+        Duration::from_millis(
+            self.stream_idle_timeout_ms
+                .unwrap_or(DEFAULT_STREAM_IDLE_TIMEOUT_MS),
+        )
     }
 }
 
