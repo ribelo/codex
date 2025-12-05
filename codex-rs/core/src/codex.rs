@@ -586,6 +586,7 @@ impl Session {
             otel_event_manager,
             models_manager: Arc::clone(&models_manager),
             tool_approvals: Mutex::new(ApprovalStore::default()),
+            subagent_sessions: Mutex::new(std::collections::HashMap::new()),
         };
 
         let sess = Arc::new(Session {
@@ -2879,6 +2880,7 @@ mod tests {
             otel_event_manager: otel_event_manager.clone(),
             models_manager: models_manager.clone(),
             tool_approvals: Mutex::new(ApprovalStore::default()),
+            subagent_sessions: Mutex::new(std::collections::HashMap::new()),
         };
 
         let turn_context = Session::make_turn_context(
@@ -2958,6 +2960,7 @@ mod tests {
             otel_event_manager: otel_event_manager.clone(),
             models_manager: models_manager.clone(),
             tool_approvals: Mutex::new(ApprovalStore::default()),
+            subagent_sessions: Mutex::new(std::collections::HashMap::new()),
         };
 
         let turn_context = Arc::new(Session::make_turn_context(

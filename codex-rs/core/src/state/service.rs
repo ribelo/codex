@@ -1,6 +1,8 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::AuthManager;
+use crate::subagents::SubagentSession;
 use crate::RolloutRecorder;
 use crate::mcp_connection_manager::McpConnectionManager;
 use crate::openai_models::models_manager::ModelsManager;
@@ -24,4 +26,5 @@ pub(crate) struct SessionServices {
     pub(crate) models_manager: Arc<ModelsManager>,
     pub(crate) otel_event_manager: OtelEventManager,
     pub(crate) tool_approvals: Mutex<ApprovalStore>,
+    pub(crate) subagent_sessions: Mutex<HashMap<String, SubagentSession>>,
 }
