@@ -440,6 +440,7 @@ impl Session {
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_family: &model_family,
             features,
+            codex_home: &config.codex_home,
         });
 
         TurnContext {
@@ -1916,6 +1917,7 @@ async fn spawn_review_thread(
     let tools_config = ToolsConfig::new(&ToolsConfigParams {
         model_family: &review_model_family,
         features: &review_features,
+        codex_home: &config.codex_home,
     });
 
     let base_instructions = REVIEW_PROMPT.to_string();
