@@ -18,6 +18,7 @@ use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub(crate) struct ToolsConfig {
+    pub codex_home: std::path::PathBuf,
     pub shell_type: ConfigShellToolType,
     pub apply_patch_tool_type: Option<ApplyPatchToolType>,
     pub web_search_request: bool,
@@ -28,6 +29,7 @@ pub(crate) struct ToolsConfig {
 pub(crate) struct ToolsConfigParams<'a> {
     pub(crate) model_family: &'a ModelFamily,
     pub(crate) features: &'a Features,
+    pub(crate) codex_home: &'a std::path::Path,
 }
 
 impl ToolsConfig {
@@ -35,6 +37,7 @@ impl ToolsConfig {
         let ToolsConfigParams {
             model_family,
             features,
+            codex_home,
         } = params;
         let include_apply_patch_tool = features.enabled(Feature::ApplyPatchFreeform);
         let include_web_search_request = features.enabled(Feature::WebSearchRequest);
@@ -61,6 +64,7 @@ impl ToolsConfig {
         };
 
         Self {
+            codex_home: codex_home.to_path_buf(),
             shell_type,
             apply_patch_tool_type,
             web_search_request: include_web_search_request,
@@ -969,9 +973,11 @@ pub(crate) fn build_specs(
     use crate::tools::handlers::ReadFileHandler;
     use crate::tools::handlers::ShellCommandHandler;
     use crate::tools::handlers::ShellHandler;
+    use crate::tools::handlers::TaskHandler;
     use crate::tools::handlers::TestSyncHandler;
     use crate::tools::handlers::UnifiedExecHandler;
     use crate::tools::handlers::ViewImageHandler;
+    use crate::tools::handlers::create_task_tool;
     use std::sync::Arc;
 
     let mut builder = ToolRegistryBuilder::new();
@@ -984,6 +990,7 @@ pub(crate) fn build_specs(
     let mcp_handler = Arc::new(McpHandler);
     let mcp_resource_handler = Arc::new(McpResourceHandler);
     let shell_command_handler = Arc::new(ShellCommandHandler);
+    let task_handler = Arc::new(TaskHandler);
 
     match &config.shell_type {
         ConfigShellToolType::Default => {
@@ -1076,6 +1083,9 @@ pub(crate) fn build_specs(
     if config.web_search_request {
         builder.push_spec(ToolSpec::WebSearch {});
     }
+
+    builder.push_spec(create_task_tool(&config.codex_home));
+    builder.register_handler("task", task_handler);
 
     if config.include_view_image_tool {
         builder.push_spec_with_parallel_support(create_view_image_tool(), true);
@@ -1208,6 +1218,7 @@ mod tests {
         let config = ToolsConfig::new(&ToolsConfigParams {
             model_family: &model_family,
             features: &features,
+            codex_home: std::path::Path::new("."),
         });
         let (tools, _) = build_specs(&config, None).build();
 
@@ -1458,6 +1469,7 @@ mod tests {
         let config = ToolsConfig::new(&ToolsConfigParams {
             model_family: &model_family,
             features: &features,
+            codex_home: std::path::Path::new("."),
         });
         let (tools, _) = build_specs(&config, Some(HashMap::new())).build();
 
@@ -1479,6 +1491,7 @@ mod tests {
         let config = ToolsConfig::new(&ToolsConfigParams {
             model_family: &model_family,
             features: &features,
+            codex_home: std::path::Path::new("."),
         });
         let (tools, _) = build_specs(&config, None).build();
 
@@ -1497,6 +1510,7 @@ mod tests {
         let config = ToolsConfig::new(&ToolsConfigParams {
             model_family: &model_family,
             features: &features,
+            codex_home: std::path::Path::new("."),
         });
         let (tools, _) = build_specs(&config, None).build();
 
@@ -1527,6 +1541,7 @@ mod tests {
         let config = ToolsConfig::new(&ToolsConfigParams {
             model_family: &model_family,
             features: &features,
+            codex_home: std::path::Path::new("."),
         });
         let (tools, _) = build_specs(
             &config,
@@ -1620,6 +1635,7 @@ mod tests {
         let config = ToolsConfig::new(&ToolsConfigParams {
             model_family: &model_family,
             features: &features,
+            codex_home: std::path::Path::new("."),
         });
 
         // Intentionally construct a map with keys that would sort alphabetically.
@@ -1696,6 +1712,7 @@ mod tests {
         let config = ToolsConfig::new(&ToolsConfigParams {
             model_family: &model_family,
             features: &features,
+            codex_home: std::path::Path::new("."),
         });
 
         let (tools, _) = build_specs(
@@ -1752,6 +1769,7 @@ mod tests {
         let config = ToolsConfig::new(&ToolsConfigParams {
             model_family: &model_family,
             features: &features,
+            codex_home: std::path::Path::new("."),
         });
 
         let (tools, _) = build_specs(
@@ -1805,6 +1823,7 @@ mod tests {
         let config = ToolsConfig::new(&ToolsConfigParams {
             model_family: &model_family,
             features: &features,
+            codex_home: std::path::Path::new("."),
         });
 
         let (tools, _) = build_specs(
@@ -1860,6 +1879,7 @@ mod tests {
         let config = ToolsConfig::new(&ToolsConfigParams {
             model_family: &model_family,
             features: &features,
+            codex_home: std::path::Path::new("."),
         });
 
         let (tools, _) = build_specs(
@@ -1971,6 +1991,7 @@ Examples of valid command strings:
         let config = ToolsConfig::new(&ToolsConfigParams {
             model_family: &model_family,
             features: &features,
+            codex_home: std::path::Path::new("."),
         });
         let (tools, _) = build_specs(
             &config,
