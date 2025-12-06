@@ -11,6 +11,7 @@ use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ExitedReviewModeEvent;
 use codex_protocol::protocol::ItemCompletedEvent;
 use codex_protocol::protocol::ReviewOutputEvent;
+use codex_protocol::protocol::TaskStartedEvent;
 use tokio_util::sync::CancellationToken;
 
 use crate::codex::Session;
@@ -47,6 +48,15 @@ impl SessionTask for ReviewTask {
         input: Vec<UserInput>,
         cancellation_token: CancellationToken,
     ) -> Option<String> {
+        // Show "Working" and enable interrupts while the reviewer runs.
+        let event = EventMsg::TaskStarted(TaskStartedEvent {
+            model_context_window: ctx.client.get_model_context_window(),
+        });
+        session
+            .clone_session()
+            .send_event(ctx.as_ref(), event)
+            .await;
+
         // Start sub-codex conversation and get the receiver for events.
         let output = match start_review_conversation(
             session.clone(),
