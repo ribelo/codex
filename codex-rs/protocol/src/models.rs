@@ -39,8 +39,12 @@ pub enum ResponseInputItem {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonSchema, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentItem {
-    InputText { text: String },
-    InputImage { image_url: String },
+    InputText {
+        text: String,
+    },
+    InputImage {
+        image_url: String,
+    },
     OutputText {
         text: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]

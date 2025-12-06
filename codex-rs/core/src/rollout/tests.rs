@@ -615,6 +615,7 @@ async fn test_updated_at_uses_file_mtime() -> Result<()> {
                 id: None,
                 role: "assistant".into(),
                 content: vec![ContentItem::OutputText {
+                    signature: None,
                     text: format!("reply-{idx}"),
                 }],
             }),

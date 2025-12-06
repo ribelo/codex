@@ -271,6 +271,7 @@ mod tests {
             id: None,
             role: "user".to_string(),
             content: vec![ContentItem::OutputText {
+                signature: None,
                 text: text.to_string(),
             }],
         }
@@ -280,6 +281,7 @@ mod tests {
             id: None,
             role: "assistant".to_string(),
             content: vec![ContentItem::OutputText {
+                signature: None,
                 text: text.to_string(),
             }],
         }

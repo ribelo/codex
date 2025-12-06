@@ -266,6 +266,55 @@ impl HistoryCell for AgentMessageCell {
 }
 
 #[derive(Debug)]
+pub(crate) struct ReasoningStreamCell {
+    lines: Vec<Line<'static>>,
+    is_first_line: bool,
+}
+
+impl ReasoningStreamCell {
+    pub(crate) fn new(lines: Vec<Line<'static>>, is_first_line: bool) -> Self {
+        Self {
+            lines,
+            is_first_line,
+        }
+    }
+}
+
+impl HistoryCell for ReasoningStreamCell {
+    fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
+        let style = Style::default().dim().italic();
+        let styled_lines: Vec<Line<'static>> = self
+            .lines
+            .iter()
+            .map(|line| {
+                let mut styled = line.clone();
+                styled.spans = styled
+                    .spans
+                    .iter()
+                    .map(|span| span.clone().patch_style(style))
+                    .collect();
+                styled
+            })
+            .collect();
+
+        word_wrap_lines(
+            &styled_lines,
+            RtOptions::new(width as usize)
+                .initial_indent(if self.is_first_line {
+                    "• ".dim().into()
+                } else {
+                    "  ".into()
+                })
+                .subsequent_indent("  ".into()),
+        )
+    }
+
+    fn is_stream_continuation(&self) -> bool {
+        !self.is_first_line
+    }
+}
+
+#[derive(Debug)]
 pub(crate) struct PlainHistoryCell {
     lines: Vec<Line<'static>>,
 }

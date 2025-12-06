@@ -20,6 +20,7 @@ fn assistant_msg(text: &str) -> ResponseItem {
         id: None,
         role: "assistant".to_string(),
         content: vec![ContentItem::OutputText {
+            signature: None,
             text: text.to_string(),
         }],
     }
@@ -38,6 +39,7 @@ fn user_msg(text: &str) -> ResponseItem {
         id: None,
         role: "user".to_string(),
         content: vec![ContentItem::OutputText {
+            signature: None,
             text: text.to_string(),
         }],
     }
@@ -80,6 +82,7 @@ fn filters_non_api_messages() {
         id: None,
         role: "system".to_string(),
         content: vec![ContentItem::OutputText {
+            signature: None,
             text: "ignored".to_string(),
         }],
     };
@@ -109,6 +112,7 @@ fn filters_non_api_messages() {
                 id: None,
                 role: "user".to_string(),
                 content: vec![ContentItem::OutputText {
+                    signature: None,
                     text: "hi".to_string()
                 }]
             },
@@ -116,6 +120,7 @@ fn filters_non_api_messages() {
                 id: None,
                 role: "assistant".to_string(),
                 content: vec![ContentItem::OutputText {
+                    signature: None,
                     text: "hello".to_string()
                 }]
             }

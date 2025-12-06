@@ -9,3 +9,6 @@
 **/*.snap.new
 /beads/
 /history/
+# Temp local tracking files
+/diff_*.txt
+/third-party/

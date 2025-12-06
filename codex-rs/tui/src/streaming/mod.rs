@@ -4,6 +4,7 @@ use ratatui::text::Line;
 
 use crate::markdown_stream::MarkdownStreamCollector;
 pub(crate) mod controller;
+pub(crate) mod reasoning_controller;
 
 pub(crate) struct StreamState {
     pub(crate) collector: MarkdownStreamCollector,
