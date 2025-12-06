@@ -127,7 +127,11 @@ async fn run_stream_with_bytes(sse_body: &[u8]) -> Vec<ResponseEvent> {
 fn assert_message(item: &ResponseItem, expected: &str) {
     if let ResponseItem::Message { content, .. } = item {
         let text = content.iter().find_map(|part| match part {
-            ContentItem::OutputText { text } | ContentItem::InputText { text } => Some(text),
+            ContentItem::OutputText {
+                signature: None,
+                text,
+            }
+            | ContentItem::InputText { text } => Some(text),
             _ => None,
         });
         let Some(text) = text else {

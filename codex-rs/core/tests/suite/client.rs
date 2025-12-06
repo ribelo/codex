@@ -202,6 +202,7 @@ async fn resume_includes_initial_messages_and_sends_prior_items() {
         id: None,
         role: "system".to_string(),
         content: vec![codex_protocol::models::ContentItem::OutputText {
+            signature: None,
             text: "resumed system instruction".to_string(),
         }],
     };
@@ -222,6 +223,7 @@ async fn resume_includes_initial_messages_and_sends_prior_items() {
         id: None,
         role: "assistant".to_string(),
         content: vec![codex_protocol::models::ContentItem::OutputText {
+            signature: None,
             text: "resumed assistant message".to_string(),
         }],
     };
@@ -1059,6 +1061,7 @@ async fn azure_responses_request_includes_store_and_reasoning_ids() {
         id: Some("message-id".into()),
         role: "assistant".into(),
         content: vec![ContentItem::OutputText {
+            signature: None,
             text: "message".into(),
         }],
     });

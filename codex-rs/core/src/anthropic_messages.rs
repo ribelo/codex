@@ -1265,12 +1265,12 @@ data: {\"type\":\"message_stop\"}
                 ResponseItem::Message {
                     id: None,
                     role: "assistant".to_string(),
-                content: vec![ContentItem::OutputText {
-                    text: "Hi".to_string(),
-                    signature: None,
-                }],
-            },
-            ResponseItem::FunctionCall {
+                    content: vec![ContentItem::OutputText {
+                        text: "Hi".to_string(),
+                        signature: None,
+                    }],
+                },
+                ResponseItem::FunctionCall {
                     id: None,
                     name: "shell".to_string(),
                     arguments: "{}".to_string(),

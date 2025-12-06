@@ -230,6 +230,7 @@ async fn remote_compact_persists_replacement_history_in_rollout() -> Result<()> 
             id: None,
             role: "assistant".to_string(),
             content: vec![ContentItem::OutputText {
+                signature: None,
                 text: "COMPACTED_ASSISTANT_NOTE".to_string(),
             }],
         },

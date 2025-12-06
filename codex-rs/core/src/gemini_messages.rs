@@ -186,7 +186,7 @@ struct GeminiResponseContent {
     _role: Option<String>,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone)]
 struct GeminiPartWrapper {
     text: Option<String>,
     #[serde(rename = "functionCall")]
@@ -196,7 +196,7 @@ struct GeminiPartWrapper {
     thought: Option<Value>,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 struct GeminiFunctionCallResponse {
     name: String,
@@ -1057,14 +1057,15 @@ fn gemini_error_from_value(value: &Value) -> Option<ProviderError> {
     Some(ProviderError { message, code })
 }
 
-async fn process_gemini_sse<S>(
+async fn process_gemini_sse<S, E>(
     stream: S,
     tx_event: mpsc::Sender<Result<ResponseEvent>>,
     idle_timeout: Duration,
     show_raw_reasoning: bool,
     otel_event_manager: OtelEventManager,
 ) where
-    S: futures::Stream<Item = std::result::Result<Bytes, reqwest::Error>> + Unpin + Eventsource,
+    S: futures::Stream<Item = std::result::Result<Bytes, E>> + Unpin + Eventsource,
+    E: std::fmt::Display,
 {
     let mut stream = stream.eventsource();
     let response_id = String::new(); // Gemini doesn't always send ID in stream?
@@ -1101,6 +1102,18 @@ async fn process_gemini_sse<S>(
             }
             Ok(None) => {
                 // Stream finished
+                // Finalize reasoning FIRST so it appears before the message in history
+                if let Some(state) = reasoning_state.take() {
+                    if !state.added {
+                        let _ = tx_event
+                            .send(Ok(ResponseEvent::OutputItemAdded(state.item.clone())))
+                            .await;
+                    }
+                    let _ = tx_event
+                        .send(Ok(ResponseEvent::OutputItemDone(state.item)))
+                        .await;
+                }
+                // Then finalize assistant message
                 if let Some(state) = assistant_state.take() {
                     if !state.added {
                         // If we never added it (empty?), add it now?
@@ -1109,16 +1122,6 @@ async fn process_gemini_sse<S>(
                             .await;
                     }
                     emitted_content = true;
-                    let _ = tx_event
-                        .send(Ok(ResponseEvent::OutputItemDone(state.item)))
-                        .await;
-                }
-                if let Some(state) = reasoning_state.take() {
-                    if !state.added {
-                        let _ = tx_event
-                            .send(Ok(ResponseEvent::OutputItemAdded(state.item.clone())))
-                            .await;
-                    }
                     let _ = tx_event
                         .send(Ok(ResponseEvent::OutputItemDone(state.item)))
                         .await;
@@ -1244,16 +1247,9 @@ async fn process_gemini_sse<S>(
         let has_structured_thoughts = response.candidates.as_ref().is_some_and(|candidates| {
             candidates.iter().any(|candidate| {
                 candidate.content.as_ref().is_some_and(|content| {
-                    content
-                        .parts
-                        .as_ref()
-                        .is_some_and(|parts| {
-                            parts.iter().any(|part| match &part.thought {
-                                Some(Value::Bool(b)) => *b,
-                                Some(_) => true,
-                                None => false,
-                            })
-                        })
+                    content.parts.as_ref().is_some_and(|parts| {
+                        parts.iter().any(|part| is_thought_value(&part.thought))
+                    })
                 })
             })
         });
@@ -1289,15 +1285,10 @@ async fn process_gemini_sse<S>(
                 if let Some(content) = candidate.content
                     && let Some(parts) = content.parts
                 {
+                    // Process parts in arrival order - Gemini sends thinking chunks first.
                     for part in parts {
-                        let is_thought = match &part.thought {
-                            Some(Value::Bool(b)) => *b,
-                            Some(_) => true,
-                            None => false,
-                        };
-
                         if let Some(ref text) = part.text {
-                            if is_thought {
+                            if is_thought_value(&part.thought) {
                                 if show_raw_reasoning {
                                     append_reasoning_delta(
                                         &tx_event,
@@ -1307,7 +1298,8 @@ async fn process_gemini_sse<S>(
                                     )
                                     .await;
                                 } else {
-                                    // Align with opencode: surface thought text when reasoning view is off.
+                                    // When raw reasoning view is disabled, surface thought text
+                                    // as normal assistant text to match previous behavior.
                                     append_text_delta(
                                         &tx_event,
                                         &mut assistant_state,
@@ -1339,7 +1331,6 @@ async fn process_gemini_sse<S>(
                             .await;
                         }
                         if let Some(func_call) = part.function_call {
-                            // Tool call
                             handle_function_call(
                                 &tx_event,
                                 &mut assistant_state,
@@ -1403,6 +1394,7 @@ async fn append_reasoning_delta(
     emitted_content: &mut bool,
     text: &str,
 ) {
+    use codex_protocol::models::ReasoningItemReasoningSummary;
     if text.is_empty() {
         return;
     }
@@ -1419,6 +1411,19 @@ async fn append_reasoning_delta(
                 return;
             }
             *emitted_content = true;
+        }
+
+        // Accumulate a summary so a final reasoning item exists for legacy events.
+        if let ResponseItem::Reasoning { summary, .. } = &mut state.item {
+            if let Some(ReasoningItemReasoningSummary::SummaryText { text: existing }) =
+                summary.last_mut()
+            {
+                existing.push_str(text);
+            } else {
+                summary.push(ReasoningItemReasoningSummary::SummaryText {
+                    text: text.to_string(),
+                });
+            }
         }
 
         // Stream only deltas; do not accumulate content in state.item to avoid duplication.
@@ -1518,6 +1523,17 @@ struct ReasoningState {
     streamed_delta_count: i64,
 }
 
+/// Check if the thought field indicates this is a thinking part.
+/// Gemini may send thought as boolean true, or other truthy values.
+fn is_thought_value(thought: &Option<Value>) -> bool {
+    match thought {
+        Some(Value::Bool(b)) => *b,
+        Some(Value::Null) => false,
+        Some(_) => true, // treat any other non-null value as true
+        None => false,
+    }
+}
+
 fn extract_gemini_reasoning_text(value: &Value) -> Vec<String> {
     let mut reasoning = Vec::new();
     if let Some(thoughts) = value.get("thoughts") {
@@ -1574,8 +1590,23 @@ mod tests {
     use crate::auth::AuthDotJson;
     use crate::token_data::GeminiTokenData;
     use codex_app_server_protocol::AuthMode;
+    use futures::TryStreamExt;
     use pretty_assertions::assert_eq;
+    use tokio::sync::mpsc;
+    use tokio_util::io::ReaderStream;
 
+    fn otel() -> OtelEventManager {
+        OtelEventManager::new(
+            codex_protocol::ConversationId::new(),
+            "gemini-test",
+            "gemini-test",
+            None,
+            None,
+            None,
+            false,
+            "test-agent".to_string(),
+        )
+    }
     #[test]
     fn test_gemini_part_wrapper_deserialization() {
         // Case 1: thought is boolean true
@@ -1584,7 +1615,7 @@ mod tests {
             "thought": true
         });
         let part: GeminiPartWrapper = serde_json::from_value(json).unwrap();
-        assert_eq!(part.thought, Some(json!(true)));
+        assert!(is_thought_value(&part.thought));
         assert_eq!(part.text, Some("thinking...".to_string()));
 
         // Case 2: thought is boolean false
@@ -1593,7 +1624,7 @@ mod tests {
             "thought": false
         });
         let part: GeminiPartWrapper = serde_json::from_value(json).unwrap();
-        assert_eq!(part.thought, Some(json!(false)));
+        assert!(!is_thought_value(&part.thought));
 
         // Case 3: thought is null
         let json = json!({
@@ -1601,15 +1632,22 @@ mod tests {
             "thought": null
         });
         let part: GeminiPartWrapper = serde_json::from_value(json).unwrap();
-        assert_eq!(part.thought, None);
+        assert!(!is_thought_value(&part.thought));
 
-        // Case 4: thought is string (hypothetical failure)
+        // Case 4: thought field missing
         let json = json!({
-            "text": "answer",
+            "text": "answer"
+        });
+        let part: GeminiPartWrapper = serde_json::from_value(json).unwrap();
+        assert!(!is_thought_value(&part.thought));
+
+        // Case 5: thought is some other value (treated as true)
+        let json = json!({
+            "text": "thinking...",
             "thought": "some thought"
         });
         let part: GeminiPartWrapper = serde_json::from_value(json).unwrap();
-        assert_eq!(part.thought, Some(json!("some thought")));
+        assert!(is_thought_value(&part.thought));
     }
 
     fn auth_with_gemini_tokens() -> CodexAuth {
@@ -1669,6 +1707,239 @@ mod tests {
             unsafe {
                 std::env::remove_var("GEMINI_API_KEY");
             }
+        }
+    }
+
+    #[tokio::test]
+    async fn thinking_block_emits_reasoning_delta() {
+        let body = "data: ".to_owned()
+            + &serde_json::json!({
+                "candidates": [{
+                    "content": {
+                        "parts": [
+                            { "text": "I am thinking...", "thought": true }
+                        ]
+                    }
+                }]
+            })
+            .to_string()
+            + "\n\n"
+            + "data: "
+            + &serde_json::json!({
+                "candidates": [{
+                    "content": {
+                        "parts": [
+                            { "text": "Here is the answer." }
+                        ]
+                    }
+                }]
+            })
+            .to_string()
+            + "\n\n";
+
+        let (tx, mut rx) = mpsc::channel::<Result<ResponseEvent>>(16);
+        let stream = ReaderStream::new(std::io::Cursor::new(body)).map_err(CodexErr::Io);
+
+        tokio::spawn(process_gemini_sse(
+            stream,
+            tx,
+            Duration::from_millis(10_000),
+            true, // show_raw_reasoning
+            otel(),
+        ));
+
+        let mut events = Vec::new();
+        while let Some(event) = rx.recv().await {
+            let evt = event.unwrap();
+            // Filter out created/completed/itemAdded/itemDone events to simplify assertion on deltas
+            if matches!(
+                evt,
+                ResponseEvent::ReasoningContentDelta { .. } | ResponseEvent::OutputTextDelta(_)
+            ) {
+                events.push(evt);
+            }
+        }
+
+        // Verify we got a reasoning event first
+        assert!(
+            events.iter().any(|ev| {
+                matches!(ev, ResponseEvent::ReasoningContentDelta { delta, .. } if delta == "I am thinking...")
+            }),
+            "Expected reasoning delta 'I am thinking...', got {events:?}"
+        );
+
+        // Verify we got text event second
+        assert!(
+            events.iter().any(|ev| {
+                matches!(ev, ResponseEvent::OutputTextDelta(text) if text == "Here is the answer.")
+            }),
+            "Expected text delta 'Here is the answer.', got {events:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn reasoning_deltas_are_streamed_and_lifecycle_item_is_empty() {
+        // Stream with two reasoning chunks and a final answer; reasoning must only appear via deltas.
+        let chunk1 = "data: ".to_owned()
+            + &serde_json::json!({
+                "candidates": [{
+                    "content": {
+                        "parts": [
+                            { "text": "Step 1: Analyze.", "thought": true }
+                        ]
+                    }
+                }]
+            })
+            .to_string()
+            + "\n\n";
+
+        let chunk2 = "data: ".to_owned()
+            + &serde_json::json!({
+                "candidates": [{
+                    "content": {
+                        "parts": [
+                            { "text": "Step 2: Synthesize.", "thought": true },
+                            { "text": "The sky is blue due to Rayleigh scattering." }
+                        ]
+                    }
+                }]
+            })
+            .to_string()
+            + "\n\n";
+
+        let body = chunk1 + &chunk2;
+
+        let (tx, mut rx) = mpsc::channel::<Result<ResponseEvent>>(16);
+        let stream = ReaderStream::new(std::io::Cursor::new(body)).map_err(CodexErr::Io);
+
+        tokio::spawn(process_gemini_sse(
+            stream,
+            tx,
+            Duration::from_millis(10_000),
+            true,
+            otel(),
+        ));
+
+        let mut events = Vec::new();
+        while let Some(event) = rx.recv().await {
+            events.push(event.unwrap());
+        }
+
+        // Collect deltas only to verify order and indexing.
+        let deltas: Vec<_> = events
+            .iter()
+            .filter(|ev| {
+                matches!(
+                    ev,
+                    ResponseEvent::ReasoningContentDelta { .. } | ResponseEvent::OutputTextDelta(_)
+                )
+            })
+            .collect();
+
+        assert_eq!(
+            deltas.len(),
+            3,
+            "expected two reasoning deltas and one text delta: {deltas:?}"
+        );
+        assert!(matches!(
+            deltas[0],
+            ResponseEvent::ReasoningContentDelta { delta, content_index }
+            if delta == "Step 1: Analyze." && *content_index == 0
+        ));
+        assert!(matches!(
+            deltas[1],
+            ResponseEvent::ReasoningContentDelta { delta, content_index }
+            if delta == "Step 2: Synthesize." && *content_index == 1
+        ));
+        assert!(matches!(
+            deltas[2],
+            ResponseEvent::OutputTextDelta(text)
+            if text == "The sky is blue due to Rayleigh scattering."
+        ));
+
+        // Ensure the lifecycle Reasoning item remained empty (content not duplicated).
+        let final_reasoning_content = events.iter().find_map(|ev| {
+            if let ResponseEvent::OutputItemDone(ResponseItem::Reasoning { content, .. }) = ev {
+                Some(content.clone())
+            } else {
+                None
+            }
+        });
+
+        match final_reasoning_content {
+            Some(Some(content)) => assert!(
+                content.is_empty(),
+                "expected empty reasoning content in lifecycle item to avoid duplication"
+            ),
+            Some(None) => {} // also acceptable
+            None => panic!("expected OutputItemDone(Reasoning)"),
+        }
+    }
+
+    #[tokio::test]
+    async fn single_chunk_mixed_thought_and_text_preserves_order_no_duplication() {
+        // Single chunk with a thought part followed by a text part. A legacy "thoughts"
+        // field is also present; when structured thoughts exist we should ignore it to
+        // avoid duplication and preserve ordering.
+        let body = "data: ".to_owned()
+            + &serde_json::json!({
+                "thoughts": [{ "text": "Step 1: Analyze the request." }],
+                "candidates": [{
+                    "content": {
+                        "parts": [
+                            { "text": "Step 1: Analyze the request.", "thought": true },
+                            { "text": "The answer is 42." }
+                        ]
+                    }
+                }]
+            })
+            .to_string()
+            + "\n\n";
+
+        let (tx, mut rx) = mpsc::channel::<Result<ResponseEvent>>(16);
+        let stream = ReaderStream::new(std::io::Cursor::new(body)).map_err(CodexErr::Io);
+
+        tokio::spawn(process_gemini_sse(
+            stream,
+            tx,
+            Duration::from_millis(10_000),
+            true,
+            otel(),
+        ));
+
+        let mut deltas = Vec::new();
+        while let Some(event) = rx.recv().await {
+            let evt = event.unwrap();
+            if matches!(
+                evt,
+                ResponseEvent::ReasoningContentDelta { .. } | ResponseEvent::OutputTextDelta(_)
+            ) {
+                deltas.push(evt);
+            }
+        }
+
+        assert_eq!(
+            deltas.len(),
+            2,
+            "expected exactly two deltas without duplication: {deltas:?}"
+        );
+
+        if let [first, second] = &deltas[..] {
+            assert!(
+                matches!(
+                    first,
+                    ResponseEvent::ReasoningContentDelta { delta, .. }
+                    if delta == "Step 1: Analyze the request."
+                ),
+                "expected first delta to be reasoning: {first:?}"
+            );
+            assert!(
+                matches!(
+                    second,
+                    ResponseEvent::OutputTextDelta(text) if text == "The answer is 42."
+                ),
+                "expected second delta to be text: {second:?}"
+            );
         }
     }
 }

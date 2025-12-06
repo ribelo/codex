@@ -138,6 +138,7 @@ fn assistant_message(text: &str) -> ResponseItem {
         id: None,
         role: "assistant".to_string(),
         content: vec![ContentItem::OutputText {
+            signature: None,
             text: text.to_string(),
         }],
     }

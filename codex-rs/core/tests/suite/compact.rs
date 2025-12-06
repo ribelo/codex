@@ -1939,6 +1939,7 @@ async fn auto_compact_counts_encrypted_reasoning_before_last_user() {
         id: None,
         role: "assistant".to_string(),
         content: vec![codex_protocol::models::ContentItem::OutputText {
+            signature: None,
             text: "REMOTE_COMPACT_SUMMARY".to_string(),
         }],
     }];

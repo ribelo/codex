@@ -120,6 +120,7 @@ use self::agent::spawn_agent_from_existing;
 mod session_header;
 use self::session_header::SessionHeader;
 use crate::streaming::controller::StreamController;
+use crate::streaming::reasoning_controller::ReasoningStreamController;
 use std::path::Path;
 
 use chrono::Local;
@@ -289,6 +290,8 @@ pub(crate) struct ChatWidget {
     rate_limit_poller: Option<JoinHandle<()>>,
     // Stream lifecycle controller
     stream_controller: Option<StreamController>,
+    // Thinking/reasoning stream lifecycle controller
+    reasoning_stream_controller: Option<ReasoningStreamController>,
     running_commands: HashMap<String, RunningCommand>,
     suppressed_exec_calls: HashSet<String>,
     last_unified_wait: Option<UnifiedExecWaitState>,
@@ -300,6 +303,8 @@ pub(crate) struct ChatWidget {
     reasoning_buffer: String,
     // Accumulates full reasoning content for transcript-only recording
     full_reasoning_buffer: String,
+    // Tracks whether we've already flushed a reasoning block into history this turn.
+    reasoning_final_emitted: bool,
     // Current status header shown in the status indicator.
     current_status_header: String,
     // Previous status header to restore after a transient stream retry.
@@ -321,6 +326,8 @@ pub(crate) struct ChatWidget {
     pre_review_token_info: Option<Option<TokenUsageInfo>>,
     // Whether to add a final message separator after the last message
     needs_final_message_separator: bool,
+    // Tracks whether commit animation thread is running
+    commit_animation_active: bool,
 
     last_rendered_width: std::cell::Cell<Option<usize>>,
     // Feedback sink for /feedback
@@ -367,6 +374,17 @@ impl ChatWidget {
         {
             self.add_boxed_history(cell);
         }
+    }
+
+    fn finalize_reasoning_stream(&mut self) -> bool {
+        if let Some(mut controller) = self.reasoning_stream_controller.take() {
+            let had_content = controller.has_seen_content();
+            if let Some(cell) = controller.finalize() {
+                self.add_boxed_history(cell);
+            }
+            return had_content;
+        }
+        false
     }
 
     fn set_status_header(&mut self, header: String) {
@@ -447,6 +465,14 @@ impl ChatWidget {
     fn on_agent_message(&mut self, message: String) {
         // If we have a stream_controller, then the final agent message is redundant and will be a
         // duplicate of what has already been streamed.
+        if !self.reasoning_final_emitted
+            && (self.reasoning_stream_controller.is_some()
+                || !self.reasoning_buffer.is_empty()
+                || !self.full_reasoning_buffer.is_empty())
+        {
+            // Ensure any pending reasoning is flushed before the final message lands.
+            self.on_agent_reasoning_final();
+        }
         if self.stream_controller.is_none() {
             self.handle_streaming_delta(message);
         }
@@ -456,10 +482,20 @@ impl ChatWidget {
     }
 
     fn on_agent_message_delta(&mut self, delta: String) {
+        if !self.reasoning_final_emitted
+            && (self.reasoning_stream_controller.is_some()
+                || !self.reasoning_buffer.is_empty()
+                || !self.full_reasoning_buffer.is_empty())
+        {
+            // Flush reasoning as soon as the first assistant text arrives to preserve ordering.
+            self.on_agent_reasoning_final();
+        }
         self.handle_streaming_delta(delta);
     }
 
     fn on_agent_reasoning_delta(&mut self, delta: String) {
+        self.handle_reasoning_streaming_delta(&delta);
+
         // For reasoning deltas, do not stream to history. Accumulate the
         // current reasoning block and extract the first bold element
         // (between **/**) as the chunk header. Show this header as status.
@@ -475,12 +511,14 @@ impl ChatWidget {
     }
 
     fn on_agent_reasoning_final(&mut self) {
+        let streamed_reasoning = self.finalize_reasoning_stream();
+        self.reasoning_final_emitted = true;
         // At the end of a reasoning block, record transcript-only content.
         self.full_reasoning_buffer.push_str(&self.reasoning_buffer);
-        let model_family = self
-            .models_manager
-            .construct_model_family(&self.config.model, &self.config);
-        if !self.full_reasoning_buffer.is_empty() {
+        if !streamed_reasoning && !self.full_reasoning_buffer.is_empty() {
+            let model_family = self
+                .models_manager
+                .construct_model_family(&self.config.model, &self.config);
             let cell = history_cell::new_reasoning_summary_block(
                 self.full_reasoning_buffer.clone(),
                 &model_family,
@@ -489,6 +527,13 @@ impl ChatWidget {
         }
         self.reasoning_buffer.clear();
         self.full_reasoning_buffer.clear();
+        // If both streams are finished, stop commit animation promptly.
+        if self.stream_controller.is_none() && self.reasoning_stream_controller.is_none() {
+            if self.commit_animation_active {
+                self.commit_animation_active = false;
+                self.app_event_tx.send(AppEvent::StopCommitAnimation);
+            }
+        }
         self.request_redraw();
     }
 
@@ -509,10 +554,19 @@ impl ChatWidget {
         self.set_status_header(String::from("Working"));
         self.full_reasoning_buffer.clear();
         self.reasoning_buffer.clear();
+        self.reasoning_final_emitted = false;
+        self.reasoning_stream_controller = None;
         self.request_redraw();
     }
 
     fn on_task_complete(&mut self, last_agent_message: Option<String>) {
+        if !self.reasoning_final_emitted
+            && (self.reasoning_stream_controller.is_some()
+                || !self.reasoning_buffer.is_empty()
+                || !self.full_reasoning_buffer.is_empty())
+        {
+            self.on_agent_reasoning_final();
+        }
         // If a stream is currently active, finalize it.
         self.flush_answer_stream_with_separator();
         // Mark task stopped and request redraw now that all content is in history.
@@ -942,15 +996,41 @@ impl ChatWidget {
     /// Periodic tick to commit at most one queued line to history with a small delay,
     /// animating the output.
     pub(crate) fn on_commit_tick(&mut self) {
-        if let Some(controller) = self.stream_controller.as_mut() {
+        let mut saw_any = false;
+        let mut all_idle = true;
+
+        if let Some(controller) = self.reasoning_stream_controller.as_mut() {
+            saw_any = true;
             let (cell, is_idle) = controller.on_commit_tick();
             if let Some(cell) = cell {
                 self.bottom_pane.hide_status_indicator();
                 self.add_boxed_history(cell);
             }
-            if is_idle {
+            if !is_idle {
+                all_idle = false;
+            }
+        }
+
+        if let Some(controller) = self.stream_controller.as_mut() {
+            saw_any = true;
+            let (cell, is_idle) = controller.on_commit_tick();
+            if let Some(cell) = cell {
+                self.bottom_pane.hide_status_indicator();
+                self.add_boxed_history(cell);
+            }
+            if !is_idle {
+                all_idle = false;
+            }
+        }
+
+        if saw_any && all_idle {
+            if self.commit_animation_active {
+                self.commit_animation_active = false;
                 self.app_event_tx.send(AppEvent::StopCommitAnimation);
             }
+        } else if !saw_any && self.commit_animation_active {
+            self.commit_animation_active = false;
+            self.app_event_tx.send(AppEvent::StopCommitAnimation);
         }
     }
 
@@ -1007,6 +1087,26 @@ impl ChatWidget {
             && controller.push(&delta)
         {
             self.app_event_tx.send(AppEvent::StartCommitAnimation);
+            self.commit_animation_active = true;
+        }
+        self.request_redraw();
+    }
+
+    #[inline]
+    fn handle_reasoning_streaming_delta(&mut self, delta: &str) {
+        self.flush_active_cell();
+
+        if self.reasoning_stream_controller.is_none() {
+            self.reasoning_stream_controller = Some(ReasoningStreamController::new(
+                self.last_rendered_width.get().map(|w| w.saturating_sub(2)),
+            ));
+        }
+
+        if let Some(controller) = self.reasoning_stream_controller.as_mut()
+            && controller.push(delta)
+        {
+            self.app_event_tx.send(AppEvent::StartCommitAnimation);
+            self.commit_animation_active = true;
         }
         self.request_redraw();
     }
@@ -1294,6 +1394,7 @@ impl ChatWidget {
             rate_limit_switch_prompt: RateLimitSwitchPromptState::default(),
             rate_limit_poller: None,
             stream_controller: None,
+            reasoning_stream_controller: None,
             running_commands: HashMap::new(),
             suppressed_exec_calls: HashSet::new(),
             last_unified_wait: None,
@@ -1302,6 +1403,7 @@ impl ChatWidget {
             interrupts: InterruptManager::new(),
             reasoning_buffer: String::new(),
             full_reasoning_buffer: String::new(),
+            reasoning_final_emitted: false,
             current_status_header: String::from("Working"),
             retry_status_header: None,
             conversation_id: None,
@@ -1312,6 +1414,7 @@ impl ChatWidget {
             is_review_mode: false,
             pre_review_token_info: None,
             needs_final_message_separator: false,
+            commit_animation_active: false,
             last_rendered_width: std::cell::Cell::new(None),
             feedback,
             current_rollout_path: None,
@@ -1377,6 +1480,7 @@ impl ChatWidget {
             rate_limit_switch_prompt: RateLimitSwitchPromptState::default(),
             rate_limit_poller: None,
             stream_controller: None,
+            reasoning_stream_controller: None,
             running_commands: HashMap::new(),
             suppressed_exec_calls: HashSet::new(),
             last_unified_wait: None,
@@ -1385,6 +1489,7 @@ impl ChatWidget {
             interrupts: InterruptManager::new(),
             reasoning_buffer: String::new(),
             full_reasoning_buffer: String::new(),
+            reasoning_final_emitted: false,
             current_status_header: String::from("Working"),
             retry_status_header: None,
             conversation_id: None,
@@ -1395,6 +1500,7 @@ impl ChatWidget {
             is_review_mode: false,
             pre_review_token_info: None,
             needs_final_message_separator: false,
+            commit_animation_active: false,
             last_rendered_width: std::cell::Cell::new(None),
             feedback,
             current_rollout_path: None,

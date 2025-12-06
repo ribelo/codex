@@ -209,7 +209,7 @@ async fn responses_stream_aggregates_output_text_deltas() -> Result<()> {
         ResponseEvent::OutputItemDone(ResponseItem::Message { content, .. }) => {
             let mut aggregated = String::new();
             for item in content {
-                if let ContentItem::OutputText { text } = item {
+                if let ContentItem::OutputText { text, .. } = item {
                     aggregated.push_str(text);
                 }
             }
