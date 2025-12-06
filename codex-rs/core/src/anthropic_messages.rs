@@ -8,6 +8,7 @@ use codex_otel::otel_event_manager::OtelEventManager;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::FunctionCallOutputContentItem;
 use codex_protocol::models::FunctionCallOutputPayload;
+use codex_protocol::models::ReasoningItemReasoningSummary;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ReasoningEffort;
 use eventsource_stream::Eventsource;
@@ -413,7 +414,7 @@ fn map_message_content(content: &[ContentItem]) -> Vec<Value> {
     let mut blocks = Vec::new();
     for item in content {
         match item {
-            ContentItem::InputText { text } | ContentItem::OutputText { text } => {
+            ContentItem::InputText { text } | ContentItem::OutputText { text, .. } => {
                 if !text.is_empty() {
                     blocks.push(json!({
                         "type": "text",
@@ -439,7 +440,7 @@ fn flatten_content(content: &[ContentItem]) -> String {
     let mut acc = String::new();
     for entry in content {
         match entry {
-            ContentItem::InputText { text } | ContentItem::OutputText { text } => {
+            ContentItem::InputText { text } | ContentItem::OutputText { text, .. } => {
                 if !acc.is_empty() {
                     acc.push_str("\n\n");
                 }
@@ -545,13 +546,14 @@ fn effective_context_window(config: &Config, model_family: &ModelFamily) -> Opti
         .map(|window| window.saturating_mul(model_family.effective_context_window_percent) / 100)
 }
 
-async fn process_anthropic_sse<S>(
+async fn process_anthropic_sse<S, E>(
     stream: S,
     tx_event: mpsc::Sender<Result<ResponseEvent>>,
     idle_timeout: Duration,
     otel_event_manager: OtelEventManager,
 ) where
-    S: futures::Stream<Item = std::result::Result<Bytes, reqwest::Error>> + Unpin + Eventsource,
+    S: futures::Stream<Item = std::result::Result<Bytes, E>> + Unpin + Eventsource,
+    E: std::fmt::Display,
 {
     let mut stream = stream.eventsource();
     let mut response_id: Option<String> = None;
@@ -714,9 +716,11 @@ async fn handle_block_start(
 
     match block_type {
         "text" => {
+            trace!("handle_block_start: text block at index {}", index);
             ensure_assistant_item(assistant_state);
         }
         "thinking" | "redacted_thinking" => {
+            trace!("handle_block_start: THINKING block at index {}", index);
             let state = ThinkingState {
                 item: ResponseItem::Reasoning {
                     id: String::new(),
@@ -726,6 +730,7 @@ async fn handle_block_start(
                 },
                 added: false,
                 next_index: 0,
+                buffer: String::new(),
             };
             blocks.insert(index, BlockState::Thinking(state));
         }
@@ -767,7 +772,12 @@ async fn handle_block_start(
             state.added = true;
             blocks.insert(index, BlockState::ToolUse(state));
         }
-        _ => {}
+        _ => {
+            trace!(
+                "handle_block_start: unknown block type '{}' at index {}",
+                block_type, index
+            );
+        }
     }
 }
 
@@ -809,8 +819,20 @@ async fn append_thinking_delta(
         .or_else(|| delta.get("text"))
         .and_then(|v| v.as_str())
     else {
+        trace!(
+            "append_thinking_delta: no thinking/text found in delta: {:?}",
+            delta
+        );
         return;
     };
+
+    trace!(
+        "append_thinking_delta: received thinking text of {} chars",
+        text.len()
+    );
+
+    // Accumulate thinking text into buffer for final item
+    state.buffer.push_str(text);
 
     if !state.added {
         state.added = true;
@@ -827,9 +849,9 @@ async fn append_thinking_delta(
     state.next_index += 1;
 
     let _ = tx_event
-        .send(Ok(ResponseEvent::ReasoningContentDelta {
+        .send(Ok(ResponseEvent::ReasoningSummaryDelta {
             delta: text.to_string(),
-            content_index,
+            summary_index: content_index,
         }))
         .await;
 }
@@ -844,7 +866,17 @@ async fn handle_block_stop(
     };
     if let Some(state) = blocks.remove(&index) {
         match state {
-            BlockState::Thinking(state) => {
+            BlockState::Thinking(mut state) => {
+                // Populate the item's summary with accumulated thinking text so it
+                // is always surfaced to UIs, regardless of the raw‑reasoning flag.
+                if let ResponseItem::Reasoning {
+                    ref mut summary, ..
+                } = state.item
+                    && !state.buffer.is_empty()
+                {
+                    *summary =
+                        vec![ReasoningItemReasoningSummary::SummaryText { text: state.buffer }];
+                }
                 let _ = tx_event
                     .send(Ok(ResponseEvent::OutputItemDone(state.item)))
                     .await;
@@ -908,11 +940,12 @@ async fn append_text_delta(
         state.buffer.push_str(&addition);
 
         if let ResponseItem::Message { content, .. } = &mut state.item {
-            if let Some(ContentItem::OutputText { text }) = content.last_mut() {
+            if let Some(ContentItem::OutputText { text, .. }) = content.last_mut() {
                 text.push_str(&addition);
             } else {
                 content.push(ContentItem::OutputText {
                     text: addition.clone(),
+                    signature: None,
                 });
             }
         }
@@ -995,6 +1028,7 @@ struct ThinkingState {
     item: ResponseItem,
     added: bool,
     next_index: i64,
+    buffer: String,
 }
 
 struct ToolUseState {
@@ -1032,6 +1066,7 @@ fn resolve_thinking_budget(effort: Option<ReasoningEffort>, max_tokens: i64) -> 
 mod tests {
     use super::*;
     use codex_protocol::models::ContentItem;
+    use codex_protocol::models::ReasoningItemReasoningSummary;
     use codex_protocol::models::ResponseItem;
     use tokio::sync::mpsc;
     use tokio_util::io::ReaderStream;
@@ -1091,7 +1126,7 @@ data: {\"type\":\"message_stop\"}
 ";
 
         let (tx, mut rx) = mpsc::channel::<Result<ResponseEvent>>(16);
-        let stream = ReaderStream::new(std::io::Cursor::new(body)).map_err(CodexErr::Io);
+        let stream = ReaderStream::new(std::io::Cursor::new(body));
         tokio::spawn(process_anthropic_sse(
             stream,
             tx,
@@ -1143,7 +1178,7 @@ data: {\"type\":\"message_stop\"}
 ";
 
         let (tx, mut rx) = mpsc::channel::<Result<ResponseEvent>>(16);
-        let stream = ReaderStream::new(std::io::Cursor::new(body)).map_err(CodexErr::Io);
+        let stream = ReaderStream::new(std::io::Cursor::new(body));
         tokio::spawn(process_anthropic_sse(
             stream,
             tx,
@@ -1158,35 +1193,34 @@ data: {\"type\":\"message_stop\"}
 
         assert!(matches!(events[0], ResponseEvent::Created));
         match &events[1] {
-            ResponseEvent::OutputItemAdded(ResponseItem::Reasoning {
-                content: Some(content),
-                ..
-            }) => {
+            ResponseEvent::OutputItemAdded(ResponseItem::Reasoning { summary, .. }) => {
                 assert!(
-                    content.is_empty(),
-                    "OutputItemAdded should have empty content"
+                    summary.is_empty(),
+                    "OutputItemAdded should have empty summary"
                 );
             }
             other => panic!("unexpected event: {other:?}"),
         }
         assert!(matches!(
             events[2],
-            ResponseEvent::ReasoningContentDelta { ref delta, content_index: 0 } if delta == "Chunk 1"
+            ResponseEvent::ReasoningSummaryDelta { ref delta, summary_index: 0 } if delta == "Chunk 1"
         ));
         assert!(matches!(
             events[3],
-            ResponseEvent::ReasoningContentDelta { ref delta, content_index: 1 } if delta == " Chunk 2"
+            ResponseEvent::ReasoningSummaryDelta { ref delta, summary_index: 1 } if delta == " Chunk 2"
         ));
 
         match &events[4] {
-            ResponseEvent::OutputItemDone(ResponseItem::Reasoning {
-                content: Some(content),
-                ..
-            }) => {
-                assert!(
-                    content.is_empty(),
-                    "OutputItemDone should have empty content"
-                );
+            ResponseEvent::OutputItemDone(ResponseItem::Reasoning { summary, .. }) => {
+                assert_eq!(summary.len(), 1, "Expected exactly one summary entry");
+                match &summary[0] {
+                    ReasoningItemReasoningSummary::SummaryText { text } => {
+                        assert_eq!(
+                            text, "Chunk 1 Chunk 2",
+                            "OutputItemDone should have accumulated thinking summary"
+                        );
+                    }
+                }
             }
             other => panic!("unexpected event: {other:?}"),
         }
@@ -1231,11 +1265,12 @@ data: {\"type\":\"message_stop\"}
                 ResponseItem::Message {
                     id: None,
                     role: "assistant".to_string(),
-                    content: vec![ContentItem::OutputText {
-                        text: "Hi".to_string(),
-                    }],
-                },
-                ResponseItem::FunctionCall {
+                content: vec![ContentItem::OutputText {
+                    text: "Hi".to_string(),
+                    signature: None,
+                }],
+            },
+            ResponseItem::FunctionCall {
                     id: None,
                     name: "shell".to_string(),
                     arguments: "{}".to_string(),

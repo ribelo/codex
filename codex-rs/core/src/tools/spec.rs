@@ -1116,6 +1116,7 @@ pub(crate) fn build_specs(
 mod tests {
     use crate::client_common::tools::FreeformTool;
     use crate::openai_models::model_family::find_family_for_model;
+    use crate::tools::handlers::create_task_tool;
     use crate::tools::registry::ConfiguredToolSpec;
     use mcp_types::ToolInputSchema;
     use pretty_assertions::assert_eq;
@@ -1247,6 +1248,7 @@ mod tests {
             create_list_mcp_resource_templates_tool(),
             create_read_mcp_resource_tool(),
             PLAN_TOOL.clone(),
+            create_task_tool(std::path::Path::new(".")),
             create_apply_patch_freeform_tool(),
             ToolSpec::WebSearch {},
             create_view_image_tool(),
@@ -1274,6 +1276,7 @@ mod tests {
         let config = ToolsConfig::new(&ToolsConfigParams {
             model_family: &model_family,
             features,
+            codex_home: std::path::Path::new("."),
         });
         let (tools, _) = build_specs(&config, Some(HashMap::new())).build();
         let tool_names = tools.iter().map(|t| t.spec.name()).collect::<Vec<_>>();
@@ -1292,6 +1295,7 @@ mod tests {
                 "read_mcp_resource",
                 "update_plan",
                 "apply_patch",
+                "task",
                 "view_image",
             ],
         );
@@ -1309,6 +1313,7 @@ mod tests {
                 "read_mcp_resource",
                 "update_plan",
                 "apply_patch",
+                "task",
                 "view_image",
             ],
         );
@@ -1330,6 +1335,7 @@ mod tests {
                 "update_plan",
                 "apply_patch",
                 "web_search",
+                "task",
                 "view_image",
             ],
         );
@@ -1351,6 +1357,7 @@ mod tests {
                 "update_plan",
                 "apply_patch",
                 "web_search",
+                "task",
                 "view_image",
             ],
         );
@@ -1367,6 +1374,7 @@ mod tests {
                 "list_mcp_resource_templates",
                 "read_mcp_resource",
                 "update_plan",
+                "task",
                 "view_image",
             ],
         );
@@ -1384,6 +1392,7 @@ mod tests {
                 "read_mcp_resource",
                 "update_plan",
                 "apply_patch",
+                "task",
                 "view_image",
             ],
         );
@@ -1400,6 +1409,7 @@ mod tests {
                 "list_mcp_resource_templates",
                 "read_mcp_resource",
                 "update_plan",
+                "task",
                 "view_image",
             ],
         );
@@ -1417,6 +1427,7 @@ mod tests {
                 "read_mcp_resource",
                 "update_plan",
                 "apply_patch",
+                "task",
                 "view_image",
             ],
         );
@@ -1435,6 +1446,7 @@ mod tests {
                 "read_mcp_resource",
                 "update_plan",
                 "apply_patch",
+                "task",
                 "view_image",
             ],
         );
@@ -1455,6 +1467,7 @@ mod tests {
                 "read_mcp_resource",
                 "update_plan",
                 "web_search",
+                "task",
                 "view_image",
             ],
         );

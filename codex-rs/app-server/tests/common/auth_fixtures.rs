@@ -128,6 +128,7 @@ pub fn write_chatgpt_auth(
     let auth = AuthDotJson {
         openai_api_key: None,
         tokens: Some(tokens),
+        gemini_accounts: Vec::new(),
         last_refresh,
     };
 

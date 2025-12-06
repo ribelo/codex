@@ -234,6 +234,7 @@ pub(crate) async fn exit_review_mode(
                 role: "assistant".to_string(),
                 content: vec![ContentItem::OutputText {
                     text: assistant_message,
+                    signature: None,
                 }],
             },
         )

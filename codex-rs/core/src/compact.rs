@@ -188,7 +188,7 @@ pub fn content_items_to_text(content: &[ContentItem]) -> Option<String> {
     let mut pieces = Vec::new();
     for item in content {
         match item {
-            ContentItem::InputText { text } | ContentItem::OutputText { text } => {
+            ContentItem::InputText { text } | ContentItem::OutputText { text, .. } => {
                 if !text.is_empty() {
                     pieces.push(text.as_str());
                 }
@@ -334,9 +334,11 @@ mod tests {
             },
             ContentItem::OutputText {
                 text: String::new(),
+                signature: None,
             },
             ContentItem::OutputText {
                 text: "world".to_string(),
+                signature: None,
             },
         ];
 
@@ -364,6 +366,7 @@ mod tests {
                 role: "assistant".to_string(),
                 content: vec![ContentItem::OutputText {
                     text: "ignored".to_string(),
+                    signature: None,
                 }],
             },
             ResponseItem::Message {

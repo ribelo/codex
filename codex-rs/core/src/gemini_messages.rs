@@ -193,7 +193,7 @@ struct GeminiPartWrapper {
     function_call: Option<GeminiFunctionCallResponse>,
     #[serde(rename = "thoughtSignature")]
     thought_signature: Option<String>,
-    thought: Option<bool>,
+    thought: Option<Value>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -218,7 +218,7 @@ struct GeminiUsageMetadata {
 const GEMINI_AUTH_HINT: &str =
     "Gemini requests require logging in with `codex login --gemini` or configuring GEMINI_API_KEY";
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 enum GeminiCredential {
     ApiKey(String),
     ProviderBearer(String),
@@ -537,28 +537,47 @@ fn effective_context_window(config: &Config, model_family: &ModelFamily) -> Opti
         .map(|window| window.saturating_mul(model_family.effective_context_window_percent) / 100)
 }
 
+async fn resolve_gemini_credential_for_account(
+    auth: &CodexAuth,
+    _provider: &GeminiProvider,
+    account_index: usize,
+) -> Result<GeminiCredential> {
+    let (tokens, project_id) = auth
+        .gemini_oauth_context_for_account(account_index)
+        .await
+        .map_err(|err| CodexErr::UnsupportedOperation(format!("{err}")))?;
+    Ok(GeminiCredential::OAuth {
+        access_token: tokens.access_token,
+        project_id,
+    })
+}
+
 async fn resolve_gemini_credential(
-    _auth: Option<&CodexAuth>,
+    auth: Option<&CodexAuth>,
     provider: &GeminiProvider,
 ) -> Result<GeminiCredential> {
     if let Some(token) = &provider.experimental_bearer_token {
         return Ok(GeminiCredential::ProviderBearer(token.clone()));
     }
 
-    match provider.api_key() {
-        Ok(Some(key)) => return Ok(GeminiCredential::ApiKey(key)),
-        Ok(None) => {}
-        Err(err) => return Err(err),
-    }
+    let auth_with_gemini =
+        auth.and_then(|auth_ref| (auth_ref.gemini_account_count() > 0).then_some(auth_ref));
 
-    if let Ok(key) = std::env::var("GEMINI_API_KEY") {
-        let trimmed = key.trim();
-        if !trimmed.is_empty() {
-            return Ok(GeminiCredential::ApiKey(trimmed.to_string()));
+    match provider.api_key() {
+        Ok(Some(key)) => Ok(GeminiCredential::ApiKey(key)),
+        Ok(None) => {
+            if let Some(auth_ref) = auth_with_gemini {
+                return resolve_gemini_credential_for_account(auth_ref, provider, 0).await;
+            }
+            Err(CodexErr::UnsupportedOperation(GEMINI_AUTH_HINT.to_string()))
+        }
+        Err(err) => {
+            if let Some(auth_ref) = auth_with_gemini {
+                return resolve_gemini_credential_for_account(auth_ref, provider, 0).await;
+            }
+            Err(err)
         }
     }
-
-    Err(CodexErr::UnsupportedOperation(GEMINI_AUTH_HINT.to_string()))
 }
 
 fn build_gemini_request_config(
@@ -908,7 +927,7 @@ fn map_message_content(content: &[ContentItem]) -> Vec<GeminiPart> {
     let mut parts = Vec::new();
     for item in content {
         match item {
-            ContentItem::InputText { text } | ContentItem::OutputText { text } => {
+            ContentItem::InputText { text } | ContentItem::OutputText { text, .. } => {
                 if !text.is_empty() {
                     parts.push(GeminiPart {
                         text: Some(text.clone()),
@@ -933,7 +952,7 @@ fn flatten_content(content: &[ContentItem]) -> String {
     let mut acc = String::new();
     for entry in content {
         match entry {
-            ContentItem::InputText { text } | ContentItem::OutputText { text } => {
+            ContentItem::InputText { text } | ContentItem::OutputText { text, .. } => {
                 if !acc.is_empty() {
                     acc.push_str("\n\n");
                 }
@@ -1228,7 +1247,13 @@ async fn process_gemini_sse<S>(
                     content
                         .parts
                         .as_ref()
-                        .is_some_and(|parts| parts.iter().any(|part| part.thought.unwrap_or(false)))
+                        .is_some_and(|parts| {
+                            parts.iter().any(|part| match &part.thought {
+                                Some(Value::Bool(b)) => *b,
+                                Some(_) => true,
+                                None => false,
+                            })
+                        })
                 })
             })
         });
@@ -1265,8 +1290,14 @@ async fn process_gemini_sse<S>(
                     && let Some(parts) = content.parts
                 {
                     for part in parts {
+                        let is_thought = match &part.thought {
+                            Some(Value::Bool(b)) => *b,
+                            Some(_) => true,
+                            None => false,
+                        };
+
                         if let Some(ref text) = part.text {
-                            if part.thought.unwrap_or(false) {
+                            if is_thought {
                                 if show_raw_reasoning {
                                     append_reasoning_delta(
                                         &tx_event,
@@ -1332,7 +1363,7 @@ async fn append_text_delta(
     assistant_state: &mut Option<AssistantState>,
     emitted_content: &mut bool,
     text: &str,
-    _signature: Option<String>,
+    thought_signature: Option<String>,
 ) {
     ensure_assistant_item(assistant_state);
     if let Some(state) = assistant_state.as_mut() {
@@ -1349,11 +1380,12 @@ async fn append_text_delta(
         }
 
         if let ResponseItem::Message { content, .. } = &mut state.item {
-            if let Some(ContentItem::OutputText { text: existing }) = content.last_mut() {
+            if let Some(ContentItem::OutputText { text: existing, .. }) = content.last_mut() {
                 existing.push_str(text);
             } else {
                 content.push(ContentItem::OutputText {
                     text: text.to_string(),
+                    signature: thought_signature,
                 });
             }
         }
@@ -1533,5 +1565,110 @@ fn collect_reasoning_text(node: &Value, acc: &mut Vec<String>) {
             }
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::auth::AuthDotJson;
+    use crate::token_data::GeminiTokenData;
+    use codex_app_server_protocol::AuthMode;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn test_gemini_part_wrapper_deserialization() {
+        // Case 1: thought is boolean true
+        let json = json!({
+            "text": "thinking...",
+            "thought": true
+        });
+        let part: GeminiPartWrapper = serde_json::from_value(json).unwrap();
+        assert_eq!(part.thought, Some(json!(true)));
+        assert_eq!(part.text, Some("thinking...".to_string()));
+
+        // Case 2: thought is boolean false
+        let json = json!({
+            "text": "answer",
+            "thought": false
+        });
+        let part: GeminiPartWrapper = serde_json::from_value(json).unwrap();
+        assert_eq!(part.thought, Some(json!(false)));
+
+        // Case 3: thought is null
+        let json = json!({
+            "text": "answer",
+            "thought": null
+        });
+        let part: GeminiPartWrapper = serde_json::from_value(json).unwrap();
+        assert_eq!(part.thought, None);
+
+        // Case 4: thought is string (hypothetical failure)
+        let json = json!({
+            "text": "answer",
+            "thought": "some thought"
+        });
+        let part: GeminiPartWrapper = serde_json::from_value(json).unwrap();
+        assert_eq!(part.thought, Some(json!("some thought")));
+    }
+
+    fn auth_with_gemini_tokens() -> CodexAuth {
+        let mut auth = CodexAuth::create_dummy_chatgpt_auth_for_testing();
+        auth.mode = AuthMode::Gemini;
+        let mut guard = auth.auth_dot_json.lock().unwrap();
+        *guard = Some(AuthDotJson {
+            openai_api_key: None,
+            tokens: None,
+            gemini_accounts: vec![GeminiTokenData {
+                access_token: "access-token".to_string(),
+                refresh_token: "refresh-token".to_string(),
+                id_token: None,
+                project_id: Some("project-1".to_string()),
+                managed_project_id: None,
+                email: None,
+                expires_at: None,
+            }],
+            last_refresh: None,
+        });
+        drop(guard);
+        auth
+    }
+
+    fn with_env_var(name: &str, value: &str) -> Option<String> {
+        let previous = std::env::var(name).ok();
+        unsafe {
+            std::env::set_var(name, value);
+        }
+        previous
+    }
+
+    #[tokio::test]
+    async fn prefers_provider_api_key_when_gemini_tokens_exist() {
+        let previous = with_env_var("GEMINI_API_KEY", "api-key");
+        let provider = GeminiProvider {
+            api_key_env_var: Some("GEMINI_API_KEY".to_string()),
+            ..Default::default()
+        };
+
+        let auth = auth_with_gemini_tokens();
+
+        let credential = resolve_gemini_credential(Some(&auth), &provider)
+            .await
+            .expect("resolve credential");
+
+        match credential {
+            GeminiCredential::ApiKey(key) => assert_eq!(key, "api-key"),
+            other => panic!("expected API key credential, got {other:?}"),
+        }
+
+        if let Some(prev) = previous {
+            unsafe {
+                std::env::set_var("GEMINI_API_KEY", prev);
+            }
+        } else {
+            unsafe {
+                std::env::remove_var("GEMINI_API_KEY");
+            }
+        }
     }
 }

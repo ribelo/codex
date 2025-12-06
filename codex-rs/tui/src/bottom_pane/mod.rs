@@ -372,6 +372,24 @@ impl BottomPane {
         self.request_redraw();
     }
 
+    /// Set the model name shown in the footer.
+    pub(crate) fn set_model(&mut self, model: Option<String>) {
+        self.composer.set_model(model);
+        self.request_redraw();
+    }
+
+    /// Set the reasoning effort shown in the footer.
+    pub(crate) fn set_reasoning_effort(&mut self, effort: Option<String>) {
+        self.composer.set_reasoning_effort(effort);
+        self.request_redraw();
+    }
+
+    /// Set the sandbox policy shown in the footer.
+    pub(crate) fn set_sandbox_policy(&mut self, policy: codex_core::protocol::SandboxPolicy) {
+        self.composer.set_sandbox_policy(policy);
+        self.request_redraw();
+    }
+
     /// Show a generic list selection view with the provided items.
     pub(crate) fn show_selection_view(&mut self, params: list_selection_view::SelectionViewParams) {
         let view = list_selection_view::ListSelectionView::new(params, self.app_event_tx.clone());

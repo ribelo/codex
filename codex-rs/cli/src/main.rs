@@ -14,6 +14,7 @@ use codex_cli::login::run_login_status;
 use codex_cli::login::run_login_with_api_key;
 use codex_cli::login::run_login_with_chatgpt;
 use codex_cli::login::run_login_with_device_code;
+use codex_cli::login::run_login_with_gemini;
 use codex_cli::login::run_logout;
 use codex_cloud_tasks::Cli as CloudTasksCli;
 use codex_common::CliConfigOverrides;
@@ -203,6 +204,9 @@ struct LoginCommand {
         hide = true
     )]
     api_key: Option<String>,
+
+    #[arg(long = "gemini", help = "Login with Google (Gemini)")]
+    gemini: bool,
 
     #[arg(long = "device-auth")]
     use_device_code: bool,
@@ -512,7 +516,9 @@ async fn cli_main(codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()
                     run_login_status(login_cli.config_overrides).await;
                 }
                 None => {
-                    if login_cli.use_device_code {
+                    if login_cli.gemini {
+                        run_login_with_gemini(login_cli.config_overrides).await;
+                    } else if login_cli.use_device_code {
                         run_login_with_device_code(
                             login_cli.config_overrides,
                             login_cli.issuer_base_url,

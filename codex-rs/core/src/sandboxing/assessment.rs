@@ -246,7 +246,7 @@ fn response_item_text(item: &ResponseItem) -> Option<String> {
             let mut buffers: Vec<&str> = Vec::new();
             for segment in content {
                 match segment {
-                    ContentItem::InputText { text } | ContentItem::OutputText { text } => {
+                    ContentItem::InputText { text } | ContentItem::OutputText { text, .. } => {
                         if !text.is_empty() {
                             buffers.push(text);
                         }

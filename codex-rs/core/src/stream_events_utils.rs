@@ -172,7 +172,7 @@ pub(crate) fn last_assistant_message_from_item(item: &ResponseItem) -> Option<St
         && role == "assistant"
     {
         return content.iter().rev().find_map(|ci| match ci {
-            codex_protocol::models::ContentItem::OutputText { text } => Some(text.clone()),
+            codex_protocol::models::ContentItem::OutputText { text, .. } => Some(text.clone()),
             _ => None,
         });
     }

@@ -2454,7 +2454,7 @@ pub(super) fn get_last_assistant_message_from_turn(responses: &[ResponseItem]) -
         if let ResponseItem::Message { role, content, .. } = item {
             if role == "assistant" {
                 content.iter().rev().find_map(|ci| {
-                    if let ContentItem::OutputText { text } = ci {
+                    if let ContentItem::OutputText { text, .. } = ci {
                         Some(text.clone())
                     } else {
                         None
@@ -3228,6 +3228,7 @@ mod tests {
             role: "assistant".to_string(),
             content: vec![ContentItem::OutputText {
                 text: "assistant reply one".to_string(),
+                signature: None,
             }],
         };
         live_history.record_items(std::iter::once(&assistant1), turn_context.truncation_policy);
@@ -3262,6 +3263,7 @@ mod tests {
             role: "assistant".to_string(),
             content: vec![ContentItem::OutputText {
                 text: "assistant reply two".to_string(),
+                signature: None,
             }],
         };
         live_history.record_items(std::iter::once(&assistant2), turn_context.truncation_policy);
@@ -3296,6 +3298,7 @@ mod tests {
             role: "assistant".to_string(),
             content: vec![ContentItem::OutputText {
                 text: "assistant reply three".to_string(),
+                signature: None,
             }],
         };
         live_history.record_items(std::iter::once(&assistant3), turn_context.truncation_policy);

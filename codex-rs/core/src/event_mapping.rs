@@ -42,7 +42,7 @@ fn parse_user_message(message: &[ContentItem]) -> Option<UserMessageItem> {
                     image_url: image_url.clone(),
                 });
             }
-            ContentItem::OutputText { text } => {
+            ContentItem::OutputText { text, .. } => {
                 if is_session_prefix(text) {
                     return None;
                 }
@@ -58,7 +58,7 @@ fn parse_agent_message(id: Option<&String>, message: &[ContentItem]) -> AgentMes
     let mut content: Vec<AgentMessageContent> = Vec::new();
     for content_item in message.iter() {
         match content_item {
-            ContentItem::OutputText { text } => {
+            ContentItem::OutputText { text, .. } => {
                 content.push(AgentMessageContent::Text { text: text.clone() });
             }
             _ => {
@@ -220,6 +220,7 @@ mod tests {
             role: "assistant".to_string(),
             content: vec![ContentItem::OutputText {
                 text: "Hello from Codex".to_string(),
+                signature: None,
             }],
         };
 

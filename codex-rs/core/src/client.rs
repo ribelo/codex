@@ -37,15 +37,18 @@ use tokio::sync::mpsc;
 use tracing::warn;
 
 use crate::AuthManager;
+use crate::anthropic_messages::stream_anthropic_messages;
 use crate::auth::RefreshTokenError;
 use crate::client_common::Prompt;
 use crate::client_common::ResponseEvent;
 use crate::client_common::ResponseStream;
 use crate::config::Config;
 use crate::default_client::build_reqwest_client;
+use crate::default_client::create_client;
 use crate::error::CodexErr;
 use crate::error::Result;
 use crate::flags::CODEX_RS_SSE_FIXTURE;
+use crate::gemini_messages::stream_gemini_messages;
 use crate::model_provider_info::ModelProviderInfo;
 use crate::model_provider_info::WireApi;
 use crate::openai_model_info::get_model_info;
@@ -124,6 +127,36 @@ impl ModelClient {
     pub async fn stream(&self, prompt: &Prompt) -> Result<ResponseStream> {
         match self.provider.wire_api {
             WireApi::Responses => self.stream_responses_api(prompt).await,
+            WireApi::Anthropic => {
+                let client = create_client();
+                let model_family = self.get_model_family();
+                let provider = self.provider.to_anthropic_provider()?;
+                stream_anthropic_messages(
+                    prompt,
+                    &self.config,
+                    &model_family,
+                    &client,
+                    &provider,
+                    &self.otel_event_manager,
+                )
+                .await
+            }
+            WireApi::Gemini => {
+                let client = create_client();
+                let auth = self.auth_manager.as_ref().and_then(|m| m.auth());
+                let model_family = self.get_model_family();
+                let provider = self.provider.to_gemini_provider()?;
+                stream_gemini_messages(
+                    prompt,
+                    &self.config,
+                    &model_family,
+                    &client,
+                    &provider,
+                    &self.otel_event_manager,
+                    auth,
+                )
+                .await
+            }
             WireApi::Chat => {
                 let api_stream = self.stream_chat_completions(prompt).await?;
 

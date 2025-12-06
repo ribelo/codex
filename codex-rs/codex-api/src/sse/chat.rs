@@ -257,7 +257,10 @@ async fn append_assistant_text(
     }
 
     if let Some(ResponseItem::Message { content, .. }) = assistant_item {
-        content.push(ContentItem::OutputText { text: text.clone() });
+        content.push(ContentItem::OutputText {
+            text: text.clone(),
+            signature: None,
+        });
         let _ = tx_event
             .send(Ok(ResponseEvent::OutputTextDelta(text.clone())))
             .await;

@@ -418,7 +418,7 @@ fn now_for_retry() -> DateTime<Utc> {
 #[derive(Debug)]
 pub struct EnvVarError {
     /// Name of the environment variable that is missing.
-    pub var: String,
+    pub env_var: String,
 
     /// Optional instructions to help the user get a valid value for the
     /// variable and set it.
@@ -427,7 +427,7 @@ pub struct EnvVarError {
 
 impl std::fmt::Display for EnvVarError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Missing environment variable: `{}`.", self.var)?;
+        write!(f, "Missing environment variable: `{}`.", self.env_var)?;
         if let Some(instructions) = &self.instructions {
             write!(f, " {instructions}")?;
         }

@@ -41,7 +41,11 @@ pub enum ResponseInputItem {
 pub enum ContentItem {
     InputText { text: String },
     InputImage { image_url: String },
-    OutputText { text: String },
+    OutputText {
+        text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signature: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonSchema, TS)]

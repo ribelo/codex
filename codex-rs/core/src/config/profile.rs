@@ -1,6 +1,7 @@
 use serde::Deserialize;
 use std::path::PathBuf;
 
+use crate::config::types::ReasoningSummaryFormat;
 use crate::protocol::AskForApproval;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::config_types::SandboxMode;
@@ -20,6 +21,9 @@ pub struct ConfigProfile {
     pub model_reasoning_effort: Option<ReasoningEffort>,
     pub model_reasoning_summary: Option<ReasoningSummary>,
     pub model_verbosity: Option<Verbosity>,
+    pub show_raw_agent_reasoning: Option<bool>,
+    pub model_supports_reasoning_summaries: Option<bool>,
+    pub model_reasoning_summary_format: Option<ReasoningSummaryFormat>,
     pub chatgpt_base_url: Option<String>,
     pub experimental_instructions_file: Option<PathBuf>,
     pub experimental_compact_prompt_file: Option<PathBuf>,

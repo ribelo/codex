@@ -383,6 +383,16 @@ impl ChatWidget {
         let initial_messages = event.initial_messages.clone();
         let model_for_header = event.model.clone();
         self.session_header.set_model(&model_for_header);
+        // Set model/effort/policy on bottom_pane for footer display
+        self.bottom_pane.set_model(Some(model_for_header));
+        self.bottom_pane.set_reasoning_effort(
+            self.config
+                .model_reasoning_effort
+                .as_ref()
+                .map(ToString::to_string),
+        );
+        self.bottom_pane
+            .set_sandbox_policy(self.config.sandbox_policy.clone());
         self.add_to_history(history_cell::new_session_info(
             &self.config,
             event,
@@ -2806,7 +2816,8 @@ impl ChatWidget {
         let should_clear_downgrade = !matches!(policy, SandboxPolicy::ReadOnly)
             || codex_core::get_platform_sandbox().is_some();
 
-        self.config.sandbox_policy = policy;
+        self.config.sandbox_policy = policy.clone();
+        self.bottom_pane.set_sandbox_policy(policy);
 
         #[cfg(target_os = "windows")]
         if should_clear_downgrade {
@@ -2840,12 +2851,15 @@ impl ChatWidget {
     /// Set the reasoning effort in the widget's config copy.
     pub(crate) fn set_reasoning_effort(&mut self, effort: Option<ReasoningEffortConfig>) {
         self.config.model_reasoning_effort = effort;
+        self.bottom_pane
+            .set_reasoning_effort(effort.as_ref().map(ToString::to_string));
     }
 
     /// Set the model in the widget's config copy.
     pub(crate) fn set_model(&mut self, model: &str) {
         self.session_header.set_model(model);
         self.config.model = model.to_string();
+        self.bottom_pane.set_model(Some(model.to_string()));
     }
 
     pub(crate) fn add_info_message(&mut self, message: String, hint: Option<String>) {

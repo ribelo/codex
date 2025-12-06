@@ -127,7 +127,7 @@ impl Stream for AggregatedStream {
                                 if this.cumulative.is_empty()
                                     && let ResponseItem::Message { content, .. } = &item
                                     && let Some(text) = content.iter().find_map(|c| match c {
-                                        ContentItem::OutputText { text } => Some(text),
+                                        ContentItem::OutputText { text, .. } => Some(text),
                                         _ => None,
                                     })
                                 {
@@ -178,6 +178,7 @@ impl Stream for AggregatedStream {
                             role: "assistant".to_string(),
                             content: vec![ContentItem::OutputText {
                                 text: std::mem::take(&mut this.cumulative),
+                                signature: None,
                             }],
                         };
                         this.pending

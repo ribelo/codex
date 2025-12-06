@@ -1212,8 +1212,9 @@ impl Config {
             codex_linux_sandbox_exe,
 
             hide_agent_reasoning: cfg.hide_agent_reasoning.unwrap_or(false),
-            show_raw_agent_reasoning: cfg
+            show_raw_agent_reasoning: config_profile
                 .show_raw_agent_reasoning
+                .or(cfg.show_raw_agent_reasoning)
                 .or(show_raw_agent_reasoning)
                 .unwrap_or(false),
             model_reasoning_effort: config_profile
@@ -1223,8 +1224,12 @@ impl Config {
                 .model_reasoning_summary
                 .or(cfg.model_reasoning_summary)
                 .unwrap_or_default(),
-            model_supports_reasoning_summaries: cfg.model_supports_reasoning_summaries,
-            model_reasoning_summary_format: cfg.model_reasoning_summary_format.clone(),
+            model_supports_reasoning_summaries: config_profile
+                .model_supports_reasoning_summaries
+                .or(cfg.model_supports_reasoning_summaries),
+            model_reasoning_summary_format: config_profile
+                .model_reasoning_summary_format
+                .or(cfg.model_reasoning_summary_format),
             model_verbosity: config_profile.model_verbosity.or(cfg.model_verbosity),
             chatgpt_base_url: config_profile
                 .chatgpt_base_url
@@ -2895,6 +2900,7 @@ model_verbosity = "high"
             stream_max_retries: Some(10),
             stream_idle_timeout_ms: Some(300_000),
             requires_openai_auth: false,
+            ..Default::default()
         };
         let model_provider_map = {
             let mut model_provider_map = built_in_model_providers();

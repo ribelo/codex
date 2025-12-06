@@ -1225,6 +1225,7 @@ impl From<CompactedItem> for ResponseItem {
             role: "assistant".to_string(),
             content: vec![ContentItem::OutputText {
                 text: value.message,
+                signature: None,
             }],
         }
     }
