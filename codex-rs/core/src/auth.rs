@@ -26,14 +26,27 @@ use crate::config::Config;
 use crate::default_client::CodexHttpClient;
 use crate::error::RefreshTokenFailedError;
 use crate::error::RefreshTokenFailedReason;
+use crate::gemini::GEMINI_CLIENT_ID;
+use crate::gemini::GEMINI_CLIENT_SECRET;
+use crate::gemini::GEMINI_CODE_ASSIST_CLIENT_METADATA;
+use crate::gemini::GEMINI_CODE_ASSIST_ENDPOINT;
+use crate::gemini::GEMINI_CODE_ASSIST_USER_AGENT;
+use crate::gemini::GEMINI_CODE_ASSIST_X_GOOG_API_CLIENT;
+use crate::gemini::GEMINI_METADATA_IDE_TYPE;
+use crate::gemini::GEMINI_METADATA_PLATFORM;
+use crate::gemini::GEMINI_METADATA_PLUGIN;
+use crate::gemini::GEMINI_TOKEN_URL;
+use crate::token_data::GeminiTokenData;
 use crate::token_data::KnownPlan as InternalKnownPlan;
 use crate::token_data::PlanType as InternalPlanType;
 use crate::token_data::TokenData;
 use crate::token_data::parse_id_token;
 use crate::util::try_parse_error_message;
 use codex_protocol::account::PlanType as AccountPlanType;
+use serde_json::Map;
 use serde_json::Value;
 use thiserror::Error;
+use tokio::time::sleep;
 
 #[derive(Debug, Clone)]
 pub struct CodexAuth {
@@ -61,6 +74,10 @@ const REFRESH_TOKEN_UNKNOWN_MESSAGE: &str =
     "Your access token could not be refreshed. Please log out and sign in again.";
 const REFRESH_TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
 pub const REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR: &str = "CODEX_REFRESH_TOKEN_URL_OVERRIDE";
+const GEMINI_PROJECT_REQUIRED_MESSAGE: &str = "Gemini requires a Google Cloud project. Run `codex login --gemini` and supply a project ID with the Gemini API enabled.";
+const GEMINI_ACCESS_TOKEN_LEEWAY_SECONDS: i64 = 300;
+const GEMINI_ONBOARD_MAX_ATTEMPTS: usize = 10;
+const GEMINI_ONBOARD_DELAY_MILLIS: u64 = 500;
 
 #[derive(Debug, Error)]
 pub enum RefreshTokenError {
@@ -193,6 +210,9 @@ impl CodexAuth {
                 let id_token = self.get_token_data().await?.access_token;
                 Ok(id_token)
             }
+            AuthMode::Gemini => Err(std::io::Error::other(
+                "Gemini tokens cannot be used as ChatGPT access tokens",
+            )),
         }
     }
 
@@ -202,6 +222,36 @@ impl CodexAuth {
 
     pub fn get_account_email(&self) -> Option<String> {
         self.get_current_token_data().and_then(|t| t.id_token.email)
+    }
+
+    pub fn get_gemini_tokens(&self) -> Option<GeminiTokenData> {
+        self.get_all_gemini_tokens().first().cloned()
+    }
+
+    pub fn get_all_gemini_tokens(&self) -> Vec<GeminiTokenData> {
+        self.get_current_auth_json()
+            .map(|auth| auth.gemini_accounts)
+            .unwrap_or_default()
+    }
+
+    pub fn gemini_account_count(&self) -> usize {
+        self.get_all_gemini_tokens().len()
+    }
+
+    pub fn gemini_account_emails(&self) -> Vec<String> {
+        self.get_all_gemini_tokens()
+            .into_iter()
+            .filter_map(|token| token.email)
+            .collect()
+    }
+
+    pub(crate) async fn gemini_oauth_context_for_account(
+        &self,
+        index: usize,
+    ) -> std::io::Result<(GeminiTokenData, String)> {
+        let tokens = self.ensure_valid_gemini_tokens_for(index).await?;
+        let project_id = self.ensure_gemini_project_id_for(index, &tokens).await?;
+        Ok((tokens, project_id))
     }
 
     /// Account-facing plan classification derived from the current token.
@@ -232,8 +282,195 @@ impl CodexAuth {
         self.auth_dot_json.lock().unwrap().clone()
     }
 
+    fn save_auth_snapshot(&self, auth: &AuthDotJson) {
+        if let Ok(mut guard) = self.auth_dot_json.lock() {
+            *guard = Some(auth.clone());
+        }
+    }
+
+    fn persist_auth(&self, auth: &AuthDotJson) -> std::io::Result<()> {
+        self.storage.save(auth)?;
+        self.save_auth_snapshot(auth);
+        Ok(())
+    }
+
     fn get_current_token_data(&self) -> Option<TokenData> {
         self.get_current_auth_json().and_then(|t| t.tokens)
+    }
+
+    async fn ensure_valid_gemini_tokens_for(
+        &self,
+        index: usize,
+    ) -> std::io::Result<GeminiTokenData> {
+        let tokens = self.update_gemini_account(index, |gemini| gemini.clone())?;
+
+        let should_refresh = tokens
+            .expires_at
+            .map(|expires_at| {
+                expires_at
+                    <= Utc::now() + chrono::Duration::seconds(GEMINI_ACCESS_TOKEN_LEEWAY_SECONDS)
+            })
+            .unwrap_or(true);
+
+        if !should_refresh {
+            return Ok(tokens);
+        }
+
+        self.refresh_gemini_access_token_for(index, &tokens.refresh_token)
+            .await
+    }
+
+    async fn ensure_gemini_project_id_for(
+        &self,
+        index: usize,
+        tokens: &GeminiTokenData,
+    ) -> std::io::Result<String> {
+        if let Some(project_id) = tokens
+            .project_id
+            .as_deref()
+            .filter(|value| !value.is_empty())
+        {
+            return Ok(project_id.to_string());
+        }
+        if let Some(managed_project_id) = tokens
+            .managed_project_id
+            .as_deref()
+            .filter(|value| !value.is_empty())
+        {
+            return Ok(managed_project_id.to_string());
+        }
+
+        let access_token = tokens.access_token.clone();
+        let project_hint = tokens.project_id.clone();
+        let load_payload =
+            load_managed_project(&self.client, &access_token, project_hint.as_deref()).await?;
+
+        if let Some(payload) = load_payload {
+            if let Some(managed_id) = payload.cloudaicompanion_project {
+                let managed_clone = managed_id.clone();
+                self.update_gemini_account(index, |gemini| {
+                    gemini.managed_project_id = Some(managed_id);
+                })?;
+                return Ok(managed_clone);
+            }
+
+            let tier_id = select_gemini_tier(&payload)
+                .ok_or_else(|| std::io::Error::other(GEMINI_PROJECT_REQUIRED_MESSAGE))?;
+            if tier_id != "FREE" {
+                return Err(std::io::Error::other(GEMINI_PROJECT_REQUIRED_MESSAGE));
+            }
+
+            if let Some(managed_id) = onboard_managed_project(
+                &self.client,
+                &access_token,
+                &tier_id,
+                project_hint.as_deref(),
+            )
+            .await?
+            {
+                let managed_clone = managed_id.clone();
+                self.update_gemini_account(index, |gemini| {
+                    gemini.managed_project_id = Some(managed_id);
+                })?;
+                return Ok(managed_clone);
+            }
+
+            return Err(std::io::Error::other(GEMINI_PROJECT_REQUIRED_MESSAGE));
+        }
+
+        Err(std::io::Error::other(GEMINI_PROJECT_REQUIRED_MESSAGE))
+    }
+
+    async fn refresh_gemini_access_token_for(
+        &self,
+        index: usize,
+        refresh_token: &str,
+    ) -> std::io::Result<GeminiTokenData> {
+        #[derive(Deserialize)]
+        struct RefreshResponse {
+            access_token: String,
+            expires_in: i64,
+            refresh_token: Option<String>,
+        }
+
+        let body = format!(
+            "grant_type=refresh_token&refresh_token={}&client_id={}&client_secret={}",
+            urlencoding::encode(refresh_token),
+            urlencoding::encode(GEMINI_CLIENT_ID),
+            urlencoding::encode(GEMINI_CLIENT_SECRET)
+        );
+
+        let response = self
+            .client
+            .post(GEMINI_TOKEN_URL)
+            .header(
+                reqwest::header::CONTENT_TYPE,
+                "application/x-www-form-urlencoded",
+            )
+            .body(body)
+            .send()
+            .await
+            .map_err(std::io::Error::other)?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            if error_text.contains("invalid_grant") {
+                return Err(std::io::Error::other(
+                    "Gemini credentials were revoked. Run `codex login --gemini` to reauthenticate.",
+                ));
+            }
+            return Err(std::io::Error::other(format!(
+                "Failed to refresh Gemini access token ({status}): {error_text}"
+            )));
+        }
+
+        let payload: RefreshResponse = response.json().await.map_err(std::io::Error::other)?;
+        let expires_at = Utc::now() + chrono::Duration::seconds(payload.expires_in);
+        let refresh_override = payload.refresh_token.clone();
+        self.update_gemini_account(index, |gemini| {
+            gemini.access_token = payload.access_token.clone();
+            gemini.expires_at = Some(expires_at);
+            if let Some(new_refresh) = refresh_override.clone() {
+                gemini.refresh_token = new_refresh;
+            }
+        })?;
+
+        self.update_gemini_account(index, |gemini| gemini.clone())
+    }
+
+    fn update_gemini_account<F, R>(&self, index: usize, updater: F) -> std::io::Result<R>
+    where
+        F: FnOnce(&mut GeminiTokenData) -> R,
+    {
+        let mut auth_dot_json = self.storage.load()?.ok_or_else(|| {
+            std::io::Error::other("auth.json missing while updating Gemini tokens")
+        })?;
+        if auth_dot_json.gemini_accounts.is_empty() {
+            return Err(std::io::Error::other("Gemini tokens not available"));
+        }
+        if index >= auth_dot_json.gemini_accounts.len() {
+            return Err(std::io::Error::other(format!(
+                "Gemini account index {index} out of range"
+            )));
+        }
+        let result = updater(&mut auth_dot_json.gemini_accounts[index]);
+        self.persist_auth(&auth_dot_json)?;
+        Ok(result)
+    }
+
+    pub fn remove_gemini_account(&self, index: usize) -> std::io::Result<GeminiTokenData> {
+        let mut auth_dot_json = self.storage.load()?.ok_or_else(|| {
+            std::io::Error::other("auth.json missing while removing Gemini account")
+        })?;
+        if index >= auth_dot_json.gemini_accounts.len() {
+            return Err(std::io::Error::other(format!(
+                "Gemini account index {index} out of range"
+            )));
+        }
+        let removed = auth_dot_json.gemini_accounts.remove(index);
+        self.persist_auth(&auth_dot_json)?;
+        Ok(removed)
     }
 
     /// Consider this private to integration tests.
@@ -246,6 +483,7 @@ impl CodexAuth {
                 refresh_token: "test".to_string(),
                 account_id: Some("account_id".to_string()),
             }),
+            gemini_accounts: Vec::new(),
             last_refresh: Some(Utc::now()),
         };
 
@@ -310,6 +548,7 @@ pub fn login_with_api_key(
     let auth_dot_json = AuthDotJson {
         openai_api_key: Some(api_key.to_string()),
         tokens: None,
+        gemini_accounts: Vec::new(),
         last_refresh: None,
     };
     save_auth(codex_home, &auth_dot_json, auth_credentials_store_mode)
@@ -352,6 +591,10 @@ pub async fn enforce_login_restrictions(config: &Config) -> std::io::Result<()> 
         let method_violation = match (required_method, auth.mode) {
             (ForcedLoginMethod::Api, AuthMode::ApiKey) => None,
             (ForcedLoginMethod::Chatgpt, AuthMode::ChatGPT) => None,
+            (ForcedLoginMethod::Api, AuthMode::Gemini)
+            | (ForcedLoginMethod::Chatgpt, AuthMode::Gemini) => Some(
+                "Gemini login is not permitted by the configured forced login method.".to_string(),
+            ),
             (ForcedLoginMethod::Api, AuthMode::ChatGPT) => Some(
                 "API key login is required, but ChatGPT is currently being used. Logging out."
                     .to_string(),
@@ -448,25 +691,222 @@ fn load_auth(
     let AuthDotJson {
         openai_api_key: auth_json_api_key,
         tokens,
+        gemini_accounts,
         last_refresh,
     } = auth_dot_json;
 
-    // Prefer AuthMode.ApiKey if it's set in the auth.json.
+    let snapshot = AuthDotJson {
+        openai_api_key: None,
+        tokens,
+        gemini_accounts,
+        last_refresh,
+    };
+
+    // Prefer API key if present; else prefer ChatGPT tokens; Gemini-only credentials are a fallback.
     if let Some(api_key) = &auth_json_api_key {
-        return Ok(Some(CodexAuth::from_api_key_with_client(api_key, client)));
+        return Ok(Some(CodexAuth {
+            api_key: Some(api_key.to_owned()),
+            mode: AuthMode::ApiKey,
+            storage: storage.clone(),
+            auth_dot_json: Arc::new(Mutex::new(Some(snapshot))),
+            client,
+        }));
+    }
+    if snapshot.tokens.is_some() {
+        return Ok(Some(CodexAuth {
+            api_key: None,
+            mode: AuthMode::ChatGPT,
+            storage: storage.clone(),
+            auth_dot_json: Arc::new(Mutex::new(Some(snapshot))),
+            client,
+        }));
+    }
+    if !snapshot.gemini_accounts.is_empty() {
+        return Ok(Some(CodexAuth {
+            api_key: None,
+            mode: AuthMode::Gemini,
+            storage: storage.clone(),
+            auth_dot_json: Arc::new(Mutex::new(Some(snapshot))),
+            client,
+        }));
     }
 
     Ok(Some(CodexAuth {
         api_key: None,
         mode: AuthMode::ChatGPT,
         storage: storage.clone(),
-        auth_dot_json: Arc::new(Mutex::new(Some(AuthDotJson {
-            openai_api_key: None,
-            tokens,
-            last_refresh,
-        }))),
+        auth_dot_json: Arc::new(Mutex::new(Some(snapshot))),
         client,
     }))
+}
+
+#[derive(Deserialize)]
+struct GeminiTier {
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default, rename = "isDefault")]
+    is_default: Option<bool>,
+}
+
+#[derive(Deserialize)]
+struct LoadCodeAssistPayload {
+    #[serde(default)]
+    tiers: Option<Vec<GeminiTier>>,
+    #[serde(default)]
+    cloudaicompanion_project: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct OnboardUserPayload {
+    #[serde(default)]
+    done: Option<bool>,
+    #[serde(default)]
+    response: Option<OnboardUserResponse>,
+}
+
+#[derive(Deserialize)]
+struct OnboardUserResponse {
+    #[serde(default, rename = "cloudaicompanionProject")]
+    cloudaicompanion_project: Option<OnboardUserProject>,
+}
+
+#[derive(Deserialize)]
+struct OnboardUserProject {
+    #[serde(default)]
+    id: Option<String>,
+}
+
+fn select_gemini_tier(payload: &LoadCodeAssistPayload) -> Option<String> {
+    payload
+        .tiers
+        .as_ref()
+        .and_then(|tiers| tiers.iter().find(|tier| tier.is_default.unwrap_or(false)))
+        .and_then(|tier| tier.id.clone())
+}
+
+fn build_gemini_metadata(project_id: Option<&str>) -> Value {
+    let mut metadata = Map::new();
+    metadata.insert(
+        "ideType".to_string(),
+        Value::String(GEMINI_METADATA_IDE_TYPE.to_string()),
+    );
+    metadata.insert(
+        "platform".to_string(),
+        Value::String(GEMINI_METADATA_PLATFORM.to_string()),
+    );
+    metadata.insert(
+        "pluginType".to_string(),
+        Value::String(GEMINI_METADATA_PLUGIN.to_string()),
+    );
+    if let Some(project) = project_id {
+        metadata.insert(
+            "duetProject".to_string(),
+            Value::String(project.to_string()),
+        );
+    }
+    Value::Object(metadata)
+}
+
+async fn load_managed_project(
+    client: &CodexHttpClient,
+    access_token: &str,
+    project_id: Option<&str>,
+) -> std::io::Result<Option<LoadCodeAssistPayload>> {
+    let mut body = serde_json::Map::new();
+    body.insert("metadata".to_string(), build_gemini_metadata(project_id));
+    if let Some(project) = project_id {
+        body.insert(
+            "cloudaicompanionProject".to_string(),
+            Value::String(project.to_string()),
+        );
+    }
+
+    let response = client
+        .post(format!(
+            "{GEMINI_CODE_ASSIST_ENDPOINT}/v1internal:loadCodeAssist"
+        ))
+        .bearer_auth(access_token)
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .header(reqwest::header::USER_AGENT, GEMINI_CODE_ASSIST_USER_AGENT)
+        .header("X-Goog-Api-Client", GEMINI_CODE_ASSIST_X_GOOG_API_CLIENT)
+        .header("Client-Metadata", GEMINI_CODE_ASSIST_CLIENT_METADATA)
+        .json(&body)
+        .send()
+        .await
+        .map_err(std::io::Error::other)?;
+
+    if !response.status().is_success() {
+        return Ok(None);
+    }
+
+    let payload = response.json().await.map_err(std::io::Error::other)?;
+    Ok(Some(payload))
+}
+
+async fn onboard_managed_project(
+    client: &CodexHttpClient,
+    access_token: &str,
+    tier_id: &str,
+    project_id: Option<&str>,
+) -> std::io::Result<Option<String>> {
+    for _ in 0..GEMINI_ONBOARD_MAX_ATTEMPTS {
+        let mut body = serde_json::Map::new();
+        body.insert("tierId".to_string(), Value::String(tier_id.to_string()));
+        body.insert("metadata".to_string(), build_gemini_metadata(project_id));
+
+        if tier_id != "FREE" {
+            if let Some(project) = project_id {
+                body.insert(
+                    "cloudaicompanionProject".to_string(),
+                    Value::String(project.to_string()),
+                );
+            } else {
+                return Err(std::io::Error::other(GEMINI_PROJECT_REQUIRED_MESSAGE));
+            }
+        } else if let Some(project) = project_id {
+            body.insert(
+                "cloudaicompanionProject".to_string(),
+                Value::String(project.to_string()),
+            );
+        }
+
+        let response = client
+            .post(format!(
+                "{GEMINI_CODE_ASSIST_ENDPOINT}/v1internal:onboardUser"
+            ))
+            .bearer_auth(access_token)
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .header(reqwest::header::USER_AGENT, GEMINI_CODE_ASSIST_USER_AGENT)
+            .header("X-Goog-Api-Client", GEMINI_CODE_ASSIST_X_GOOG_API_CLIENT)
+            .header("Client-Metadata", GEMINI_CODE_ASSIST_CLIENT_METADATA)
+            .json(&body)
+            .send()
+            .await
+            .map_err(std::io::Error::other)?;
+
+        if !response.status().is_success() {
+            return Ok(None);
+        }
+
+        let payload: OnboardUserPayload = response.json().await.map_err(std::io::Error::other)?;
+        if payload.done.unwrap_or(false) {
+            if let Some(id) = payload
+                .response
+                .as_ref()
+                .and_then(|resp| resp.cloudaicompanion_project.as_ref())
+                .and_then(|project| project.id.clone())
+            {
+                return Ok(Some(id));
+            }
+            if let Some(project) = project_id {
+                return Ok(Some(project.to_string()));
+            }
+        }
+
+        sleep(Duration::from_millis(GEMINI_ONBOARD_DELAY_MILLIS)).await;
+    }
+
+    Ok(None)
 }
 
 async fn update_tokens(
@@ -637,6 +1077,7 @@ mod tests {
     use codex_protocol::account::PlanType as AccountPlanType;
 
     use base64::Engine;
+    use chrono::Utc;
     use codex_protocol::config_types::ForcedLoginMethod;
     use pretty_assertions::assert_eq;
     use serde::Serialize;
@@ -759,6 +1200,7 @@ mod tests {
                     refresh_token: "test-refresh-token".to_string(),
                     account_id: None,
                 }),
+                gemini_accounts: Vec::new(),
                 last_refresh: Some(last_refresh),
             },
             auth_dot_json
@@ -785,12 +1227,69 @@ mod tests {
         assert!(auth.get_token_data().await.is_err());
     }
 
+    #[tokio::test]
+    async fn get_token_errors_for_gemini_mode() {
+        let dir = tempdir().unwrap();
+        let auth_dot_json = AuthDotJson {
+            openai_api_key: None,
+            tokens: None,
+            gemini_accounts: vec![GeminiTokenData {
+                access_token: "access-token".to_string(),
+                refresh_token: "refresh-token".to_string(),
+                id_token: None,
+                project_id: Some("project-1".to_string()),
+                managed_project_id: None,
+                email: None,
+                expires_at: None,
+            }],
+            last_refresh: None,
+        };
+        super::save_auth(dir.path(), &auth_dot_json, AuthCredentialsStoreMode::File).unwrap();
+
+        let mut auth = super::load_auth(dir.path(), false, AuthCredentialsStoreMode::File)
+            .unwrap()
+            .unwrap();
+        auth.mode = AuthMode::Gemini;
+
+        assert!(auth.get_token().await.is_err());
+    }
+
+    #[test]
+    fn load_auth_with_api_key_retains_gemini_accounts() {
+        let dir = tempdir().unwrap();
+        let gemini_token = GeminiTokenData {
+            access_token: "access-token".to_string(),
+            refresh_token: "refresh-token".to_string(),
+            id_token: None,
+            project_id: Some("project-1".to_string()),
+            managed_project_id: None,
+            email: Some("user@example.com".to_string()),
+            expires_at: Some(Utc::now()),
+        };
+        let auth_dot_json = AuthDotJson {
+            openai_api_key: Some("sk-test-key".to_string()),
+            tokens: None,
+            gemini_accounts: vec![gemini_token.clone()],
+            last_refresh: Some(Utc::now()),
+        };
+        super::save_auth(dir.path(), &auth_dot_json, AuthCredentialsStoreMode::File).unwrap();
+
+        let auth = super::load_auth(dir.path(), false, AuthCredentialsStoreMode::File)
+            .unwrap()
+            .unwrap();
+        assert_eq!(auth.mode, AuthMode::ApiKey);
+        assert_eq!(auth.api_key, Some("sk-test-key".to_string()));
+        assert_eq!(auth.gemini_account_count(), 1);
+        assert_eq!(auth.get_all_gemini_tokens(), vec![gemini_token]);
+    }
+
     #[test]
     fn logout_removes_auth_file() -> Result<(), std::io::Error> {
         let dir = tempdir()?;
         let auth_dot_json = AuthDotJson {
             openai_api_key: Some("sk-test-key".to_string()),
             tokens: None,
+            gemini_accounts: Vec::new(),
             last_refresh: None,
         };
         super::save_auth(dir.path(), &auth_dot_json, AuthCredentialsStoreMode::File)?;

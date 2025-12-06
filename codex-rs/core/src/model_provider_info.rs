@@ -13,6 +13,7 @@ use http::HeaderMap;
 use http::header::HeaderName;
 use http::header::HeaderValue;
 use serde::Deserialize;
+use serde::Deserializer;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::env::VarError;
@@ -20,6 +21,7 @@ use std::time::Duration;
 
 use crate::default_client::CodexHttpClient;
 use crate::default_client::CodexRequestBuilder;
+use crate::error::CodexErr;
 use crate::error::EnvVarError;
 const DEFAULT_STREAM_IDLE_TIMEOUT_MS: u64 = 300_000;
 const DEFAULT_STREAM_MAX_RETRIES: u64 = 5;
@@ -44,10 +46,25 @@ pub enum WireApi {
     /// Regular Chat Completions compatible with `/v1/chat/completions`.
     #[default]
     Chat,
+
+    /// Anthropic Messages API at `/v1/messages`.
+    Anthropic,
+
+    /// Google Gemini API.
+    Gemini,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ProviderKind {
+    #[default]
+    OpenAi,
+    Anthropic,
+    Gemini,
 }
 
 /// Serializable representation of a provider definition.
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct ModelProviderInfo {
     /// Friendly display name.
     pub name: String,
@@ -68,6 +85,9 @@ pub struct ModelProviderInfo {
     /// Which wire protocol this provider expects.
     #[serde(default)]
     pub wire_api: WireApi,
+    /// Kind of provider this entry represents.
+    #[serde(default, alias = "type")]
+    pub provider_kind: ProviderKind,
 
     /// Optional query parameters to append to the base URL.
     pub query_params: Option<HashMap<String, String>>,
@@ -98,6 +118,109 @@ pub struct ModelProviderInfo {
     /// and API key (if needed) comes from the "env_key" environment variable.
     #[serde(default)]
     pub requires_openai_auth: bool,
+
+    /// Optional API key env var override for non-OpenAI providers.
+    pub api_key_env_var: Option<String>,
+    /// Optional API version override (used by Anthropic and Gemini).
+    pub version: Option<String>,
+    /// Optional beta flags (Anthropic).
+    pub beta: Option<Vec<String>>,
+    /// Optional project id (Gemini).
+    pub project_id: Option<String>,
+    /// When true, send the API key as `Authorization: Bearer <key>` instead of provider-specific header.
+    /// This is needed for some Anthropic-compatible APIs like Kimi.
+    #[serde(default)]
+    pub use_bearer_auth: bool,
+}
+
+#[derive(Deserialize)]
+struct ModelProviderInfoSerde {
+    name: String,
+    base_url: Option<String>,
+    env_key: Option<String>,
+    env_key_instructions: Option<String>,
+    experimental_bearer_token: Option<String>,
+    #[serde(default)]
+    wire_api: Option<WireApi>,
+    #[serde(default, alias = "type")]
+    provider_kind: Option<ProviderKind>,
+    query_params: Option<HashMap<String, String>>,
+    http_headers: Option<HashMap<String, String>>,
+    env_http_headers: Option<HashMap<String, String>>,
+    request_max_retries: Option<u64>,
+    stream_max_retries: Option<u64>,
+    stream_idle_timeout_ms: Option<u64>,
+    #[serde(default)]
+    requires_openai_auth: Option<bool>,
+    api_key_env_var: Option<String>,
+    version: Option<String>,
+    beta: Option<Vec<String>>,
+    project_id: Option<String>,
+    #[serde(default)]
+    use_bearer_auth: Option<bool>,
+}
+
+impl<'de> Deserialize<'de> for ModelProviderInfo {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = ModelProviderInfoSerde::deserialize(deserializer)?;
+        let provider_kind = raw.provider_kind.unwrap_or_default();
+        let wire_api = raw.wire_api.unwrap_or(match provider_kind {
+            ProviderKind::Anthropic => WireApi::Anthropic,
+            ProviderKind::Gemini => WireApi::Gemini,
+            ProviderKind::OpenAi => WireApi::Chat,
+        });
+
+        Ok(Self {
+            name: raw.name,
+            base_url: raw.base_url,
+            env_key: raw.env_key,
+            env_key_instructions: raw.env_key_instructions,
+            experimental_bearer_token: raw.experimental_bearer_token,
+            wire_api,
+            provider_kind,
+            query_params: raw.query_params,
+            http_headers: raw.http_headers,
+            env_http_headers: raw.env_http_headers,
+            request_max_retries: raw.request_max_retries,
+            stream_max_retries: raw.stream_max_retries,
+            stream_idle_timeout_ms: raw.stream_idle_timeout_ms,
+            requires_openai_auth: raw.requires_openai_auth.unwrap_or(false),
+            api_key_env_var: raw.api_key_env_var,
+            version: raw.version,
+            beta: raw.beta,
+            project_id: raw.project_id,
+            use_bearer_auth: raw.use_bearer_auth.unwrap_or(false),
+        })
+    }
+}
+
+impl Default for ModelProviderInfo {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            base_url: None,
+            env_key: None,
+            env_key_instructions: None,
+            experimental_bearer_token: None,
+            wire_api: WireApi::Chat,
+            provider_kind: ProviderKind::OpenAi,
+            query_params: None,
+            http_headers: None,
+            env_http_headers: None,
+            request_max_retries: None,
+            stream_max_retries: None,
+            stream_idle_timeout_ms: None,
+            requires_openai_auth: false,
+            api_key_env_var: None,
+            version: None,
+            beta: None,
+            project_id: None,
+            use_bearer_auth: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -148,6 +271,10 @@ pub struct AnthropicProvider {
     pub base_url: String,
     pub api_key_env_var: Option<String>,
     pub experimental_bearer_token: Option<String>,
+    /// When true, send the API key as `Authorization: Bearer <key>` instead of `x-api-key` header.
+    /// This is needed for some Anthropic-compatible APIs like Kimi.
+    #[serde(default)]
+    pub use_bearer_auth: bool,
     pub http_headers: Option<HashMap<String, String>>,
     pub env_http_headers: Option<HashMap<String, String>>,
     #[serde(default = "default_anthropic_version")]
@@ -173,6 +300,7 @@ impl Default for AnthropicProvider {
             base_url: default_anthropic_base_url(),
             api_key_env_var: None,
             experimental_bearer_token: None,
+            use_bearer_auth: false,
             http_headers: None,
             env_http_headers: None,
             version: default_anthropic_version(),
@@ -195,7 +323,11 @@ impl AnthropicProvider {
         if let Some(token) = &self.experimental_bearer_token {
             builder = builder.bearer_auth(token);
         } else if let Some(key) = self.api_key()? {
-            builder = builder.header("x-api-key", key);
+            if self.use_bearer_auth {
+                builder = builder.bearer_auth(&key);
+            } else {
+                builder = builder.header("x-api-key", key);
+            }
         }
 
         builder = builder.header("anthropic-version", &self.version);
@@ -233,13 +365,13 @@ impl AnthropicProvider {
                 })
                 .map_err(|_| {
                     crate::error::CodexErr::EnvVar(EnvVarError {
-                        var: env_var.clone(),
+                        env_var: env_var.clone(),
                         instructions: None,
                     })
                 })?
                 .ok_or_else(|| {
                     crate::error::CodexErr::EnvVar(EnvVarError {
-                        var: env_var.clone(),
+                        env_var: env_var.clone(),
                         instructions: None,
                     })
                 })
@@ -288,13 +420,13 @@ impl GeminiProvider {
                 })
                 .map_err(|_| {
                     crate::error::CodexErr::EnvVar(EnvVarError {
-                        var: env_var.clone(),
+                        env_var: env_var.clone(),
                         instructions: None,
                     })
                 })?
                 .ok_or_else(|| {
                     crate::error::CodexErr::EnvVar(EnvVarError {
-                        var: env_var.clone(),
+                        env_var: env_var.clone(),
                         instructions: None,
                     })
                 })
@@ -351,6 +483,70 @@ impl ModelProviderInfo {
         Ok(headers)
     }
 
+    fn provider_api_key_env_var(&self) -> Option<String> {
+        self.api_key_env_var
+            .clone()
+            .or_else(|| self.env_key.clone())
+    }
+
+    pub fn to_gemini_provider(&self) -> crate::error::Result<GeminiProvider> {
+        if !matches!(self.provider_kind, ProviderKind::Gemini)
+            && !matches!(self.wire_api, WireApi::Gemini)
+        {
+            return Err(CodexErr::UnsupportedOperation(format!(
+                "Model provider {} is not Gemini-compatible",
+                self.name
+            )));
+        }
+
+        Ok(GeminiProvider {
+            name: self.name.clone(),
+            base_url: self.base_url.clone(),
+            api_key_env_var: self.provider_api_key_env_var(),
+            experimental_bearer_token: self.experimental_bearer_token.clone(),
+            version: self.version.clone().unwrap_or_else(default_version),
+            query_params: self.query_params.clone(),
+            http_headers: self.http_headers.clone(),
+            env_http_headers: self.env_http_headers.clone(),
+            project_id: self.project_id.clone(),
+            request_max_retries: self.request_max_retries,
+            stream_max_retries: self.stream_max_retries,
+            stream_idle_timeout_ms: self.stream_idle_timeout_ms,
+        })
+    }
+
+    pub fn to_anthropic_provider(&self) -> crate::error::Result<AnthropicProvider> {
+        if !matches!(self.provider_kind, ProviderKind::Anthropic)
+            && !matches!(self.wire_api, WireApi::Anthropic)
+        {
+            return Err(CodexErr::UnsupportedOperation(format!(
+                "Model provider {} is not Anthropic-compatible",
+                self.name
+            )));
+        }
+
+        Ok(AnthropicProvider {
+            name: self.name.clone(),
+            base_url: self
+                .base_url
+                .clone()
+                .unwrap_or_else(default_anthropic_base_url),
+            api_key_env_var: self.provider_api_key_env_var(),
+            experimental_bearer_token: self.experimental_bearer_token.clone(),
+            use_bearer_auth: self.use_bearer_auth,
+            http_headers: self.http_headers.clone(),
+            env_http_headers: self.env_http_headers.clone(),
+            version: self
+                .version
+                .clone()
+                .unwrap_or_else(default_anthropic_version),
+            beta: self.beta.clone(),
+            request_max_retries: self.request_max_retries,
+            stream_max_retries: self.stream_max_retries,
+            stream_idle_timeout_ms: self.stream_idle_timeout_ms,
+        })
+    }
+
     pub(crate) fn to_api_provider(
         &self,
         auth_mode: Option<AuthMode>,
@@ -381,6 +577,12 @@ impl ModelProviderInfo {
             wire: match self.wire_api {
                 WireApi::Responses => ApiWireApi::Responses,
                 WireApi::Chat => ApiWireApi::Chat,
+                WireApi::Anthropic | WireApi::Gemini => {
+                    return Err(crate::error::CodexErr::UnsupportedOperation(
+                        "codex-api Provider adaptation is not supported for this provider"
+                            .to_string(),
+                    ));
+                }
             },
             headers,
             retry,
@@ -392,25 +594,24 @@ impl ModelProviderInfo {
     /// (and non-empty) in the environment. If `env_key` is required but
     /// cannot be found, returns an error.
     pub fn api_key(&self) -> crate::error::Result<Option<String>> {
-        match &self.env_key {
-            Some(env_key) => {
-                let env_value = std::env::var(env_key);
-                env_value
-                    .and_then(|v| {
-                        if v.trim().is_empty() {
-                            Err(VarError::NotPresent)
-                        } else {
-                            Ok(Some(v))
-                        }
+        if let Some(env_key) = self.provider_api_key_env_var() {
+            let env_value = std::env::var(&env_key);
+            env_value
+                .and_then(|v| {
+                    if v.trim().is_empty() {
+                        Err(VarError::NotPresent)
+                    } else {
+                        Ok(Some(v))
+                    }
+                })
+                .map_err(|_| {
+                    crate::error::CodexErr::EnvVar(EnvVarError {
+                        env_var: env_key.clone(),
+                        instructions: self.env_key_instructions.clone(),
                     })
-                    .map_err(|_| {
-                        crate::error::CodexErr::EnvVar(EnvVarError {
-                            var: env_key.clone(),
-                            instructions: self.env_key_instructions.clone(),
-                        })
-                    })
-            }
-            None => Ok(None),
+                })
+        } else {
+            Ok(None)
         }
     }
 
@@ -489,6 +690,12 @@ pub fn built_in_model_providers() -> HashMap<String, ModelProviderInfo> {
                 stream_max_retries: None,
                 stream_idle_timeout_ms: None,
                 requires_openai_auth: true,
+                provider_kind: ProviderKind::OpenAi,
+                api_key_env_var: None,
+                version: None,
+                beta: None,
+                project_id: None,
+                use_bearer_auth: false,
             },
         ),
         (
@@ -498,6 +705,54 @@ pub fn built_in_model_providers() -> HashMap<String, ModelProviderInfo> {
         (
             LMSTUDIO_OSS_PROVIDER_ID,
             create_oss_provider(DEFAULT_LMSTUDIO_PORT, WireApi::Responses),
+        ),
+        (
+            "anthropic",
+            P {
+                name: "Anthropic".into(),
+                base_url: Some(default_anthropic_base_url()),
+                env_key: Some("ANTHROPIC_API_KEY".to_string()),
+                env_key_instructions: None,
+                experimental_bearer_token: None,
+                wire_api: WireApi::Anthropic,
+                provider_kind: ProviderKind::Anthropic,
+                query_params: None,
+                http_headers: None,
+                env_http_headers: None,
+                request_max_retries: Some(DEFAULT_REQUEST_MAX_RETRIES),
+                stream_max_retries: Some(DEFAULT_STREAM_MAX_RETRIES),
+                stream_idle_timeout_ms: Some(DEFAULT_STREAM_IDLE_TIMEOUT_MS),
+                requires_openai_auth: false,
+                api_key_env_var: None,
+                version: Some(default_anthropic_version()),
+                beta: None,
+                project_id: None,
+                use_bearer_auth: false,
+            },
+        ),
+        (
+            "gemini",
+            P {
+                name: "Gemini".into(),
+                base_url: None,
+                env_key: Some("GEMINI_API_KEY".to_string()),
+                env_key_instructions: None,
+                experimental_bearer_token: None,
+                wire_api: WireApi::Gemini,
+                provider_kind: ProviderKind::Gemini,
+                query_params: None,
+                http_headers: None,
+                env_http_headers: None,
+                request_max_retries: Some(DEFAULT_REQUEST_MAX_RETRIES),
+                stream_max_retries: Some(DEFAULT_STREAM_MAX_RETRIES),
+                stream_idle_timeout_ms: Some(DEFAULT_STREAM_IDLE_TIMEOUT_MS),
+                requires_openai_auth: false,
+                api_key_env_var: None,
+                version: Some(default_version()),
+                beta: None,
+                project_id: None,
+                use_bearer_auth: false,
+            },
         ),
     ]
     .into_iter()
@@ -533,6 +788,7 @@ pub fn create_oss_provider_with_base_url(base_url: &str, wire_api: WireApi) -> M
         env_key_instructions: None,
         experimental_bearer_token: None,
         wire_api,
+        provider_kind: ProviderKind::OpenAi,
         query_params: None,
         http_headers: None,
         env_http_headers: None,
@@ -540,6 +796,11 @@ pub fn create_oss_provider_with_base_url(base_url: &str, wire_api: WireApi) -> M
         stream_max_retries: None,
         stream_idle_timeout_ms: None,
         requires_openai_auth: false,
+        api_key_env_var: None,
+        version: None,
+        beta: None,
+        project_id: None,
+        use_bearer_auth: false,
     }
 }
 
@@ -561,6 +822,7 @@ base_url = "http://localhost:11434/v1"
             env_key_instructions: None,
             experimental_bearer_token: None,
             wire_api: WireApi::Chat,
+            provider_kind: ProviderKind::OpenAi,
             query_params: None,
             http_headers: None,
             env_http_headers: None,
@@ -568,10 +830,80 @@ base_url = "http://localhost:11434/v1"
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
             requires_openai_auth: false,
+            api_key_env_var: None,
+            version: None,
+            beta: None,
+            project_id: None,
+            use_bearer_auth: false,
         };
 
         let provider: ModelProviderInfo = toml::from_str(azure_provider_toml).unwrap();
         assert_eq!(expected_provider, provider);
+    }
+
+    #[test]
+    fn deserializes_anthropic_provider_with_type_alias() {
+        let provider_toml = r#"
+type = "anthropic"
+name = "Kimi"
+base_url = "https://api.kimi.com/coding/v1"
+api_key_env_var = "KIMI_FOR_CODING_API_KEY"
+use_bearer_auth = true
+        "#;
+        let expected_provider = ModelProviderInfo {
+            name: "Kimi".into(),
+            base_url: Some("https://api.kimi.com/coding/v1".into()),
+            env_key: None,
+            env_key_instructions: None,
+            experimental_bearer_token: None,
+            wire_api: WireApi::Anthropic,
+            provider_kind: ProviderKind::Anthropic,
+            query_params: None,
+            http_headers: None,
+            env_http_headers: None,
+            request_max_retries: None,
+            stream_max_retries: None,
+            stream_idle_timeout_ms: None,
+            requires_openai_auth: false,
+            api_key_env_var: Some("KIMI_FOR_CODING_API_KEY".into()),
+            version: None,
+            beta: None,
+            project_id: None,
+            use_bearer_auth: true,
+        };
+
+        let provider: ModelProviderInfo = toml::from_str(provider_toml).unwrap();
+        assert_eq!(expected_provider, provider);
+    }
+
+    #[test]
+    fn api_key_prefers_api_key_env_var() {
+        let provider = ModelProviderInfo {
+            name: "Test".into(),
+            base_url: None,
+            env_key: None,
+            env_key_instructions: None,
+            experimental_bearer_token: None,
+            wire_api: WireApi::Anthropic,
+            provider_kind: ProviderKind::Anthropic,
+            query_params: None,
+            http_headers: None,
+            env_http_headers: None,
+            request_max_retries: None,
+            stream_max_retries: None,
+            stream_idle_timeout_ms: None,
+            requires_openai_auth: false,
+            api_key_env_var: Some("TEST_API_KEY".into()),
+            version: None,
+            beta: None,
+            project_id: None,
+            use_bearer_auth: false,
+        };
+        let _guard = EnvVarGuard::set("TEST_API_KEY", "secret-key");
+
+        let key = provider.api_key().unwrap();
+
+        assert_eq!(Some("secret-key".to_string()), key);
     }
 
     #[test]
@@ -589,6 +921,7 @@ query_params = { api-version = "2025-04-01-preview" }
             env_key_instructions: None,
             experimental_bearer_token: None,
             wire_api: WireApi::Chat,
+            provider_kind: ProviderKind::OpenAi,
             query_params: Some(maplit::hashmap! {
                 "api-version".to_string() => "2025-04-01-preview".to_string(),
             }),
@@ -598,6 +931,11 @@ query_params = { api-version = "2025-04-01-preview" }
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
             requires_openai_auth: false,
+            api_key_env_var: None,
+            version: None,
+            beta: None,
+            project_id: None,
+            use_bearer_auth: false,
         };
 
         let provider: ModelProviderInfo = toml::from_str(azure_provider_toml).unwrap();
@@ -620,6 +958,7 @@ env_http_headers = { "X-Example-Env-Header" = "EXAMPLE_ENV_VAR" }
             env_key_instructions: None,
             experimental_bearer_token: None,
             wire_api: WireApi::Chat,
+            provider_kind: ProviderKind::OpenAi,
             query_params: None,
             http_headers: Some(maplit::hashmap! {
                 "X-Example-Header".to_string() => "example-value".to_string(),
@@ -631,6 +970,11 @@ env_http_headers = { "X-Example-Env-Header" = "EXAMPLE_ENV_VAR" }
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
             requires_openai_auth: false,
+            api_key_env_var: None,
+            version: None,
+            beta: None,
+            project_id: None,
+            use_bearer_auth: false,
         };
 
         let provider: ModelProviderInfo = toml::from_str(azure_provider_toml).unwrap();
@@ -662,6 +1006,7 @@ env_http_headers = { "X-Example-Env-Header" = "EXAMPLE_ENV_VAR" }
                 stream_max_retries: None,
                 stream_idle_timeout_ms: None,
                 requires_openai_auth: false,
+                ..Default::default()
             };
             let api = provider.to_api_provider(None).expect("api provider");
             assert!(
@@ -684,6 +1029,7 @@ env_http_headers = { "X-Example-Env-Header" = "EXAMPLE_ENV_VAR" }
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
             requires_openai_auth: false,
+            ..Default::default()
         };
         let named_api = named_provider.to_api_provider(None).expect("api provider");
         assert!(named_api.is_azure_responses_endpoint());
@@ -708,12 +1054,41 @@ env_http_headers = { "X-Example-Env-Header" = "EXAMPLE_ENV_VAR" }
                 stream_max_retries: None,
                 stream_idle_timeout_ms: None,
                 requires_openai_auth: false,
+                ..Default::default()
             };
             let api = provider.to_api_provider(None).expect("api provider");
             assert!(
                 !api.is_azure_responses_endpoint(),
                 "expected {base_url} not to be detected as Azure"
             );
+        }
+    }
+
+    struct EnvVarGuard {
+        key: &'static str,
+        original: Option<String>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let original = std::env::var(key).ok();
+            // set_var is unsafe on newer toolchains due to process-global mutation.
+            unsafe {
+                std::env::set_var(key, value);
+            }
+            Self { key, original }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            unsafe {
+                if let Some(value) = &self.original {
+                    std::env::set_var(self.key, value);
+                } else {
+                    std::env::remove_var(self.key);
+                }
+            }
         }
     }
 }

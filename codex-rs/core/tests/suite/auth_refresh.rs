@@ -183,6 +183,7 @@ impl RefreshTokenTestContext {
         let auth_dot_json = AuthDotJson {
             openai_api_key: None,
             tokens: Some(tokens),
+            gemini_accounts: Vec::new(),
             last_refresh: Some(initial_last_refresh),
         };
         save_auth(

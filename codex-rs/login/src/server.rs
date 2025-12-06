@@ -7,6 +7,8 @@ use std::net::TcpStream;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::thread;
 use std::time::Duration;
 
@@ -89,11 +91,28 @@ impl LoginServer {
 #[derive(Clone, Debug)]
 pub struct ShutdownHandle {
     shutdown_notify: Arc<tokio::sync::Notify>,
+    is_shutdown: Arc<AtomicBool>,
 }
 
 impl ShutdownHandle {
+    pub fn new() -> Self {
+        Self {
+            shutdown_notify: Arc::new(tokio::sync::Notify::new()),
+            is_shutdown: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
     pub fn shutdown(&self) {
+        self.is_shutdown.store(true, Ordering::SeqCst);
         self.shutdown_notify.notify_waiters();
+    }
+
+    pub fn is_shutdown(&self) -> bool {
+        self.is_shutdown.load(Ordering::SeqCst)
+    }
+
+    pub fn notifier(&self) -> Arc<tokio::sync::Notify> {
+        self.shutdown_notify.clone()
     }
 }
 
@@ -202,7 +221,10 @@ pub fn run_login_server(opts: ServerOptions) -> io::Result<LoginServer> {
         auth_url,
         actual_port,
         server_handle,
-        shutdown_handle: ShutdownHandle { shutdown_notify },
+        shutdown_handle: ShutdownHandle {
+            shutdown_notify,
+            is_shutdown: Arc::new(AtomicBool::new(false)),
+        },
     })
 }
 
@@ -546,6 +568,14 @@ pub(crate) async fn persist_tokens_async(
     // Reuse existing synchronous logic but run it off the async runtime.
     let codex_home = codex_home.to_path_buf();
     tokio::task::spawn_blocking(move || {
+        let existing =
+            codex_core::auth::load_auth_dot_json(&codex_home, auth_credentials_store_mode)?
+                .unwrap_or_else(|| AuthDotJson {
+                    openai_api_key: None,
+                    tokens: None,
+                    gemini_accounts: Vec::new(),
+                    last_refresh: None,
+                });
         let mut tokens = TokenData {
             id_token: parse_id_token(&id_token).map_err(io::Error::other)?,
             access_token,
@@ -559,8 +589,9 @@ pub(crate) async fn persist_tokens_async(
             tokens.account_id = Some(acc.to_string());
         }
         let auth = AuthDotJson {
-            openai_api_key: api_key,
+            openai_api_key: api_key.or(existing.openai_api_key),
             tokens: Some(tokens),
+            gemini_accounts: existing.gemini_accounts,
             last_refresh: Some(Utc::now()),
         };
         save_auth(&codex_home, &auth, auth_credentials_store_mode)
@@ -718,4 +749,55 @@ pub(crate) async fn obtain_api_key(
     }
     let body: ExchangeResp = resp.json().await.map_err(io::Error::other)?;
     Ok(body.access_token)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use codex_core::auth::load_auth_dot_json;
+    use codex_core::token_data::GeminiTokenData;
+    use pretty_assertions::assert_eq;
+    use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn persist_tokens_keeps_existing_gemini_accounts() {
+        let dir = tempdir().unwrap();
+        let gemini_tokens = GeminiTokenData {
+            access_token: "g-access".to_string(),
+            refresh_token: "g-refresh".to_string(),
+            id_token: None,
+            project_id: Some("project-1".to_string()),
+            managed_project_id: None,
+            email: None,
+            expires_at: None,
+        };
+        let auth = AuthDotJson {
+            openai_api_key: None,
+            tokens: None,
+            gemini_accounts: vec![gemini_tokens.clone()],
+            last_refresh: Some(Utc::now()),
+        };
+        save_auth(dir.path(), &auth, AuthCredentialsStoreMode::File).unwrap();
+
+        let id_token = "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.e30.signature".to_string();
+        persist_tokens_async(
+            dir.path(),
+            Some("sk-new".to_string()),
+            id_token.clone(),
+            "access token".to_string(),
+            "refresh token".to_string(),
+            AuthCredentialsStoreMode::File,
+        )
+        .await
+        .unwrap();
+
+        let saved = load_auth_dot_json(dir.path(), AuthCredentialsStoreMode::File)
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.gemini_accounts, vec![gemini_tokens]);
+        assert_eq!(saved.openai_api_key, Some("sk-new".to_string()));
+        let tokens = saved.tokens.expect("chatgpt tokens present");
+        assert_eq!(tokens.access_token, "access token");
+        assert_eq!(tokens.id_token.raw_jwt, id_token);
+    }
 }

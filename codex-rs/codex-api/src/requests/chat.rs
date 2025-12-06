@@ -159,7 +159,7 @@ impl<'a> ChatRequestBuilder<'a> {
                     for c in content {
                         match c {
                             ContentItem::InputText { text: t }
-                            | ContentItem::OutputText { text: t } => {
+                            | ContentItem::OutputText { text: t, .. } => {
                                 text.push_str(t);
                                 items.push(json!({"type":"text","text": t}));
                             }

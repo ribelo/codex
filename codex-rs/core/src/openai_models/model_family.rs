@@ -15,6 +15,7 @@ const BASE_INSTRUCTIONS: &str = include_str!("../../prompt.md");
 const GPT_5_CODEX_INSTRUCTIONS: &str = include_str!("../../gpt_5_codex_prompt.md");
 const GPT_5_1_INSTRUCTIONS: &str = include_str!("../../gpt_5_1_prompt.md");
 const GPT_5_1_CODEX_MAX_INSTRUCTIONS: &str = include_str!("../../gpt-5.1-codex-max_prompt.md");
+const GEMINI_3_INSTRUCTIONS: &str = include_str!("../../gemini-3-prompt.md");
 
 /// A model family is a group of models that share certain characteristics.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -210,7 +211,6 @@ pub fn find_family_for_model(slug: &str) -> ModelFamily {
             shell_type: ConfigShellToolType::UnifiedExec,
             supports_parallel_tool_calls: true,
         )
-
     // Production models.
     } else if slug.starts_with("gpt-5.1-codex-max") {
         model_family!(
@@ -261,6 +261,35 @@ pub fn find_family_for_model(slug: &str) -> ModelFamily {
             support_verbosity: true,
             truncation_policy: TruncationPolicy::Bytes(10_000),
         )
+    } else if slug.starts_with("claude") {
+        model_family!(
+            slug, slug,
+            supports_reasoning_summaries: true,
+            supports_parallel_tool_calls: true,
+            apply_patch_tool_type: Some(ApplyPatchToolType::Function),
+        )
+    } else if slug.starts_with("gemini") {
+        let supports_reasoning = slug.contains("reasoning") || slug.starts_with("gemini-3");
+        if slug.starts_with("gemini-3") {
+            model_family!(
+                slug, "gemini",
+                supports_reasoning_summaries: supports_reasoning,
+                default_reasoning_effort: supports_reasoning.then_some(ReasoningEffort::High),
+                reasoning_summary_format: ReasoningSummaryFormat::None,
+                supports_parallel_tool_calls: true,
+                shell_type: ConfigShellToolType::ShellCommand,
+                base_instructions: GEMINI_3_INSTRUCTIONS.to_string(),
+            )
+        } else {
+            model_family!(
+                slug, "gemini",
+                supports_reasoning_summaries: supports_reasoning,
+                default_reasoning_effort: supports_reasoning.then_some(ReasoningEffort::Medium),
+                reasoning_summary_format: ReasoningSummaryFormat::None,
+                supports_parallel_tool_calls: true,
+                shell_type: ConfigShellToolType::ShellCommand,
+            )
+        }
     } else {
         derive_default_model_family(slug)
     }

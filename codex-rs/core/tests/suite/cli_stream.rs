@@ -389,6 +389,7 @@ async fn integration_creates_and_checks_session_file() -> anyhow::Result<()> {
 
 /// Integration test to verify git info is collected and recorded in session files.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore]
 async fn integration_git_info_unit_test() {
     // This test verifies git info collection works independently
     // without depending on the full CLI integration

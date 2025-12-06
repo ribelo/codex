@@ -20,6 +20,17 @@ pub struct TokenData {
     pub account_id: Option<String>,
 }
 
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
+pub struct GeminiTokenData {
+    pub access_token: String,
+    pub refresh_token: String,
+    pub id_token: Option<String>,
+    pub project_id: Option<String>,
+    pub managed_project_id: Option<String>,
+    pub email: Option<String>,
+    pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
 /// Flat subset of useful claims in id_token from auth.json.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct IdTokenInfo {

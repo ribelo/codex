@@ -57,6 +57,7 @@ sha1 = { workspace = true }
 sha2 = { workspace = true }
 shlex = { workspace = true }
 similar = { workspace = true }
+urlencoding = { workspace = true }
 strum_macros = { workspace = true }
 url = { workspace = true }
 once_cell = { workspace = true }

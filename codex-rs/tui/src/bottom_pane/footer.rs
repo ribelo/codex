@@ -5,22 +5,27 @@ use crate::key_hint::KeyBinding;
 use crate::render::line_utils::prefix_lines;
 use crate::status::format_tokens_compact;
 use crate::ui_consts::FOOTER_INDENT_COLS;
+use codex_core::protocol::SandboxPolicy;
 use crossterm::event::KeyCode;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Stylize;
 use ratatui::text::Line;
 use ratatui::text::Span;
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::Clear;
 use ratatui::widgets::Widget;
+use ratatui::widgets::WidgetRef;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct FooterProps {
     pub(crate) mode: FooterMode,
     pub(crate) esc_backtrack_hint: bool,
     pub(crate) use_shift_enter_hint: bool,
     pub(crate) is_task_running: bool,
     pub(crate) context_window_percent: Option<i64>,
+    pub(crate) model: Option<String>,
+    pub(crate) reasoning_effort: Option<String>,
+    pub(crate) sandbox_policy: SandboxPolicy,
     pub(crate) context_window_used_tokens: Option<i64>,
 }
 
@@ -62,20 +67,30 @@ pub(crate) fn reset_mode_after_activity(current: FooterMode) -> FooterMode {
     }
 }
 
-pub(crate) fn footer_height(props: FooterProps) -> u16 {
+pub(crate) fn footer_height(props: &FooterProps) -> u16 {
     footer_lines(props).len() as u16
 }
 
 pub(crate) fn render_footer(area: Rect, buf: &mut Buffer, props: FooterProps) {
-    Paragraph::new(prefix_lines(
-        footer_lines(props),
+    Clear.render(area, buf);
+    let lines = prefix_lines(
+        footer_lines(&props),
         " ".repeat(FOOTER_INDENT_COLS).into(),
         " ".repeat(FOOTER_INDENT_COLS).into(),
-    ))
-    .render(area, buf);
+    );
+    let mut y = area.y;
+    let bottom = area.y.saturating_add(area.height);
+    for line in lines {
+        if y >= bottom {
+            break;
+        }
+        let row = Rect::new(area.x, y, area.width, 1);
+        line.render_ref(row, buf);
+        y = y.saturating_add(1);
+    }
 }
 
-fn footer_lines(props: FooterProps) -> Vec<Line<'static>> {
+fn footer_lines(props: &FooterProps) -> Vec<Line<'static>> {
     // Show the context indicator on the left, appended after the primary hint
     // (e.g., "? for shortcuts"). Keep it visible even when typing (i.e., when
     // the shortcut hint is hidden). Hide it only for the multi-line
@@ -87,7 +102,10 @@ fn footer_lines(props: FooterProps) -> Vec<Line<'static>> {
         FooterMode::ShortcutSummary => {
             let mut line = context_window_line(
                 props.context_window_percent,
+                props.model.clone(),
+                props.reasoning_effort.clone(),
                 props.context_window_used_tokens,
+                &props.sandbox_policy,
             );
             line.push_span(" · ".dim());
             line.extend(vec![
@@ -109,10 +127,18 @@ fn footer_lines(props: FooterProps) -> Vec<Line<'static>> {
             };
             shortcut_overlay_lines(state)
         }
-        FooterMode::EscHint => vec![esc_hint_line(props.esc_backtrack_hint)],
+        FooterMode::EscHint => {
+            let mut spans = vec![mode_dot(&props.sandbox_policy)];
+            spans.push(" ".into());
+            spans.extend(esc_hint_line(props.esc_backtrack_hint).spans);
+            vec![Line::from(spans)]
+        }
         FooterMode::ContextOnly => vec![context_window_line(
             props.context_window_percent,
+            props.model.clone(),
+            props.reasoning_effort.clone(),
             props.context_window_used_tokens,
+            &props.sandbox_policy,
         )],
     }
 }
@@ -241,18 +267,42 @@ fn build_columns(entries: Vec<Line<'static>>) -> Vec<Line<'static>> {
         .collect()
 }
 
-fn context_window_line(percent: Option<i64>, used_tokens: Option<i64>) -> Line<'static> {
-    if let Some(percent) = percent {
-        let percent = percent.clamp(0, 100);
-        return Line::from(vec![Span::from(format!("{percent}% context left")).dim()]);
+fn context_window_line(
+    percent: Option<i64>,
+    model: Option<String>,
+    reasoning_effort: Option<String>,
+    used_tokens: Option<i64>,
+    sandbox_policy: &SandboxPolicy,
+) -> Line<'static> {
+    let mut spans = vec![mode_dot(sandbox_policy)];
+    spans.push(Span::from(" "));
+    let mut parts = Vec::new();
+    if let Some(model) = model {
+        parts.push(model);
+    }
+    if let Some(reasoning_effort) = reasoning_effort {
+        parts.push(reasoning_effort);
     }
 
-    if let Some(tokens) = used_tokens {
+    let context_text = if let Some(percent) = percent {
+        format!("{}% context left", percent.clamp(0, 100))
+    } else if let Some(tokens) = used_tokens {
         let used_fmt = format_tokens_compact(tokens);
-        return Line::from(vec![Span::from(format!("{used_fmt} used")).dim()]);
-    }
+        format!("{used_fmt} used")
+    } else {
+        "100% context left".to_string()
+    };
+    parts.push(context_text);
+    spans.push(Span::from(parts.join(" ")).dim());
+    Line::from(spans)
+}
 
-    Line::from(vec![Span::from("100% context left").dim()])
+fn mode_dot(policy: &SandboxPolicy) -> Span<'static> {
+    match policy {
+        SandboxPolicy::ReadOnly => "•".green(),
+        SandboxPolicy::WorkspaceWrite { .. } => "•".magenta(),
+        SandboxPolicy::DangerFullAccess => "•".red(),
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -413,17 +463,18 @@ const SHORTCUTS: &[ShortcutDescriptor] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codex_core::protocol::SandboxPolicy;
     use insta::assert_snapshot;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
     fn snapshot_footer(name: &str, props: FooterProps) {
-        let height = footer_height(props).max(1);
+        let height = footer_height(&props).max(1);
         let mut terminal = Terminal::new(TestBackend::new(80, height)).unwrap();
         terminal
             .draw(|f| {
                 let area = Rect::new(0, 0, f.area().width, height);
-                render_footer(area, f.buffer_mut(), props);
+                render_footer(area, f.buffer_mut(), props.clone());
             })
             .unwrap();
         assert_snapshot!(name, terminal.backend());
@@ -431,17 +482,19 @@ mod tests {
 
     #[test]
     fn footer_snapshots() {
-        snapshot_footer(
-            "footer_shortcuts_default",
-            FooterProps {
-                mode: FooterMode::ShortcutSummary,
-                esc_backtrack_hint: false,
-                use_shift_enter_hint: false,
-                is_task_running: false,
-                context_window_percent: None,
-                context_window_used_tokens: None,
-            },
-        );
+        let base_props = FooterProps {
+            mode: FooterMode::ShortcutSummary,
+            esc_backtrack_hint: false,
+            use_shift_enter_hint: false,
+            is_task_running: false,
+            context_window_percent: None,
+            model: None,
+            reasoning_effort: None,
+            sandbox_policy: SandboxPolicy::ReadOnly,
+            context_window_used_tokens: None,
+        };
+
+        snapshot_footer("footer_shortcuts_default", base_props.clone());
 
         snapshot_footer(
             "footer_shortcuts_shift_and_esc",
@@ -449,9 +502,7 @@ mod tests {
                 mode: FooterMode::ShortcutOverlay,
                 esc_backtrack_hint: true,
                 use_shift_enter_hint: true,
-                is_task_running: false,
-                context_window_percent: None,
-                context_window_used_tokens: None,
+                ..base_props.clone()
             },
         );
 
@@ -459,11 +510,7 @@ mod tests {
             "footer_ctrl_c_quit_idle",
             FooterProps {
                 mode: FooterMode::CtrlCReminder,
-                esc_backtrack_hint: false,
-                use_shift_enter_hint: false,
-                is_task_running: false,
-                context_window_percent: None,
-                context_window_used_tokens: None,
+                ..base_props.clone()
             },
         );
 
@@ -471,11 +518,8 @@ mod tests {
             "footer_ctrl_c_quit_running",
             FooterProps {
                 mode: FooterMode::CtrlCReminder,
-                esc_backtrack_hint: false,
-                use_shift_enter_hint: false,
                 is_task_running: true,
-                context_window_percent: None,
-                context_window_used_tokens: None,
+                ..base_props.clone()
             },
         );
 
@@ -483,11 +527,7 @@ mod tests {
             "footer_esc_hint_idle",
             FooterProps {
                 mode: FooterMode::EscHint,
-                esc_backtrack_hint: false,
-                use_shift_enter_hint: false,
-                is_task_running: false,
-                context_window_percent: None,
-                context_window_used_tokens: None,
+                ..base_props.clone()
             },
         );
 
@@ -496,10 +536,7 @@ mod tests {
             FooterProps {
                 mode: FooterMode::EscHint,
                 esc_backtrack_hint: true,
-                use_shift_enter_hint: false,
-                is_task_running: false,
-                context_window_percent: None,
-                context_window_used_tokens: None,
+                ..base_props.clone()
             },
         );
 
@@ -507,11 +544,9 @@ mod tests {
             "footer_shortcuts_context_running",
             FooterProps {
                 mode: FooterMode::ShortcutSummary,
-                esc_backtrack_hint: false,
-                use_shift_enter_hint: false,
                 is_task_running: true,
                 context_window_percent: Some(72),
-                context_window_used_tokens: None,
+                ..base_props.clone()
             },
         );
 
@@ -519,11 +554,8 @@ mod tests {
             "footer_context_tokens_used",
             FooterProps {
                 mode: FooterMode::ShortcutSummary,
-                esc_backtrack_hint: false,
-                use_shift_enter_hint: false,
-                is_task_running: false,
-                context_window_percent: None,
                 context_window_used_tokens: Some(123_456),
+                ..base_props
             },
         );
     }

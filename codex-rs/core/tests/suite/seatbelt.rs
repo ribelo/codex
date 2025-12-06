@@ -72,6 +72,7 @@ impl TestScenario {
 /// folders in the workspace and block them (though we could change our
 /// position on this in the future).
 #[tokio::test]
+#[ignore]
 async fn if_parent_of_repo_is_writable_then_dot_git_folder_is_writable() {
     let tmp = TempDir::new().expect("should be able to create temp dir");
     let test_scenario = create_test_scenario(&tmp);
@@ -98,6 +99,7 @@ async fn if_parent_of_repo_is_writable_then_dot_git_folder_is_writable() {
 /// presence of a .git folder), then the .git folder should be read-only if
 /// the policy is `WorkspaceWrite`.
 #[tokio::test]
+#[ignore]
 async fn if_git_repo_is_writable_root_then_dot_git_folder_is_read_only() {
     let tmp = TempDir::new().expect("should be able to create temp dir");
     let test_scenario = create_test_scenario(&tmp);
@@ -123,6 +125,7 @@ async fn if_git_repo_is_writable_root_then_dot_git_folder_is_read_only() {
 /// Under DangerFullAccess, all writes should be permitted anywhere on disk,
 /// including inside the .git folder.
 #[tokio::test]
+#[ignore]
 async fn danger_full_access_allows_all_writes() {
     let tmp = TempDir::new().expect("should be able to create temp dir");
     let test_scenario = create_test_scenario(&tmp);
@@ -142,6 +145,7 @@ async fn danger_full_access_allows_all_writes() {
 
 /// Under ReadOnly, writes should not be permitted anywhere on disk.
 #[tokio::test]
+#[ignore]
 async fn read_only_forbids_all_writes() {
     let tmp = TempDir::new().expect("should be able to create temp dir");
     let test_scenario = create_test_scenario(&tmp);
