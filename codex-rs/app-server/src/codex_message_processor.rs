@@ -943,15 +943,21 @@ impl CodexMessageProcessor {
             match self.auth_manager.auth() {
                 Some(auth) => {
                     let auth_mode = auth.mode;
-                    let (reported_auth_method, token_opt) = match auth.get_token().await {
-                        Ok(token) if !token.is_empty() => {
-                            let tok = if include_token { Some(token) } else { None };
-                            (Some(auth_mode), tok)
-                        }
-                        Ok(_) => (None, None),
-                        Err(err) => {
-                            tracing::warn!("failed to get token for auth status: {err}");
-                            (None, None)
+                    let (reported_auth_method, token_opt) = if auth_mode == AuthMode::Gemini {
+                        // Gemini does not use the same token system as ChatGPT,
+                        // so we just report it as authenticated without fetching a token.
+                        (Some(auth_mode), None)
+                    } else {
+                        match auth.get_token().await {
+                            Ok(token) if !token.is_empty() => {
+                                let tok = if include_token { Some(token) } else { None };
+                                (Some(auth_mode), tok)
+                            }
+                            Ok(_) => (None, None),
+                            Err(err) => {
+                                tracing::warn!("failed to get token for auth status: {err}");
+                                (None, None)
+                            }
                         }
                     };
                     GetAuthStatusResponse {
@@ -991,6 +997,7 @@ impl CodexMessageProcessor {
         let account = match self.auth_manager.auth() {
             Some(auth) => Some(match auth.mode {
                 AuthMode::ApiKey => Account::ApiKey {},
+                AuthMode::Gemini => Account::ApiKey {},
                 AuthMode::ChatGPT => {
                     let email = auth.get_account_email();
                     let plan_type = auth.account_plan_type();

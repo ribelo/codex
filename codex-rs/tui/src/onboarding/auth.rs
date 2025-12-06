@@ -5,8 +5,10 @@ use codex_core::auth::AuthCredentialsStoreMode;
 use codex_core::auth::CLIENT_ID;
 use codex_core::auth::login_with_api_key;
 use codex_core::auth::read_openai_api_key_from_env;
+use codex_login::GoogleServerOptions;
 use codex_login::ServerOptions;
 use codex_login::ShutdownHandle;
+use codex_login::run_google_login_server;
 use codex_login::run_login_server;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
@@ -49,6 +51,8 @@ pub(crate) enum SignInState {
     ChatGptContinueInBrowser(ContinueInBrowserState),
     ChatGptSuccessMessage,
     ChatGptSuccess,
+    GeminiSuccessMessage,
+    GeminiSuccess,
     ApiKeyEntry(ApiKeyInputState),
     ApiKeyConfigured,
 }
@@ -83,22 +87,47 @@ impl KeyboardHandler for AuthModeWidget {
         }
 
         match key_event.code {
-            KeyCode::Up | KeyCode::Char('k') => {
-                if self.is_chatgpt_login_allowed() {
-                    self.highlighted_mode = AuthMode::ChatGPT;
+            KeyCode::Up | KeyCode::Char('k') => match self.highlighted_mode {
+                AuthMode::ApiKey => {
+                    if self.is_gemini_login_allowed() {
+                        self.highlighted_mode = AuthMode::Gemini;
+                    } else if self.is_chatgpt_login_allowed() {
+                        self.highlighted_mode = AuthMode::ChatGPT;
+                    }
                 }
-            }
-            KeyCode::Down | KeyCode::Char('j') => {
-                if self.is_api_login_allowed() {
-                    self.highlighted_mode = AuthMode::ApiKey;
+                AuthMode::Gemini => {
+                    if self.is_chatgpt_login_allowed() {
+                        self.highlighted_mode = AuthMode::ChatGPT;
+                    }
                 }
-            }
+                AuthMode::ChatGPT => {}
+            },
+            KeyCode::Down | KeyCode::Char('j') => match self.highlighted_mode {
+                AuthMode::ChatGPT => {
+                    if self.is_gemini_login_allowed() {
+                        self.highlighted_mode = AuthMode::Gemini;
+                    } else if self.is_api_login_allowed() {
+                        self.highlighted_mode = AuthMode::ApiKey;
+                    }
+                }
+                AuthMode::Gemini => {
+                    if self.is_api_login_allowed() {
+                        self.highlighted_mode = AuthMode::ApiKey;
+                    }
+                }
+                AuthMode::ApiKey => {}
+            },
             KeyCode::Char('1') => {
                 if self.is_chatgpt_login_allowed() {
                     self.start_chatgpt_login();
                 }
             }
             KeyCode::Char('2') => {
+                if self.is_gemini_login_allowed() {
+                    self.start_gemini_login();
+                }
+            }
+            KeyCode::Char('3') => {
                 if self.is_api_login_allowed() {
                     self.start_api_key_entry();
                 } else {
@@ -112,16 +141,22 @@ impl KeyboardHandler for AuthModeWidget {
                         AuthMode::ChatGPT if self.is_chatgpt_login_allowed() => {
                             self.start_chatgpt_login();
                         }
+                        AuthMode::Gemini if self.is_gemini_login_allowed() => {
+                            self.start_gemini_login();
+                        }
                         AuthMode::ApiKey if self.is_api_login_allowed() => {
                             self.start_api_key_entry();
                         }
                         AuthMode::ChatGPT => {}
-                        AuthMode::ApiKey => {
+                        AuthMode::ApiKey | AuthMode::Gemini => {
                             self.disallow_api_login();
                         }
                     },
                     SignInState::ChatGptSuccessMessage => {
                         *self.sign_in_state.write().unwrap() = SignInState::ChatGptSuccess;
+                    }
+                    SignInState::GeminiSuccessMessage => {
+                        *self.sign_in_state.write().unwrap() = SignInState::GeminiSuccess;
                     }
                     _ => {}
                 }
@@ -161,6 +196,10 @@ pub(crate) struct AuthModeWidget {
 impl AuthModeWidget {
     fn is_api_login_allowed(&self) -> bool {
         !matches!(self.forced_login_method, Some(ForcedLoginMethod::Chatgpt))
+    }
+
+    fn is_gemini_login_allowed(&self) -> bool {
+        self.forced_login_method.is_none()
     }
 
     fn is_chatgpt_login_allowed(&self) -> bool {
@@ -228,9 +267,23 @@ impl AuthModeWidget {
             chatgpt_description,
         ));
         lines.push("".into());
+
+        let gemini_description = if self.is_gemini_login_allowed() {
+            "Sign in with your Google account"
+        } else {
+            "Gemini login is disabled"
+        };
+        lines.extend(create_mode_item(
+            1,
+            AuthMode::Gemini,
+            "Sign in with Gemini",
+            gemini_description,
+        ));
+        lines.push("".into());
+
         if self.is_api_login_allowed() {
             lines.extend(create_mode_item(
-                1,
+                2,
                 AuthMode::ApiKey,
                 "Provide your own API key",
                 "Pay for what you use",
@@ -321,6 +374,50 @@ impl AuthModeWidget {
     fn render_chatgpt_success(&self, area: Rect, buf: &mut Buffer) {
         let lines = vec![
             "✓ Signed in with your ChatGPT account"
+                .fg(Color::Green)
+                .into(),
+        ];
+
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
+            .render(area, buf);
+    }
+
+    fn render_gemini_success_message(&self, area: Rect, buf: &mut Buffer) {
+        let lines = vec![
+            "✓ Signed in with your Google account"
+                .fg(Color::Green)
+                .into(),
+            "".into(),
+            "  Before you start:".into(),
+            "".into(),
+            "  Decide how much autonomy you want to grant Codex".into(),
+            Line::from(vec![
+                "  For more details see the ".into(),
+                "\u{1b}]8;;https://github.com/openai/codex\u{7}Codex docs\u{1b}]8;;\u{7}"
+                    .underlined(),
+            ])
+            .dim(),
+            "".into(),
+            "  Codex can make mistakes".into(),
+            "  Review the code it writes and commands it runs"
+                .dim()
+                .into(),
+            "".into(),
+            "  Powered by your Google account".into(),
+            Line::from(vec!["  Uses your Google Cloud project's quotas".into()]).dim(),
+            "".into(),
+            "  Press Enter to continue".fg(Color::Cyan).into(),
+        ];
+
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
+            .render(area, buf);
+    }
+
+    fn render_gemini_success(&self, area: Rect, buf: &mut Buffer) {
+        let lines = vec![
+            "✓ Signed in with your Google account"
                 .fg(Color::Green)
                 .into(),
         ];
@@ -608,6 +705,52 @@ impl AuthModeWidget {
             }
         }
     }
+
+    fn start_gemini_login(&mut self) {
+        if !self.is_chatgpt_login_allowed() {
+            return;
+        }
+
+        self.error = None;
+        let opts = GoogleServerOptions {
+            codex_home: self.codex_home.clone(),
+            open_browser: true,
+            project_id: None,
+            cli_auth_credentials_store_mode: self.cli_auth_credentials_store_mode,
+        };
+
+        let sign_in_state = self.sign_in_state.clone();
+        let request_frame = self.request_frame.clone();
+        let auth_manager = self.auth_manager.clone();
+        tokio::spawn(async move {
+            match run_google_login_server(opts).await {
+                Ok(server) => {
+                    {
+                        *sign_in_state.write().unwrap() =
+                            SignInState::ChatGptContinueInBrowser(ContinueInBrowserState {
+                                auth_url: server.auth_url.clone(),
+                                shutdown_flag: Some(server.shutdown_handle.clone()),
+                            });
+                    }
+                    request_frame.schedule_frame();
+
+                    match server.block_until_done().await {
+                        Ok(_) => {
+                            auth_manager.reload();
+                            *sign_in_state.write().unwrap() = SignInState::GeminiSuccessMessage;
+                        }
+                        Err(_) => {
+                            *sign_in_state.write().unwrap() = SignInState::PickMode;
+                        }
+                    }
+                }
+                Err(_) => {
+                    *sign_in_state.write().unwrap() = SignInState::PickMode;
+                }
+            }
+            request_frame.schedule_frame();
+        });
+    }
 }
 
 impl StepStateProvider for AuthModeWidget {
@@ -617,8 +760,11 @@ impl StepStateProvider for AuthModeWidget {
             SignInState::PickMode
             | SignInState::ApiKeyEntry(_)
             | SignInState::ChatGptContinueInBrowser(_)
-            | SignInState::ChatGptSuccessMessage => StepState::InProgress,
-            SignInState::ChatGptSuccess | SignInState::ApiKeyConfigured => StepState::Complete,
+            | SignInState::ChatGptSuccessMessage
+            | SignInState::GeminiSuccessMessage => StepState::InProgress,
+            SignInState::ChatGptSuccess
+            | SignInState::GeminiSuccess
+            | SignInState::ApiKeyConfigured => StepState::Complete,
         }
     }
 }
@@ -638,6 +784,12 @@ impl WidgetRef for AuthModeWidget {
             }
             SignInState::ChatGptSuccess => {
                 self.render_chatgpt_success(area, buf);
+            }
+            SignInState::GeminiSuccessMessage => {
+                self.render_gemini_success_message(area, buf);
+            }
+            SignInState::GeminiSuccess => {
+                self.render_gemini_success(area, buf);
             }
             SignInState::ApiKeyEntry(state) => {
                 self.render_api_key_entry(area, buf, state);

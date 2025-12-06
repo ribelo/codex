@@ -64,6 +64,47 @@ pub async fn run_login_with_chatgpt(cli_config_overrides: CliConfigOverrides) ->
     }
 }
 
+pub async fn run_login_with_gemini(cli_config_overrides: CliConfigOverrides) -> ! {
+    let config = load_config_or_exit(cli_config_overrides).await;
+    run_login_with_gemini_config(&config).await;
+}
+
+pub async fn run_login_with_gemini_config(config: &Config) -> ! {
+    if config.forced_login_method.is_some() {
+        eprintln!("Gemini login is disabled by this workspace.");
+        std::process::exit(1);
+    }
+
+    eprintln!(
+        "Gemini login requires a Google Cloud project with the Gemini API enabled.\nEnter a project ID to use that project or leave blank to let Codex manage one for you."
+    );
+    let project_id = prompt_gemini_project_id();
+
+    let opts = codex_login::GoogleServerOptions {
+        codex_home: config.codex_home.clone(),
+        open_browser: true,
+        project_id,
+        cli_auth_credentials_store_mode: config.cli_auth_credentials_store_mode,
+    };
+
+    match codex_login::run_google_login_server(opts).await {
+        Ok(server) => match server.block_until_done().await {
+            Ok(_) => {
+                eprintln!("Successfully logged in with Gemini");
+                std::process::exit(0);
+            }
+            Err(e) => {
+                eprintln!("Error logging in with Gemini: {e}");
+                std::process::exit(1);
+            }
+        },
+        Err(e) => {
+            eprintln!("Error logging in with Gemini: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
 pub async fn run_login_with_api_key(
     cli_config_overrides: CliConfigOverrides,
     api_key: String,
@@ -155,22 +196,42 @@ pub async fn run_login_status(cli_config_overrides: CliConfigOverrides) -> ! {
     let config = load_config_or_exit(cli_config_overrides).await;
 
     match CodexAuth::from_auth_storage(&config.codex_home, config.cli_auth_credentials_store_mode) {
-        Ok(Some(auth)) => match auth.mode {
-            AuthMode::ApiKey => match auth.get_token().await {
-                Ok(api_key) => {
-                    eprintln!("Logged in using an API key - {}", safe_format_key(&api_key));
+        Ok(Some(auth)) => {
+            let has_gemini = auth.gemini_account_count() > 0;
+            match auth.mode {
+                AuthMode::ApiKey => match auth.get_token().await {
+                    Ok(api_key) => {
+                        let suffix = if has_gemini {
+                            " (Gemini token available)"
+                        } else {
+                            ""
+                        };
+                        eprintln!(
+                            "Logged in using an API key - {}{suffix}",
+                            safe_format_key(&api_key)
+                        );
+                        std::process::exit(0);
+                    }
+                    Err(e) => {
+                        eprintln!("Unexpected error retrieving API key: {e}");
+                        std::process::exit(1);
+                    }
+                },
+                AuthMode::ChatGPT => {
+                    let suffix = if has_gemini {
+                        " (Gemini token available)"
+                    } else {
+                        ""
+                    };
+                    eprintln!("Logged in using ChatGPT{suffix}");
                     std::process::exit(0);
                 }
-                Err(e) => {
-                    eprintln!("Unexpected error retrieving API key: {e}");
-                    std::process::exit(1);
+                AuthMode::Gemini => {
+                    eprintln!("Logged in using Gemini");
+                    std::process::exit(0);
                 }
-            },
-            AuthMode::ChatGPT => {
-                eprintln!("Logged in using ChatGPT");
-                std::process::exit(0);
             }
-        },
+        }
         Ok(None) => {
             eprintln!("Not logged in");
             std::process::exit(1);
@@ -227,6 +288,29 @@ fn safe_format_key(key: &str) -> String {
     let prefix = &key[..8];
     let suffix = &key[key.len() - 5..];
     format!("{prefix}***{suffix}")
+}
+
+fn prompt_gemini_project_id() -> Option<String> {
+    use std::io::Write;
+
+    print!("Project ID (leave blank to auto-manage): ");
+    let _ = std::io::stdout().flush();
+
+    let mut input = String::new();
+    match std::io::stdin().read_line(&mut input) {
+        Ok(_) => {
+            let trimmed = input.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        }
+        Err(err) => {
+            eprintln!("Failed to read project ID: {err}");
+            None
+        }
+    }
 }
 
 #[cfg(test)]
