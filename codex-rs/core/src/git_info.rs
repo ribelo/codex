@@ -678,16 +678,22 @@ mod tests {
 
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let repo_path = create_test_git_repo(&temp_dir).await;
+        let envs = vec![
+            ("GIT_CONFIG_GLOBAL", "/dev/null"),
+            ("GIT_CONFIG_NOSYSTEM", "1"),
+        ];
 
         // Make three distinct commits with small delays to ensure ordering by timestamp.
         fs::write(repo_path.join("file.txt"), "one").unwrap();
         Command::new("git")
+            .envs(envs.clone())
             .args(["add", "file.txt"])
             .current_dir(&repo_path)
             .output()
             .await
             .expect("git add");
         Command::new("git")
+            .envs(envs.clone())
             .args(["commit", "-m", "first change"])
             .current_dir(&repo_path)
             .output()
@@ -698,12 +704,14 @@ mod tests {
 
         fs::write(repo_path.join("file.txt"), "two").unwrap();
         Command::new("git")
+            .envs(envs.clone())
             .args(["add", "file.txt"])
             .current_dir(&repo_path)
             .output()
             .await
             .expect("git add 2");
         Command::new("git")
+            .envs(envs.clone())
             .args(["commit", "-m", "second change"])
             .current_dir(&repo_path)
             .output()
@@ -714,12 +722,14 @@ mod tests {
 
         fs::write(repo_path.join("file.txt"), "three").unwrap();
         Command::new("git")
+            .envs(envs.clone())
             .args(["add", "file.txt"])
             .current_dir(&repo_path)
             .output()
             .await
             .expect("git add 3");
         Command::new("git")
+            .envs(envs)
             .args(["commit", "-m", "third change"])
             .current_dir(&repo_path)
             .output()

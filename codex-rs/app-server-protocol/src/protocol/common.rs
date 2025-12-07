@@ -29,6 +29,7 @@ pub enum AuthMode {
     ApiKey,
     ChatGPT,
     Gemini,
+    Antigravity,
 }
 
 /// Generates an `enum ClientRequest` where each variant is a request that the

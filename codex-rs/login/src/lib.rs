@@ -4,6 +4,7 @@ mod pkce;
 mod server;
 
 pub use device_code_auth::run_device_code_login;
+pub use google_server::GoogleProviderKind;
 pub use google_server::GoogleServerOptions;
 pub use google_server::run_google_login_server;
 pub use server::LoginServer;

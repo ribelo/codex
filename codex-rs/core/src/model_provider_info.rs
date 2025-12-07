@@ -52,6 +52,9 @@ pub enum WireApi {
 
     /// Google Gemini API.
     Gemini,
+
+    /// Google Antigravity API.
+    Antigravity,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -61,6 +64,7 @@ pub enum ProviderKind {
     OpenAi,
     Anthropic,
     Gemini,
+    Antigravity,
 }
 
 /// Serializable representation of a provider definition.
@@ -170,6 +174,7 @@ impl<'de> Deserialize<'de> for ModelProviderInfo {
         let wire_api = raw.wire_api.unwrap_or(match provider_kind {
             ProviderKind::Anthropic => WireApi::Anthropic,
             ProviderKind::Gemini => WireApi::Gemini,
+            ProviderKind::Antigravity => WireApi::Antigravity,
             ProviderKind::OpenAi => WireApi::Chat,
         });
 
@@ -490,8 +495,10 @@ impl ModelProviderInfo {
     }
 
     pub fn to_gemini_provider(&self) -> crate::error::Result<GeminiProvider> {
-        if !matches!(self.provider_kind, ProviderKind::Gemini)
-            && !matches!(self.wire_api, WireApi::Gemini)
+        if !matches!(
+            self.provider_kind,
+            ProviderKind::Gemini | ProviderKind::Antigravity
+        ) && !matches!(self.wire_api, WireApi::Gemini | WireApi::Antigravity)
         {
             return Err(CodexErr::UnsupportedOperation(format!(
                 "Model provider {} is not Gemini-compatible",
@@ -577,7 +584,7 @@ impl ModelProviderInfo {
             wire: match self.wire_api {
                 WireApi::Responses => ApiWireApi::Responses,
                 WireApi::Chat => ApiWireApi::Chat,
-                WireApi::Anthropic | WireApi::Gemini => {
+                WireApi::Anthropic | WireApi::Gemini | WireApi::Antigravity => {
                     return Err(crate::error::CodexErr::UnsupportedOperation(
                         "codex-api Provider adaptation is not supported for this provider"
                             .to_string(),

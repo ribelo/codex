@@ -7,6 +7,7 @@ use codex_core::auth::login_with_api_key;
 use codex_core::auth::logout;
 use codex_core::config::Config;
 use codex_core::config::ConfigOverrides;
+use codex_login::GoogleProviderKind;
 use codex_login::ServerOptions;
 use codex_login::run_device_code_login;
 use codex_login::run_login_server;
@@ -69,6 +70,44 @@ pub async fn run_login_with_gemini(cli_config_overrides: CliConfigOverrides) -> 
     run_login_with_gemini_config(&config).await;
 }
 
+pub async fn run_login_with_antigravity(cli_config_overrides: CliConfigOverrides) -> ! {
+    let config = load_config_or_exit(cli_config_overrides).await;
+    if config.forced_login_method.is_some() {
+        eprintln!("Antigravity login is disabled by this workspace.");
+        std::process::exit(1);
+    }
+
+    eprintln!(
+        "Antigravity login requires a Google Cloud project with the Gemini API enabled.\nEnter the project ID to use for all Antigravity requests."
+    );
+    let project_id = prompt_required_gemini_project_id();
+
+    let opts = codex_login::GoogleServerOptions {
+        codex_home: config.codex_home.clone(),
+        open_browser: true,
+        project_id: Some(project_id),
+        cli_auth_credentials_store_mode: config.cli_auth_credentials_store_mode,
+        provider_kind: GoogleProviderKind::Antigravity,
+    };
+
+    match codex_login::run_google_login_server(opts).await {
+        Ok(server) => match server.block_until_done().await {
+            Ok(_) => {
+                eprintln!("Successfully logged in with Antigravity");
+                std::process::exit(0);
+            }
+            Err(e) => {
+                eprintln!("Error logging in with Antigravity: {e}");
+                std::process::exit(1);
+            }
+        },
+        Err(e) => {
+            eprintln!("Error logging in with Antigravity: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
 pub async fn run_login_with_gemini_config(config: &Config) -> ! {
     if config.forced_login_method.is_some() {
         eprintln!("Gemini login is disabled by this workspace.");
@@ -85,6 +124,7 @@ pub async fn run_login_with_gemini_config(config: &Config) -> ! {
         open_browser: true,
         project_id,
         cli_auth_credentials_store_mode: config.cli_auth_credentials_store_mode,
+        provider_kind: GoogleProviderKind::Gemini,
     };
 
     match codex_login::run_google_login_server(opts).await {
@@ -198,14 +238,16 @@ pub async fn run_login_status(cli_config_overrides: CliConfigOverrides) -> ! {
     match CodexAuth::from_auth_storage(&config.codex_home, config.cli_auth_credentials_store_mode) {
         Ok(Some(auth)) => {
             let has_gemini = auth.gemini_account_count() > 0;
+            let has_antigravity = auth.antigravity_account_count() > 0;
+            let suffix = match (has_gemini, has_antigravity) {
+                (true, true) => " (Gemini and Antigravity tokens available)",
+                (true, false) => " (Gemini token available)",
+                (false, true) => " (Antigravity token available)",
+                _ => "",
+            };
             match auth.mode {
                 AuthMode::ApiKey => match auth.get_token().await {
                     Ok(api_key) => {
-                        let suffix = if has_gemini {
-                            " (Gemini token available)"
-                        } else {
-                            ""
-                        };
                         eprintln!(
                             "Logged in using an API key - {}{suffix}",
                             safe_format_key(&api_key)
@@ -218,16 +260,15 @@ pub async fn run_login_status(cli_config_overrides: CliConfigOverrides) -> ! {
                     }
                 },
                 AuthMode::ChatGPT => {
-                    let suffix = if has_gemini {
-                        " (Gemini token available)"
-                    } else {
-                        ""
-                    };
                     eprintln!("Logged in using ChatGPT{suffix}");
                     std::process::exit(0);
                 }
                 AuthMode::Gemini => {
                     eprintln!("Logged in using Gemini");
+                    std::process::exit(0);
+                }
+                AuthMode::Antigravity => {
+                    eprintln!("Logged in using Antigravity");
                     std::process::exit(0);
                 }
             }
@@ -309,6 +350,29 @@ fn prompt_gemini_project_id() -> Option<String> {
         Err(err) => {
             eprintln!("Failed to read project ID: {err}");
             None
+        }
+    }
+}
+
+fn prompt_required_gemini_project_id() -> String {
+    loop {
+        use std::io::Write;
+
+        print!("Project ID: ");
+        let _ = std::io::stdout().flush();
+
+        let mut input = String::new();
+        match std::io::stdin().read_line(&mut input) {
+            Ok(_) => {
+                let trimmed = input.trim();
+                if !trimmed.is_empty() {
+                    return trimmed.to_string();
+                }
+                eprintln!("A project ID is required for Antigravity. Please enter a project ID.");
+            }
+            Err(err) => {
+                eprintln!("Failed to read project ID: {err}");
+            }
         }
     }
 }

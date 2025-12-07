@@ -18,6 +18,9 @@ use std::time::Duration;
 use codex_app_server_protocol::AuthMode;
 use codex_protocol::config_types::ForcedLoginMethod;
 
+use crate::antigravity::ANTIGRAVITY_CLIENT_ID;
+use crate::antigravity::ANTIGRAVITY_CLIENT_SECRET;
+use crate::antigravity::ANTIGRAVITY_TOKEN_URL;
 pub use crate::auth::storage::AuthCredentialsStoreMode;
 pub use crate::auth::storage::AuthDotJson;
 use crate::auth::storage::AuthStorageBackend;
@@ -112,6 +115,22 @@ impl From<RefreshTokenError> for std::io::Error {
 impl CodexAuth {
     pub async fn refresh_token(&self) -> Result<String, RefreshTokenError> {
         tracing::info!("Refreshing token");
+
+        if self.mode == AuthMode::Gemini {
+            let (tokens, _) = self
+                .gemini_oauth_context_for_account(0)
+                .await
+                .map_err(RefreshTokenError::from)?;
+            return Ok(tokens.access_token);
+        }
+
+        if self.mode == AuthMode::Antigravity {
+            let (tokens, _) = self
+                .antigravity_oauth_context_for_account(0)
+                .await
+                .map_err(RefreshTokenError::from)?;
+            return Ok(tokens.access_token);
+        }
 
         let token_data = self.get_current_token_data().ok_or_else(|| {
             RefreshTokenError::Transient(std::io::Error::other("Token data is not available."))
@@ -213,6 +232,9 @@ impl CodexAuth {
             AuthMode::Gemini => Err(std::io::Error::other(
                 "Gemini tokens cannot be used as ChatGPT access tokens",
             )),
+            AuthMode::Antigravity => Err(std::io::Error::other(
+                "Antigravity tokens cannot be used as ChatGPT access tokens",
+            )),
         }
     }
 
@@ -245,12 +267,44 @@ impl CodexAuth {
             .collect()
     }
 
+    pub fn get_antigravity_tokens(&self) -> Option<GeminiTokenData> {
+        self.get_all_antigravity_tokens().first().cloned()
+    }
+
+    pub fn get_all_antigravity_tokens(&self) -> Vec<GeminiTokenData> {
+        self.get_current_auth_json()
+            .map(|auth| auth.antigravity_accounts)
+            .unwrap_or_default()
+    }
+
+    pub fn antigravity_account_count(&self) -> usize {
+        self.get_all_antigravity_tokens().len()
+    }
+
+    pub fn antigravity_account_emails(&self) -> Vec<String> {
+        self.get_all_antigravity_tokens()
+            .into_iter()
+            .filter_map(|token| token.email)
+            .collect()
+    }
+
     pub(crate) async fn gemini_oauth_context_for_account(
         &self,
         index: usize,
     ) -> std::io::Result<(GeminiTokenData, String)> {
         let tokens = self.ensure_valid_gemini_tokens_for(index).await?;
         let project_id = self.ensure_gemini_project_id_for(index, &tokens).await?;
+        Ok((tokens, project_id))
+    }
+
+    pub(crate) async fn antigravity_oauth_context_for_account(
+        &self,
+        index: usize,
+    ) -> std::io::Result<(GeminiTokenData, String)> {
+        let tokens = self.ensure_valid_antigravity_tokens_for(index).await?;
+        let project_id = Self::resolve_project_id(&tokens).ok_or_else(|| {
+            std::io::Error::other("Antigravity requires a project ID. Please log in again.")
+        })?;
         Ok((tokens, project_id))
     }
 
@@ -320,24 +374,35 @@ impl CodexAuth {
             .await
     }
 
+    async fn ensure_valid_antigravity_tokens_for(
+        &self,
+        index: usize,
+    ) -> std::io::Result<GeminiTokenData> {
+        let tokens = self.update_antigravity_account(index, |antigravity| antigravity.clone())?;
+
+        let should_refresh = tokens
+            .expires_at
+            .map(|expires_at| {
+                expires_at
+                    <= Utc::now() + chrono::Duration::seconds(GEMINI_ACCESS_TOKEN_LEEWAY_SECONDS)
+            })
+            .unwrap_or(true);
+
+        if !should_refresh {
+            return Ok(tokens);
+        }
+
+        self.refresh_antigravity_access_token_for(index, &tokens.refresh_token)
+            .await
+    }
+
     async fn ensure_gemini_project_id_for(
         &self,
         index: usize,
         tokens: &GeminiTokenData,
     ) -> std::io::Result<String> {
-        if let Some(project_id) = tokens
-            .project_id
-            .as_deref()
-            .filter(|value| !value.is_empty())
-        {
-            return Ok(project_id.to_string());
-        }
-        if let Some(managed_project_id) = tokens
-            .managed_project_id
-            .as_deref()
-            .filter(|value| !value.is_empty())
-        {
-            return Ok(managed_project_id.to_string());
+        if let Some(project_id) = Self::resolve_project_id(tokens) {
+            return Ok(project_id);
         }
 
         let access_token = tokens.access_token.clone();
@@ -379,6 +444,41 @@ impl CodexAuth {
         }
 
         Err(std::io::Error::other(GEMINI_PROJECT_REQUIRED_MESSAGE))
+    }
+
+    fn resolve_project_id(tokens: &GeminiTokenData) -> Option<String> {
+        tokens
+            .project_id
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .or_else(|| {
+                tokens
+                    .managed_project_id
+                    .as_deref()
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string)
+            })
+    }
+
+    fn update_antigravity_account<F, R>(&self, index: usize, updater: F) -> std::io::Result<R>
+    where
+        F: FnOnce(&mut GeminiTokenData) -> R,
+    {
+        let mut auth_dot_json = self.storage.load()?.ok_or_else(|| {
+            std::io::Error::other("auth.json missing while updating Antigravity tokens")
+        })?;
+        if auth_dot_json.antigravity_accounts.is_empty() {
+            return Err(std::io::Error::other("Antigravity tokens not available"));
+        }
+        if index >= auth_dot_json.antigravity_accounts.len() {
+            return Err(std::io::Error::other(format!(
+                "Antigravity account index {index} out of range"
+            )));
+        }
+        let result = updater(&mut auth_dot_json.antigravity_accounts[index]);
+        self.persist_auth(&auth_dot_json)?;
+        Ok(result)
     }
 
     async fn refresh_gemini_access_token_for(
@@ -439,6 +539,64 @@ impl CodexAuth {
         self.update_gemini_account(index, |gemini| gemini.clone())
     }
 
+    async fn refresh_antigravity_access_token_for(
+        &self,
+        index: usize,
+        refresh_token: &str,
+    ) -> std::io::Result<GeminiTokenData> {
+        #[derive(Deserialize)]
+        struct RefreshResponse {
+            access_token: String,
+            expires_in: i64,
+            refresh_token: Option<String>,
+        }
+
+        let body = format!(
+            "grant_type=refresh_token&refresh_token={}&client_id={}&client_secret={}",
+            urlencoding::encode(refresh_token),
+            urlencoding::encode(ANTIGRAVITY_CLIENT_ID),
+            urlencoding::encode(ANTIGRAVITY_CLIENT_SECRET)
+        );
+
+        let response = self
+            .client
+            .post(ANTIGRAVITY_TOKEN_URL)
+            .header(
+                reqwest::header::CONTENT_TYPE,
+                "application/x-www-form-urlencoded",
+            )
+            .body(body)
+            .send()
+            .await
+            .map_err(std::io::Error::other)?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            if error_text.contains("invalid_grant") {
+                return Err(std::io::Error::other(
+                    "Antigravity credentials were revoked. Reauthenticate to continue.",
+                ));
+            }
+            return Err(std::io::Error::other(format!(
+                "Failed to refresh Antigravity access token ({status}): {error_text}"
+            )));
+        }
+
+        let payload: RefreshResponse = response.json().await.map_err(std::io::Error::other)?;
+        let expires_at = Utc::now() + chrono::Duration::seconds(payload.expires_in);
+        let refresh_override = payload.refresh_token.clone();
+        self.update_antigravity_account(index, |account| {
+            account.access_token = payload.access_token.clone();
+            account.expires_at = Some(expires_at);
+            if let Some(new_refresh) = refresh_override.clone() {
+                account.refresh_token = new_refresh;
+            }
+        })?;
+
+        self.update_antigravity_account(index, |account| account.clone())
+    }
+
     fn update_gemini_account<F, R>(&self, index: usize, updater: F) -> std::io::Result<R>
     where
         F: FnOnce(&mut GeminiTokenData) -> R,
@@ -484,6 +642,7 @@ impl CodexAuth {
                 account_id: Some("account_id".to_string()),
             }),
             gemini_accounts: Vec::new(),
+            antigravity_accounts: Vec::new(),
             last_refresh: Some(Utc::now()),
         };
 
@@ -549,6 +708,7 @@ pub fn login_with_api_key(
         openai_api_key: Some(api_key.to_string()),
         tokens: None,
         gemini_accounts: Vec::new(),
+        antigravity_accounts: Vec::new(),
         last_refresh: None,
     };
     save_auth(codex_home, &auth_dot_json, auth_credentials_store_mode)
@@ -592,8 +752,11 @@ pub async fn enforce_login_restrictions(config: &Config) -> std::io::Result<()> 
             (ForcedLoginMethod::Api, AuthMode::ApiKey) => None,
             (ForcedLoginMethod::Chatgpt, AuthMode::ChatGPT) => None,
             (ForcedLoginMethod::Api, AuthMode::Gemini)
-            | (ForcedLoginMethod::Chatgpt, AuthMode::Gemini) => Some(
-                "Gemini login is not permitted by the configured forced login method.".to_string(),
+            | (ForcedLoginMethod::Chatgpt, AuthMode::Gemini)
+            | (ForcedLoginMethod::Api, AuthMode::Antigravity)
+            | (ForcedLoginMethod::Chatgpt, AuthMode::Antigravity) => Some(
+                "Gemini or Antigravity login is not permitted by the configured forced login method."
+                    .to_string(),
             ),
             (ForcedLoginMethod::Api, AuthMode::ChatGPT) => Some(
                 "API key login is required, but ChatGPT is currently being used. Logging out."
@@ -692,6 +855,7 @@ fn load_auth(
         openai_api_key: auth_json_api_key,
         tokens,
         gemini_accounts,
+        antigravity_accounts,
         last_refresh,
     } = auth_dot_json;
 
@@ -699,6 +863,7 @@ fn load_auth(
         openai_api_key: None,
         tokens,
         gemini_accounts,
+        antigravity_accounts,
         last_refresh,
     };
 
@@ -716,6 +881,15 @@ fn load_auth(
         return Ok(Some(CodexAuth {
             api_key: None,
             mode: AuthMode::ChatGPT,
+            storage: storage.clone(),
+            auth_dot_json: Arc::new(Mutex::new(Some(snapshot))),
+            client,
+        }));
+    }
+    if !snapshot.antigravity_accounts.is_empty() {
+        return Ok(Some(CodexAuth {
+            api_key: None,
+            mode: AuthMode::Antigravity,
             storage: storage.clone(),
             auth_dot_json: Arc::new(Mutex::new(Some(snapshot))),
             client,
@@ -1201,6 +1375,7 @@ mod tests {
                     account_id: None,
                 }),
                 gemini_accounts: Vec::new(),
+                antigravity_accounts: Vec::new(),
                 last_refresh: Some(last_refresh),
             },
             auth_dot_json
@@ -1242,6 +1417,7 @@ mod tests {
                 email: None,
                 expires_at: None,
             }],
+            antigravity_accounts: Vec::new(),
             last_refresh: None,
         };
         super::save_auth(dir.path(), &auth_dot_json, AuthCredentialsStoreMode::File).unwrap();
@@ -1270,6 +1446,7 @@ mod tests {
             openai_api_key: Some("sk-test-key".to_string()),
             tokens: None,
             gemini_accounts: vec![gemini_token.clone()],
+            antigravity_accounts: Vec::new(),
             last_refresh: Some(Utc::now()),
         };
         super::save_auth(dir.path(), &auth_dot_json, AuthCredentialsStoreMode::File).unwrap();
@@ -1290,6 +1467,7 @@ mod tests {
             openai_api_key: Some("sk-test-key".to_string()),
             tokens: None,
             gemini_accounts: Vec::new(),
+            antigravity_accounts: Vec::new(),
             last_refresh: None,
         };
         super::save_auth(dir.path(), &auth_dot_json, AuthCredentialsStoreMode::File)?;

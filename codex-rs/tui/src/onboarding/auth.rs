@@ -5,6 +5,7 @@ use codex_core::auth::AuthCredentialsStoreMode;
 use codex_core::auth::CLIENT_ID;
 use codex_core::auth::login_with_api_key;
 use codex_core::auth::read_openai_api_key_from_env;
+use codex_login::GoogleProviderKind;
 use codex_login::GoogleServerOptions;
 use codex_login::ServerOptions;
 use codex_login::ShutdownHandle;
@@ -95,7 +96,7 @@ impl KeyboardHandler for AuthModeWidget {
                         self.highlighted_mode = AuthMode::ChatGPT;
                     }
                 }
-                AuthMode::Gemini => {
+                AuthMode::Gemini | AuthMode::Antigravity => {
                     if self.is_chatgpt_login_allowed() {
                         self.highlighted_mode = AuthMode::ChatGPT;
                     }
@@ -110,7 +111,7 @@ impl KeyboardHandler for AuthModeWidget {
                         self.highlighted_mode = AuthMode::ApiKey;
                     }
                 }
-                AuthMode::Gemini => {
+                AuthMode::Gemini | AuthMode::Antigravity => {
                     if self.is_api_login_allowed() {
                         self.highlighted_mode = AuthMode::ApiKey;
                     }
@@ -148,7 +149,7 @@ impl KeyboardHandler for AuthModeWidget {
                             self.start_api_key_entry();
                         }
                         AuthMode::ChatGPT => {}
-                        AuthMode::ApiKey | AuthMode::Gemini => {
+                        AuthMode::ApiKey | AuthMode::Gemini | AuthMode::Antigravity => {
                             self.disallow_api_login();
                         }
                     },
@@ -717,6 +718,7 @@ impl AuthModeWidget {
             open_browser: true,
             project_id: None,
             cli_auth_credentials_store_mode: self.cli_auth_credentials_store_mode,
+            provider_kind: GoogleProviderKind::Gemini,
         };
 
         let sign_in_state = self.sign_in_state.clone();
