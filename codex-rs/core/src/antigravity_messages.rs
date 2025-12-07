@@ -21,15 +21,73 @@ use crate::error::ConnectionFailedError;
 use crate::error::Result;
 use crate::error::UnexpectedResponseError;
 use crate::gemini_messages::GeminiRequest;
+use crate::gemini_messages::SafetySetting;
 use crate::gemini_messages::build_gemini_payload;
 use crate::gemini_messages::process_gemini_sse;
 use crate::model_provider_info::GeminiProvider;
 use crate::openai_models::model_family::ModelFamily;
 use crate::util::backoff;
 use crate::util::try_parse_error_message;
+use rand::Rng;
 
 const ANTIGRAVITY_AUTH_HINT: &str =
     "Antigravity requires a valid OAuth login. Run `codex login --antigravity`.";
+
+/// Maps model names to their Antigravity-internal variants.
+/// For Gemini models: gemini-3-pro-preview -> gemini-3-pro-low or gemini-3-pro-high
+/// Claude models should be specified directly in config (e.g., claude-opus-4-5-thinking)
+fn map_antigravity_model(model: &str, request: &GeminiRequest) -> String {
+    // Map Gemini 3 Pro to -low/-high variant based on thinking level
+    if model == "gemini-3-pro-preview" || model.starts_with("gemini-3-pro") {
+        let thinking_level = request
+            .generation_config
+            .as_ref()
+            .and_then(|gc| gc.thinking_config.as_ref())
+            .and_then(|tc| tc.thinking_level.as_ref())
+            .map(std::string::String::as_str)
+            .unwrap_or("high");
+
+        if thinking_level == "low" {
+            return "gemini-3-pro-low".to_string();
+        }
+        return "gemini-3-pro-high".to_string();
+    }
+
+    model.to_string()
+}
+
+/// Generate Antigravity session ID: -{random_number}
+fn generate_session_id() -> String {
+    let mut rng = rand::rng();
+    let n: u64 = rng.random_range(1_000_000_000_000_000_000..=9_999_999_999_999_999_999);
+    format!("-{n}")
+}
+
+/// Default safety settings to prevent content filtering (per reference implementation)
+fn default_safety_settings() -> Vec<SafetySetting> {
+    vec![
+        SafetySetting {
+            category: "HARM_CATEGORY_HARASSMENT".to_string(),
+            threshold: "OFF".to_string(),
+        },
+        SafetySetting {
+            category: "HARM_CATEGORY_HATE_SPEECH".to_string(),
+            threshold: "OFF".to_string(),
+        },
+        SafetySetting {
+            category: "HARM_CATEGORY_SEXUALLY_EXPLICIT".to_string(),
+            threshold: "OFF".to_string(),
+        },
+        SafetySetting {
+            category: "HARM_CATEGORY_DANGEROUS_CONTENT".to_string(),
+            threshold: "OFF".to_string(),
+        },
+        SafetySetting {
+            category: "HARM_CATEGORY_CIVIC_INTEGRITY".to_string(),
+            threshold: "BLOCK_NONE".to_string(),
+        },
+    ]
+}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -50,29 +108,51 @@ pub(crate) async fn stream_antigravity_messages(
     otel_event_manager: &OtelEventManager,
     auth: Option<CodexAuth>,
 ) -> Result<ResponseStream> {
-    let (payload, normalized_model) = build_gemini_payload(prompt, config, model_family)?;
+    let (mut payload, normalized_model) = build_gemini_payload(prompt, config, model_family)?;
     let auth =
         auth.ok_or_else(|| CodexErr::UnsupportedOperation(ANTIGRAVITY_AUTH_HINT.to_string()))?;
+
+    // Add Antigravity-specific fields to the request (per reference implementation)
+    payload.session_id = Some(generate_session_id());
+    payload.safety_settings = Some(default_safety_settings());
+
+    // Map model to Antigravity-internal variant (e.g., gemini-3-pro-preview -> gemini-3-pro-high)
+    let antigravity_model = map_antigravity_model(&normalized_model, &payload);
+    tracing::debug!(
+        original_model = %normalized_model,
+        antigravity_model = %antigravity_model,
+        session_id = ?payload.session_id,
+        "Mapped model for Antigravity"
+    );
+
     let mut request_body = AntigravityRequest {
         project: String::new(),
-        user_agent: "antigravity".to_string(),
+        user_agent: "antigravity/1.11.9".to_string(),
         request_id: format!("agent-{}", Uuid::new_v4()),
-        model: normalized_model.clone(),
+        model: antigravity_model,
         request: payload,
     };
 
     let payload_json = to_value(&request_body.request)?;
     let mut attempt = 0_u64;
     let max_retries = provider.request_max_retries();
-    let base_url = provider
-        .base_url
-        .as_deref()
-        .unwrap_or(ANTIGRAVITY_ENDPOINT)
-        .trim_end_matches('/');
-    let url = format!("{base_url}/v1internal:streamGenerateContent?alt=sse");
+    // Order matches Python proxy: sandbox first, then autopush, then production
+    let mut base_urls: Vec<String> = if let Some(custom) = &provider.base_url {
+        vec![custom.trim_end_matches('/').to_string()]
+    } else {
+        vec![
+            ANTIGRAVITY_ENDPOINT.trim_end_matches('/').to_string(), // daily-cloudcode-pa.sandbox
+            "https://autopush-cloudcode-pa.sandbox.googleapis.com".to_string(),
+            "https://cloudcode-pa.googleapis.com".to_string(), // production fallback
+        ]
+    };
+    base_urls.dedup();
+    let mut base_idx = 0_usize;
 
     loop {
         attempt += 1;
+        let base_url = &base_urls[base_idx];
+        let url = format!("{base_url}/v1internal:streamGenerateContent?alt=sse");
         let (tokens, project_id) = auth
             .antigravity_oauth_context_for_account(0)
             .await
@@ -88,13 +168,29 @@ pub(crate) async fn stream_antigravity_messages(
             trace!("POST to {}: {}", url, payload_json);
         }
 
+        // Extract host from base_url for Host header (per Python reference)
+        let host = base_url
+            .trim_start_matches("https://")
+            .trim_start_matches("http://")
+            .split('/')
+            .next()
+            .unwrap_or(base_url);
+
         let req_builder = client
             .post(&url)
-            .bearer_auth(tokens.access_token)
+            .bearer_auth(tokens.access_token.clone())
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .header(reqwest::header::ACCEPT, "text/event-stream")
+            .header(reqwest::header::HOST, host)
             .header(reqwest::header::USER_AGENT, &request_body.user_agent)
             .json(&request_body);
+
+        tracing::debug!(
+            url = %url,
+            host = %host,
+            project = %request_body.project,
+            "Sending Antigravity request"
+        );
 
         let res = otel_event_manager
             .log_request(attempt, || req_builder.send())
@@ -102,6 +198,10 @@ pub(crate) async fn stream_antigravity_messages(
 
         match res {
             Ok(resp) if resp.status().is_success() => {
+                tracing::debug!(
+                    status = %resp.status(),
+                    "Antigravity request succeeded, starting SSE stream"
+                );
                 let (tx_event, rx_event) = mpsc::channel::<Result<ResponseEvent>>(1600);
                 let stream = resp.bytes_stream();
                 tokio::spawn(process_gemini_sse(
@@ -115,6 +215,18 @@ pub(crate) async fn stream_antigravity_messages(
             }
             Ok(resp) => {
                 let status = resp.status();
+                tracing::debug!(
+                    status = %status,
+                    "Antigravity request returned non-success status"
+                );
+                if status == StatusCode::NOT_FOUND && base_idx + 1 < base_urls.len() {
+                    base_idx += 1;
+                    continue;
+                }
+                if status == StatusCode::FORBIDDEN && base_idx + 1 < base_urls.len() {
+                    base_idx += 1;
+                    continue;
+                }
                 let is_retryable = status == StatusCode::TOO_MANY_REQUESTS
                     || status == StatusCode::REQUEST_TIMEOUT
                     || status == StatusCode::CONFLICT
@@ -122,6 +234,11 @@ pub(crate) async fn stream_antigravity_messages(
 
                 if !is_retryable {
                     let body = resp.text().await.unwrap_or_default();
+                    tracing::error!(
+                        status = %status,
+                        body = %body,
+                        "Antigravity request failed with non-retryable error"
+                    );
                     let message = try_parse_error_message(&body);
                     return Err(CodexErr::UnexpectedStatus(UnexpectedResponseError {
                         status,
@@ -156,6 +273,15 @@ pub(crate) async fn stream_antigravity_messages(
                 tokio::time::sleep(delay).await;
             }
             Err(e) => {
+                tracing::error!(
+                    error = %e,
+                    base_idx = base_idx,
+                    "Antigravity request connection failed"
+                );
+                if base_idx + 1 < base_urls.len() {
+                    base_idx += 1;
+                    continue;
+                }
                 if attempt > max_retries {
                     return Err(CodexErr::ConnectionFailed(ConnectionFailedError {
                         source: e,

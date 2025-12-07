@@ -62,7 +62,20 @@ pub(crate) struct GeminiRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     system_instruction: Option<GeminiContent>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    generation_config: Option<GeminiGenerationConfig>,
+    pub(crate) generation_config: Option<GeminiGenerationConfig>,
+    /// Session ID for Antigravity requests
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) session_id: Option<String>,
+    /// Safety settings (mainly for Antigravity to disable content filtering)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) safety_settings: Option<Vec<SafetySetting>>,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SafetySetting {
+    pub category: String,
+    pub threshold: String,
 }
 
 #[derive(Serialize)]
@@ -89,6 +102,8 @@ pub(crate) struct GeminiPart {
 pub(crate) struct GeminiFunctionCall {
     name: String,
     args: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    id: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -96,6 +111,8 @@ pub(crate) struct GeminiFunctionCall {
 pub(crate) struct GeminiFunctionResponse {
     name: String,
     response: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    id: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -143,7 +160,7 @@ pub(crate) struct GeminiGenerationConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     stop_sequences: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    thinking_config: Option<GeminiThinkingConfig>,
+    pub(crate) thinking_config: Option<GeminiThinkingConfig>,
     // response_mime_type: Option<String>,
 }
 
@@ -153,7 +170,7 @@ pub(crate) struct GeminiThinkingConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     thinking_budget: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    thinking_level: Option<String>,
+    pub(crate) thinking_level: Option<String>,
     /// Whether to include reasoning thoughts in the response.
     #[serde(skip_serializing_if = "Option::is_none")]
     include_thoughts: Option<bool>,
@@ -349,6 +366,8 @@ pub(crate) fn build_gemini_payload(
         tool_config,
         system_instruction,
         generation_config: Some(generation_config),
+        session_id: None,
+        safety_settings: None,
     };
 
     Ok((payload, normalized_model))
@@ -767,6 +786,7 @@ fn build_gemini_messages(
                     function_call: Some(GeminiFunctionCall {
                         name: name.clone(),
                         args,
+                        id: Some(call_id.clone()),
                     }),
                     thought_signature,
                     ..Default::default()
@@ -820,19 +840,22 @@ fn build_gemini_messages(
                     function_response: Some(GeminiFunctionResponse {
                         name: func_name,
                         response: response_content,
+                        id: Some(output_call_id.clone()),
                     }),
                     ..Default::default()
                 };
 
+                // Gemini API expects function responses in a "user" role content
                 if let Some(last) = messages.last_mut()
-                    && last.role == "function"
+                    && last.role == "user"
+                    && last.parts.iter().all(|p| p.function_response.is_some())
                 {
                     last.parts.push(part);
                     continue;
                 }
 
                 messages.push(GeminiContent {
-                    role: "function".to_string(),
+                    role: "user".to_string(),
                     parts: vec![part],
                 });
             }
