@@ -685,6 +685,8 @@ pub(crate) fn new_session_info(
         reasoning_effort,
         config.cwd.clone(),
         CODEX_CLI_VERSION,
+        config.active_profile.clone(),
+        config.model_provider.name.clone(),
     );
     let mut parts: Vec<Box<dyn HistoryCell>> = vec![Box::new(header)];
 
@@ -752,6 +754,8 @@ struct SessionHeaderHistoryCell {
     model: String,
     reasoning_effort: Option<ReasoningEffortConfig>,
     directory: PathBuf,
+    profile: Option<String>,
+    provider: String,
 }
 
 impl SessionHeaderHistoryCell {
@@ -760,12 +764,16 @@ impl SessionHeaderHistoryCell {
         reasoning_effort: Option<ReasoningEffortConfig>,
         directory: PathBuf,
         version: &'static str,
+        profile: Option<String>,
+        provider: String,
     ) -> Self {
         Self {
             version,
             model,
             reasoning_effort,
             directory,
+            profile,
+            provider,
         }
     }
 
@@ -827,7 +835,12 @@ impl HistoryCell for SessionHeaderHistoryCell {
         const CHANGE_MODEL_HINT_COMMAND: &str = "/model";
         const CHANGE_MODEL_HINT_EXPLANATION: &str = " to change";
         const DIR_LABEL: &str = "directory:";
-        let label_width = DIR_LABEL.len();
+        const PROFILE_LABEL: &str = "profile:";
+        const PROVIDER_LABEL: &str = "provider:";
+        let label_width = DIR_LABEL
+            .len()
+            .max(PROFILE_LABEL.len())
+            .max(PROVIDER_LABEL.len());
         let model_label = format!(
             "{model_label:<label_width$}",
             model_label = "model:",
@@ -853,12 +866,29 @@ impl HistoryCell for SessionHeaderHistoryCell {
         let dir = self.format_directory(Some(dir_max_width));
         let dir_spans = vec![Span::from(dir_prefix).dim(), Span::from(dir)];
 
-        let lines = vec![
-            make_row(title_spans),
-            make_row(Vec::new()),
-            make_row(model_spans),
-            make_row(dir_spans),
+        let mut lines = vec![make_row(title_spans), make_row(Vec::new())];
+
+        // Add profile row if present
+        if let Some(profile) = &self.profile {
+            let profile_label = format!("{PROFILE_LABEL:<label_width$}");
+            let profile_spans = vec![
+                Span::from(format!("{profile_label} ")).dim(),
+                Span::from(profile.clone()),
+            ];
+            lines.push(make_row(profile_spans));
+        }
+
+        // Add provider row
+        let provider_label = format!("{PROVIDER_LABEL:<label_width$}");
+        let provider_spans = vec![
+            Span::from(format!("{provider_label} ")).dim(),
+            Span::from(self.provider.clone()),
         ];
+        lines.push(make_row(provider_spans));
+
+        // Add model and directory rows
+        lines.push(make_row(model_spans));
+        lines.push(make_row(dir_spans));
 
         with_border(lines)
     }
@@ -1918,6 +1948,8 @@ mod tests {
             Some(ReasoningEffortConfig::High),
             std::env::temp_dir(),
             "test",
+            Some("test-profile".to_string()),
+            "OpenAI".to_string(),
         );
 
         let lines = render_lines(&cell.display_lines(80));

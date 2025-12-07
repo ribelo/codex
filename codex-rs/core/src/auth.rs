@@ -485,16 +485,17 @@ impl CodexAuth {
         // Fallback: try to use Gemini managed project if available
         // Antigravity can use the same Google Cloud project as Gemini
         if let Some(gemini_tokens) = self.get_gemini_tokens()
-            && let Some(project_id) = Self::resolve_project_id(&gemini_tokens) {
-                tracing::debug!(
-                    project_id = %project_id,
-                    "Using Gemini managed project for Antigravity"
-                );
-                self.update_antigravity_account(index, |account| {
-                    account.managed_project_id = Some(project_id.clone());
-                })?;
-                return Ok(project_id);
-            }
+            && let Some(project_id) = Self::resolve_project_id(&gemini_tokens)
+        {
+            tracing::debug!(
+                project_id = %project_id,
+                "Using Gemini managed project for Antigravity"
+            );
+            self.update_antigravity_account(index, |account| {
+                account.managed_project_id = Some(project_id.clone());
+            })?;
+            return Ok(project_id);
+        }
 
         Err(std::io::Error::other(
             ANTIGRAVITY_PROJECT_REQUIRED_MESSAGE.to_string(),
