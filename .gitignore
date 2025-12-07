@@ -85,3 +85,7 @@ CHANGELOG.ignore.md
 # nix related
 .direnv
 .envrc
+
+# Temporary diff files and third-party research
+diff_*.txt
+third-party/
