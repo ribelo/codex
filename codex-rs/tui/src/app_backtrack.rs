@@ -350,6 +350,7 @@ impl App {
             feedback: self.feedback.clone(),
             skills: self.skills.clone(),
             is_first_run: false,
+            available_profiles: self.available_profiles.clone(),
         };
         self.chat_widget =
             crate::chatwidget::ChatWidget::new_from_existing(init, conv, session_configured);

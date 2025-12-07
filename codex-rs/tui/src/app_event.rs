@@ -22,6 +22,11 @@ pub(crate) enum AppEvent {
     /// Start a new session.
     NewSession,
 
+    /// Start a new session with a specific profile.
+    NewSessionWithProfile {
+        profile_name: String,
+    },
+
     /// Open the resume picker inside the running TUI session.
     OpenResumePicker,
 
