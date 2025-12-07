@@ -406,6 +406,8 @@ impl ChatWidget {
         self.session_header.set_model(&model_for_header);
         // Set model/effort/policy on bottom_pane for footer display
         self.bottom_pane.set_model(Some(model_for_header));
+        self.bottom_pane
+            .set_model_provider(Some(event.model_provider_id.clone()));
         self.bottom_pane.set_reasoning_effort(
             self.config
                 .model_reasoning_effort
