@@ -119,6 +119,7 @@ pub(crate) struct ChatComposer {
     context_window_percent: Option<i64>,
     context_window_used_tokens: Option<i64>,
     model: Option<String>,
+    model_provider: Option<String>,
     reasoning_effort: Option<String>,
     sandbox_policy: SandboxPolicy,
     skills: Option<Vec<SkillMetadata>>,
@@ -170,6 +171,7 @@ impl ChatComposer {
             context_window_percent: None,
             context_window_used_tokens: None,
             model: None,
+            model_provider: None,
             reasoning_effort: None,
             sandbox_policy: SandboxPolicy::ReadOnly,
             skills: None,
@@ -186,6 +188,10 @@ impl ChatComposer {
 
     pub(crate) fn set_model(&mut self, model: Option<String>) {
         self.model = model;
+    }
+
+    pub(crate) fn set_model_provider(&mut self, provider: Option<String>) {
+        self.model_provider = provider;
     }
 
     pub(crate) fn set_reasoning_effort(&mut self, effort: Option<String>) {
@@ -1545,6 +1551,7 @@ impl ChatComposer {
             is_task_running: self.is_task_running,
             context_window_percent: self.context_window_percent,
             model: self.model.clone(),
+            model_provider: self.model_provider.clone(),
             reasoning_effort: self.reasoning_effort.clone(),
             sandbox_policy: self.sandbox_policy.clone(),
             context_window_used_tokens: self.context_window_used_tokens,

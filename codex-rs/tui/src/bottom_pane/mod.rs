@@ -378,6 +378,12 @@ impl BottomPane {
         self.request_redraw();
     }
 
+    /// Set the model provider shown in the footer.
+    pub(crate) fn set_model_provider(&mut self, provider: Option<String>) {
+        self.composer.set_model_provider(provider);
+        self.request_redraw();
+    }
+
     /// Set the reasoning effort shown in the footer.
     pub(crate) fn set_reasoning_effort(&mut self, effort: Option<String>) {
         self.composer.set_reasoning_effort(effort);

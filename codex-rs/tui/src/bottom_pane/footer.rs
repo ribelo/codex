@@ -24,6 +24,7 @@ pub(crate) struct FooterProps {
     pub(crate) is_task_running: bool,
     pub(crate) context_window_percent: Option<i64>,
     pub(crate) model: Option<String>,
+    pub(crate) model_provider: Option<String>,
     pub(crate) reasoning_effort: Option<String>,
     pub(crate) sandbox_policy: SandboxPolicy,
     pub(crate) context_window_used_tokens: Option<i64>,
@@ -102,6 +103,7 @@ fn footer_lines(props: &FooterProps) -> Vec<Line<'static>> {
         FooterMode::ShortcutSummary => {
             let mut line = context_window_line(
                 props.context_window_percent,
+                props.model_provider.clone(),
                 props.model.clone(),
                 props.reasoning_effort.clone(),
                 props.context_window_used_tokens,
@@ -135,6 +137,7 @@ fn footer_lines(props: &FooterProps) -> Vec<Line<'static>> {
         }
         FooterMode::ContextOnly => vec![context_window_line(
             props.context_window_percent,
+            props.model_provider.clone(),
             props.model.clone(),
             props.reasoning_effort.clone(),
             props.context_window_used_tokens,
@@ -269,6 +272,7 @@ fn build_columns(entries: Vec<Line<'static>>) -> Vec<Line<'static>> {
 
 fn context_window_line(
     percent: Option<i64>,
+    model_provider: Option<String>,
     model: Option<String>,
     reasoning_effort: Option<String>,
     used_tokens: Option<i64>,
@@ -277,6 +281,9 @@ fn context_window_line(
     let mut spans = vec![mode_dot(sandbox_policy)];
     spans.push(Span::from(" "));
     let mut parts = Vec::new();
+    if let Some(provider) = model_provider {
+        parts.push(provider);
+    }
     if let Some(model) = model {
         parts.push(model);
     }
@@ -489,6 +496,7 @@ mod tests {
             is_task_running: false,
             context_window_percent: None,
             model: None,
+            model_provider: None,
             reasoning_effort: None,
             sandbox_policy: SandboxPolicy::ReadOnly,
             context_window_used_tokens: None,
