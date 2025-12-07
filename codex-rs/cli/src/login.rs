@@ -78,14 +78,14 @@ pub async fn run_login_with_antigravity(cli_config_overrides: CliConfigOverrides
     }
 
     eprintln!(
-        "Antigravity login requires a Google Cloud project with the Gemini API enabled.\nEnter the project ID to use for all Antigravity requests."
+        "Antigravity login requires a Google Cloud project with the Gemini API enabled.\nEnter a project ID to use that project or leave blank to let Codex manage one for you."
     );
-    let project_id = prompt_required_gemini_project_id();
+    let project_id = prompt_gemini_project_id();
 
     let opts = codex_login::GoogleServerOptions {
         codex_home: config.codex_home.clone(),
         open_browser: true,
-        project_id: Some(project_id),
+        project_id,
         cli_auth_credentials_store_mode: config.cli_auth_credentials_store_mode,
         provider_kind: GoogleProviderKind::Antigravity,
     };
@@ -350,29 +350,6 @@ fn prompt_gemini_project_id() -> Option<String> {
         Err(err) => {
             eprintln!("Failed to read project ID: {err}");
             None
-        }
-    }
-}
-
-fn prompt_required_gemini_project_id() -> String {
-    loop {
-        use std::io::Write;
-
-        print!("Project ID: ");
-        let _ = std::io::stdout().flush();
-
-        let mut input = String::new();
-        match std::io::stdin().read_line(&mut input) {
-            Ok(_) => {
-                let trimmed = input.trim();
-                if !trimmed.is_empty() {
-                    return trimmed.to_string();
-                }
-                eprintln!("A project ID is required for Antigravity. Please enter a project ID.");
-            }
-            Err(err) => {
-                eprintln!("Failed to read project ID: {err}");
-            }
         }
     }
 }

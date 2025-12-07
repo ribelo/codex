@@ -78,6 +78,7 @@ const REFRESH_TOKEN_UNKNOWN_MESSAGE: &str =
 const REFRESH_TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
 pub const REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR: &str = "CODEX_REFRESH_TOKEN_URL_OVERRIDE";
 const GEMINI_PROJECT_REQUIRED_MESSAGE: &str = "Gemini requires a Google Cloud project. Run `codex login --gemini` and supply a project ID with the Gemini API enabled.";
+const ANTIGRAVITY_PROJECT_REQUIRED_MESSAGE: &str = "Antigravity requires a Google Cloud project. Run `codex login --antigravity` and supply a project ID with the Gemini API enabled.";
 const GEMINI_ACCESS_TOKEN_LEEWAY_SECONDS: i64 = 300;
 const GEMINI_ONBOARD_MAX_ATTEMPTS: usize = 10;
 const GEMINI_ONBOARD_DELAY_MILLIS: u64 = 500;
@@ -302,9 +303,9 @@ impl CodexAuth {
         index: usize,
     ) -> std::io::Result<(GeminiTokenData, String)> {
         let tokens = self.ensure_valid_antigravity_tokens_for(index).await?;
-        let project_id = Self::resolve_project_id(&tokens).ok_or_else(|| {
-            std::io::Error::other("Antigravity requires a project ID. Please log in again.")
-        })?;
+        let project_id = self
+            .ensure_antigravity_project_id_for(index, &tokens)
+            .await?;
         Ok((tokens, project_id))
     }
 
@@ -396,6 +397,110 @@ impl CodexAuth {
             .await
     }
 
+    async fn ensure_antigravity_project_id_for(
+        &self,
+        index: usize,
+        tokens: &GeminiTokenData,
+    ) -> std::io::Result<String> {
+        if let Ok(env_project) = env::var("ANTIGRAVITY_PROJECT_ID") {
+            let trimmed = env_project.trim();
+            if !trimmed.is_empty() {
+                let project = trimmed.to_string();
+                self.update_antigravity_account(index, |account| {
+                    account.project_id = Some(project.clone());
+                })?;
+                return Ok(project);
+            }
+        }
+
+        let access_token = tokens.access_token.clone();
+        let project_hint = tokens.project_id.clone();
+
+        // First try to resolve from stored project_id or managed_project_id
+        if let Some(project_id) = Self::resolve_project_id(tokens) {
+            return Ok(project_id);
+        }
+
+        // Use Antigravity-specific endpoint discovery
+        let load_payload =
+            load_managed_project_antigravity(&self.client, &access_token, project_hint.as_deref())
+                .await?;
+
+        if let Some(payload) = load_payload {
+            tracing::debug!(
+                cloudaicompanion_project = ?payload.cloudaicompanion_project,
+                tiers = ?payload.tiers,
+                "Antigravity loadCodeAssist payload"
+            );
+
+            if let Some(managed_id) = payload.cloudaicompanion_project {
+                let managed_clone = managed_id.clone();
+                self.update_antigravity_account(index, |account| {
+                    account.managed_project_id = Some(managed_id);
+                })?;
+                return Ok(managed_clone);
+            }
+
+            let tier_id = match select_gemini_tier(&payload) {
+                Some(tier) => tier,
+                None => {
+                    tracing::debug!("No default tier found, falling back to Gemini project");
+                    // Fall through to Gemini fallback instead of erroring
+                    return self.try_gemini_fallback_for_antigravity(index).await;
+                }
+            };
+            let is_free_tier =
+                tier_id.eq_ignore_ascii_case("FREE") || tier_id.eq_ignore_ascii_case("free-tier");
+            if !is_free_tier {
+                tracing::debug!(
+                    tier_id = %tier_id,
+                    "Non-free tier without project, falling back to Gemini"
+                );
+                return self.try_gemini_fallback_for_antigravity(index).await;
+            }
+
+            if let Some(managed_id) = onboard_managed_project(
+                &self.client,
+                &access_token,
+                &tier_id,
+                project_hint.as_deref(),
+            )
+            .await?
+            {
+                let managed_clone = managed_id.clone();
+                self.update_antigravity_account(index, |account| {
+                    account.managed_project_id = Some(managed_id);
+                })?;
+                return Ok(managed_clone);
+            }
+
+            tracing::debug!("Onboarding failed, falling back to Gemini project");
+            return self.try_gemini_fallback_for_antigravity(index).await;
+        }
+
+        self.try_gemini_fallback_for_antigravity(index).await
+    }
+
+    async fn try_gemini_fallback_for_antigravity(&self, index: usize) -> std::io::Result<String> {
+        // Fallback: try to use Gemini managed project if available
+        // Antigravity can use the same Google Cloud project as Gemini
+        if let Some(gemini_tokens) = self.get_gemini_tokens()
+            && let Some(project_id) = Self::resolve_project_id(&gemini_tokens) {
+                tracing::debug!(
+                    project_id = %project_id,
+                    "Using Gemini managed project for Antigravity"
+                );
+                self.update_antigravity_account(index, |account| {
+                    account.managed_project_id = Some(project_id.clone());
+                })?;
+                return Ok(project_id);
+            }
+
+        Err(std::io::Error::other(
+            ANTIGRAVITY_PROJECT_REQUIRED_MESSAGE.to_string(),
+        ))
+    }
+
     async fn ensure_gemini_project_id_for(
         &self,
         index: usize,
@@ -421,7 +526,9 @@ impl CodexAuth {
 
             let tier_id = select_gemini_tier(&payload)
                 .ok_or_else(|| std::io::Error::other(GEMINI_PROJECT_REQUIRED_MESSAGE))?;
-            if tier_id != "FREE" {
+            let is_free_tier =
+                tier_id.eq_ignore_ascii_case("FREE") || tier_id.eq_ignore_ascii_case("free-tier");
+            if !is_free_tier {
                 return Err(std::io::Error::other(GEMINI_PROJECT_REQUIRED_MESSAGE));
             }
 
@@ -914,7 +1021,7 @@ fn load_auth(
     }))
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 struct GeminiTier {
     #[serde(default)]
     id: Option<String>,
@@ -986,19 +1093,36 @@ async fn load_managed_project(
     access_token: &str,
     project_id: Option<&str>,
 ) -> std::io::Result<Option<LoadCodeAssistPayload>> {
+    load_managed_project_with_endpoint(
+        client,
+        access_token,
+        project_id,
+        GEMINI_CODE_ASSIST_ENDPOINT,
+    )
+    .await
+}
+
+async fn load_managed_project_with_endpoint(
+    client: &CodexHttpClient,
+    access_token: &str,
+    project_id: Option<&str>,
+    endpoint: &str,
+) -> std::io::Result<Option<LoadCodeAssistPayload>> {
     let mut body = serde_json::Map::new();
     body.insert("metadata".to_string(), build_gemini_metadata(project_id));
-    if let Some(project) = project_id {
-        body.insert(
-            "cloudaicompanionProject".to_string(),
-            Value::String(project.to_string()),
-        );
-    }
+    body.insert(
+        "cloudaicompanionProject".to_string(),
+        project_id
+            .map(|project| Value::String(project.to_string()))
+            .unwrap_or(Value::Null),
+    );
 
+    let url = format!(
+        "{}/v1internal:loadCodeAssist",
+        endpoint.trim_end_matches('/')
+    );
     let response = client
-        .post(format!(
-            "{GEMINI_CODE_ASSIST_ENDPOINT}/v1internal:loadCodeAssist"
-        ))
+        .post(&url)
         .bearer_auth(access_token)
         .header(reqwest::header::CONTENT_TYPE, "application/json")
         .header(reqwest::header::USER_AGENT, GEMINI_CODE_ASSIST_USER_AGENT)
@@ -1010,11 +1134,43 @@ async fn load_managed_project(
         .map_err(std::io::Error::other)?;
 
     if !response.status().is_success() {
+        tracing::debug!(
+            endpoint = %endpoint,
+            status = %response.status(),
+            "loadCodeAssist request failed"
+        );
         return Ok(None);
     }
 
     let payload = response.json().await.map_err(std::io::Error::other)?;
     Ok(Some(payload))
+}
+
+/// Try multiple endpoints for Antigravity project discovery.
+/// Antigravity may use different endpoints than standard Gemini.
+async fn load_managed_project_antigravity(
+    client: &CodexHttpClient,
+    access_token: &str,
+    project_id: Option<&str>,
+) -> std::io::Result<Option<LoadCodeAssistPayload>> {
+    use crate::antigravity::ANTIGRAVITY_ENDPOINT;
+
+    let endpoints = [
+        GEMINI_CODE_ASSIST_ENDPOINT,
+        ANTIGRAVITY_ENDPOINT,
+        "https://autopush-cloudcode-pa.sandbox.googleapis.com",
+    ];
+
+    for endpoint in endpoints {
+        if let Some(payload) =
+            load_managed_project_with_endpoint(client, access_token, project_id, endpoint).await?
+        {
+            tracing::debug!(endpoint = %endpoint, "loadCodeAssist succeeded for Antigravity");
+            return Ok(Some(payload));
+        }
+    }
+
+    Ok(None)
 }
 
 async fn onboard_managed_project(
@@ -1037,10 +1193,12 @@ async fn onboard_managed_project(
             } else {
                 return Err(std::io::Error::other(GEMINI_PROJECT_REQUIRED_MESSAGE));
             }
-        } else if let Some(project) = project_id {
+        } else {
             body.insert(
                 "cloudaicompanionProject".to_string(),
-                Value::String(project.to_string()),
+                project_id
+                    .map(|project| Value::String(project.to_string()))
+                    .unwrap_or(Value::Null),
             );
         }
 

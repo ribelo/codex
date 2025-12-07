@@ -126,12 +126,6 @@ pub async fn run_google_login_server(
         .filter(|project| !project.is_empty())
         .map(str::to_string);
 
-    if matches!(provider_kind, GoogleProviderKind::Antigravity) && project_id.is_none() {
-        return Err(io::Error::other(
-            "Antigravity login requires a project ID. Please rerun login with a valid project ID.",
-        ));
-    }
-
     let server = bind_server(DEFAULT_PORT)?;
     let actual_port = match server.server_addr().to_ip() {
         Some(addr) => addr.port(),
@@ -437,7 +431,7 @@ fn fetch_user_info(access_token: &str) -> Result<GeminiUserInfo, Box<dyn std::er
         .build()?;
 
     let resp = client
-        .get("https://people.googleapis.com/v1/people/me?personFields=names,emailAddresses")
+        .get("https://openidconnect.googleapis.com/v1/userinfo")
         .bearer_auth(access_token)
         .header(
             reqwest::header::USER_AGENT,
@@ -450,11 +444,7 @@ fn fetch_user_info(access_token: &str) -> Result<GeminiUserInfo, Box<dyn std::er
     }
 
     let data: JsonValue = resp.json()?;
-    let email = data["emailAddresses"]
-        .as_array()
-        .and_then(|arr| arr.first())
-        .and_then(|obj| obj["value"].as_str())
-        .map(std::string::ToString::to_string);
+    let email = data["email"].as_str().map(std::string::ToString::to_string);
 
     Ok(GeminiUserInfo { email })
 }
