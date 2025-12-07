@@ -94,6 +94,12 @@ pub struct ShutdownHandle {
     is_shutdown: Arc<AtomicBool>,
 }
 
+impl Default for ShutdownHandle {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ShutdownHandle {
     pub fn new() -> Self {
         Self {
@@ -568,14 +574,22 @@ pub(crate) async fn persist_tokens_async(
     // Reuse existing synchronous logic but run it off the async runtime.
     let codex_home = codex_home.to_path_buf();
     tokio::task::spawn_blocking(move || {
+        let empty = AuthDotJson {
+            openai_api_key: None,
+            tokens: None,
+            gemini_accounts: Vec::new(),
+            antigravity_accounts: Vec::new(),
+            last_refresh: None,
+        };
         let existing =
-            codex_core::auth::load_auth_dot_json(&codex_home, auth_credentials_store_mode)?
-                .unwrap_or_else(|| AuthDotJson {
-                    openai_api_key: None,
-                    tokens: None,
-                    gemini_accounts: Vec::new(),
-                    last_refresh: None,
-                });
+            match codex_core::auth::load_auth_dot_json(&codex_home, auth_credentials_store_mode) {
+                Ok(Some(auth)) => auth,
+                Ok(None) => empty,
+                Err(err) => {
+                    eprintln!("Failed to load existing auth file, replacing it: {err}");
+                    empty
+                }
+            };
         let mut tokens = TokenData {
             id_token: parse_id_token(&id_token).map_err(io::Error::other)?,
             access_token,
@@ -592,6 +606,7 @@ pub(crate) async fn persist_tokens_async(
             openai_api_key: api_key.or(existing.openai_api_key),
             tokens: Some(tokens),
             gemini_accounts: existing.gemini_accounts,
+            antigravity_accounts: existing.antigravity_accounts,
             last_refresh: Some(Utc::now()),
         };
         save_auth(&codex_home, &auth, auth_credentials_store_mode)
@@ -775,6 +790,7 @@ mod tests {
             openai_api_key: None,
             tokens: None,
             gemini_accounts: vec![gemini_tokens.clone()],
+            antigravity_accounts: Vec::new(),
             last_refresh: Some(Utc::now()),
         };
         save_auth(dir.path(), &auth, AuthCredentialsStoreMode::File).unwrap();

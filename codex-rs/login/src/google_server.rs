@@ -3,6 +3,11 @@ use crate::pkce::generate_pkce;
 use crate::server::ShutdownHandle;
 use base64::Engine;
 use chrono::Utc;
+use codex_core::antigravity::ANTIGRAVITY_AUTH_URL;
+use codex_core::antigravity::ANTIGRAVITY_CLIENT_ID;
+use codex_core::antigravity::ANTIGRAVITY_CLIENT_SECRET;
+use codex_core::antigravity::ANTIGRAVITY_SCOPES;
+use codex_core::antigravity::ANTIGRAVITY_TOKEN_URL;
 use codex_core::auth::AuthCredentialsStoreMode;
 use codex_core::auth::AuthDotJson;
 use codex_core::auth::save_auth;
@@ -16,6 +21,7 @@ use serde::Serialize;
 use serde_json::Value as JsonValue;
 use std::io;
 use std::io::Cursor;
+use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
 use tiny_http::Header;
@@ -27,12 +33,19 @@ use url::Url;
 
 const DEFAULT_PORT: u16 = 1456;
 
+#[derive(Debug, Clone, Copy)]
+pub enum GoogleProviderKind {
+    Gemini,
+    Antigravity,
+}
+
 #[derive(Debug, Clone)]
 pub struct GoogleServerOptions {
     pub codex_home: PathBuf,
     pub open_browser: bool,
     pub project_id: Option<String>,
     pub cli_auth_credentials_store_mode: AuthCredentialsStoreMode,
+    pub provider_kind: GoogleProviderKind,
 }
 
 #[derive(Debug, Deserialize)]
@@ -64,11 +77,60 @@ impl GoogleLoginServer {
     }
 }
 
+fn provider_credentials(
+    provider_kind: GoogleProviderKind,
+) -> (&'static str, &'static str, &'static str) {
+    match provider_kind {
+        GoogleProviderKind::Gemini => (GEMINI_CLIENT_ID, GEMINI_CLIENT_SECRET, GEMINI_TOKEN_URL),
+        GoogleProviderKind::Antigravity => (
+            ANTIGRAVITY_CLIENT_ID,
+            ANTIGRAVITY_CLIENT_SECRET,
+            ANTIGRAVITY_TOKEN_URL,
+        ),
+    }
+}
+
+fn provider_scopes(provider_kind: GoogleProviderKind) -> String {
+    match provider_kind {
+        GoogleProviderKind::Gemini => {
+            "openid profile email https://www.googleapis.com/auth/generative-language".to_string()
+        }
+        GoogleProviderKind::Antigravity => {
+            let mut scopes = vec!["openid"];
+            scopes.extend_from_slice(ANTIGRAVITY_SCOPES);
+            scopes.join(" ")
+        }
+    }
+}
+
+fn provider_accounts_mut(
+    auth: &mut AuthDotJson,
+    provider_kind: GoogleProviderKind,
+) -> &mut Vec<GeminiTokenData> {
+    match provider_kind {
+        GoogleProviderKind::Gemini => &mut auth.gemini_accounts,
+        GoogleProviderKind::Antigravity => &mut auth.antigravity_accounts,
+    }
+}
+
 pub async fn run_google_login_server(
     opts: GoogleServerOptions,
 ) -> std::io::Result<GoogleLoginServer> {
     let pkce = generate_pkce();
     let state = generate_state();
+    let provider_kind = opts.provider_kind;
+    let project_id = opts
+        .project_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|project| !project.is_empty())
+        .map(str::to_string);
+
+    if matches!(provider_kind, GoogleProviderKind::Antigravity) && project_id.is_none() {
+        return Err(io::Error::other(
+            "Antigravity login requires a project ID. Please rerun login with a valid project ID.",
+        ));
+    }
 
     let server = bind_server(DEFAULT_PORT)?;
     let actual_port = match server.server_addr().to_ip() {
@@ -83,24 +145,30 @@ pub async fn run_google_login_server(
     let server = std::sync::Arc::new(server);
 
     let redirect_uri = format!("http://localhost:{actual_port}/auth/callback");
-    let auth_url = build_authorize_url(&redirect_uri, &state, &pkce, opts.project_id.as_deref());
+    let auth_url = build_authorize_url(
+        &redirect_uri,
+        &state,
+        &pkce,
+        project_id.as_deref(),
+        provider_kind,
+    );
     let shutdown_handle = ShutdownHandle::new();
     let shutdown_clone = shutdown_handle.clone();
 
     let auth_url_for_browser = auth_url.clone();
     let server_handle = tokio::spawn(async move {
-        let result = run_server(
+        run_server(
             server,
             redirect_uri,
             auth_url,
             pkce,
             opts.codex_home,
-            opts.project_id.clone(),
+            project_id,
+            provider_kind,
             shutdown_clone,
             opts.cli_auth_credentials_store_mode,
         )
-        .await;
-        result
+        .await
     });
 
     if opts.open_browser {
@@ -130,6 +198,7 @@ fn bind_server(port: u16) -> std::io::Result<tiny_http::Server> {
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_server(
     server: std::sync::Arc<Server>,
     redirect_uri: String,
@@ -137,6 +206,7 @@ async fn run_server(
     pkce: PkceCodes,
     codex_home: PathBuf,
     project_id: Option<String>,
+    provider_kind: GoogleProviderKind,
     shutdown_handle: ShutdownHandle,
     cli_auth_credentials_store_mode: AuthCredentialsStoreMode,
 ) -> std::io::Result<()> {
@@ -156,6 +226,7 @@ async fn run_server(
                     &pkce,
                     &codex_home,
                     project_id.as_deref(),
+                    provider_kind,
                     cli_auth_credentials_store_mode,
                 ) {
                     HandledRequest::Unhandled => {
@@ -205,13 +276,15 @@ enum HandledRequest {
     },
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_request(
     request: &Request,
     redirect_uri: &str,
     auth_url: &str,
     pkce: &PkceCodes,
-    codex_home: &PathBuf,
+    codex_home: &Path,
     project_id: Option<&str>,
+    provider_kind: GoogleProviderKind,
     cli_auth_credentials_store_mode: AuthCredentialsStoreMode,
 ) -> HandledRequest {
     let path = request.url().to_string();
@@ -219,7 +292,7 @@ fn handle_request(
     match path.as_str() {
         "/auth" => HandledRequest::Response(Response::from_string("OK")),
         _ if path.starts_with("/auth/callback") => {
-            match exchange_code_for_tokens(redirect_uri, auth_url, &path, pkce) {
+            match exchange_code_for_tokens(redirect_uri, auth_url, &path, pkce, provider_kind) {
                 Ok(tokens) => {
                     let user_info = match fetch_user_info(&tokens.access_token) {
                         Ok(u) => u,
@@ -247,10 +320,11 @@ fn handle_request(
                             .map(|secs| Utc::now() + chrono::Duration::seconds(secs)),
                     };
 
-                    if let Err(err) = persist_gemini_tokens(
+                    if let Err(err) = persist_google_tokens(
                         codex_home,
                         cli_auth_credentials_store_mode,
-                        gemini_tokens.clone(),
+                        gemini_tokens,
+                        provider_kind,
                     ) {
                         eprintln!("Persist error: {err}");
                         return HandledRequest::Response(
@@ -297,6 +371,7 @@ fn exchange_code_for_tokens(
     auth_url: &str,
     request_path: &str,
     pkce: &PkceCodes,
+    provider_kind: GoogleProviderKind,
 ) -> Result<TokenExchangeResponse, Box<dyn std::error::Error>> {
     let request_url = Url::parse(&format!("http://localhost{request_path}"))?;
     let params: std::collections::HashMap<_, _> = request_url.query_pairs().into_owned().collect();
@@ -318,6 +393,8 @@ fn exchange_code_for_tokens(
         return Err("State mismatch".into());
     }
 
+    let (client_id, client_secret, token_url) = provider_credentials(provider_kind);
+
     #[derive(Serialize)]
     struct TokenRequest {
         grant_type: &'static str,
@@ -333,15 +410,15 @@ fn exchange_code_for_tokens(
         code: code.clone(),
         code_verifier: pkce.code_verifier.clone(),
         redirect_uri: redirect_uri.to_string(),
-        client_id: GEMINI_CLIENT_ID.to_string(),
-        client_secret: GEMINI_CLIENT_SECRET.to_string(),
+        client_id: client_id.to_string(),
+        client_secret: client_secret.to_string(),
     };
 
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(15))
         .redirect(reqwest::redirect::Policy::none())
         .build()?;
-    let response = client.post(GEMINI_TOKEN_URL).form(&token_request).send()?;
+    let response = client.post(token_url).form(&token_request).send()?;
 
     let status = response.status();
     let body = response.text()?;
@@ -377,33 +454,35 @@ fn fetch_user_info(access_token: &str) -> Result<GeminiUserInfo, Box<dyn std::er
         .as_array()
         .and_then(|arr| arr.first())
         .and_then(|obj| obj["value"].as_str())
-        .map(|s| s.to_string());
+        .map(std::string::ToString::to_string);
 
     Ok(GeminiUserInfo { email })
 }
 
-fn persist_gemini_tokens(
+fn persist_google_tokens(
     codex_home: &std::path::Path,
     creds_mode: AuthCredentialsStoreMode,
     gemini_tokens: GeminiTokenData,
+    provider_kind: GoogleProviderKind,
 ) -> std::io::Result<AuthDotJson> {
-    // Preserve existing auth fields; only update Gemini token fields
+    // Preserve existing auth fields; only update Google token fields
     let mut auth = match codex_core::auth::load_auth_dot_json(codex_home, creds_mode)? {
         Some(data) => data,
         None => AuthDotJson {
             openai_api_key: None,
             tokens: None,
             gemini_accounts: Vec::new(),
+            antigravity_accounts: Vec::new(),
             last_refresh: None,
         },
     };
 
-    auth.gemini_accounts
-        .retain(|existing| match (&gemini_tokens.email, &existing.email) {
-            (Some(new_email), Some(existing_email)) => existing_email != new_email,
-            _ => true,
-        });
-    auth.gemini_accounts.insert(0, gemini_tokens.clone());
+    let accounts = provider_accounts_mut(&mut auth, provider_kind);
+    accounts.retain(|existing| match (&gemini_tokens.email, &existing.email) {
+        (Some(new_email), Some(existing_email)) => existing_email != new_email,
+        _ => true,
+    });
+    accounts.insert(0, gemini_tokens.clone());
     auth.last_refresh = Some(Utc::now());
 
     save_auth(codex_home, &auth, creds_mode)?;
@@ -422,16 +501,23 @@ fn build_authorize_url(
     state: &str,
     pkce: &PkceCodes,
     project_id: Option<&str>,
+    provider_kind: GoogleProviderKind,
 ) -> String {
-    let mut url = Url::parse("https://accounts.google.com/o/oauth2/v2/auth").unwrap();
+    let auth_url = match provider_kind {
+        GoogleProviderKind::Gemini => "https://accounts.google.com/o/oauth2/v2/auth",
+        GoogleProviderKind::Antigravity => ANTIGRAVITY_AUTH_URL,
+    };
+    let (client_id, _, _) = provider_credentials(provider_kind);
+    let scope = provider_scopes(provider_kind);
+    let mut url = match Url::parse(auth_url) {
+        Ok(url) => url,
+        Err(_) => return auth_url.to_string(),
+    };
     let mut query_pairs = url.query_pairs_mut();
     query_pairs.append_pair("response_type", "code");
-    query_pairs.append_pair("client_id", GEMINI_CLIENT_ID);
+    query_pairs.append_pair("client_id", client_id);
     query_pairs.append_pair("redirect_uri", redirect_uri);
-    query_pairs.append_pair(
-        "scope",
-        "openid profile email https://www.googleapis.com/auth/generative-language",
-    );
+    query_pairs.append_pair("scope", &scope);
     query_pairs.append_pair("state", state);
     query_pairs.append_pair("code_challenge", &pkce.code_challenge);
     query_pairs.append_pair("code_challenge_method", "S256");
@@ -520,10 +606,14 @@ mod tests {
         let dir = tempdir()?;
         let tokens = sample_tokens("one");
 
-        let auth =
-            persist_gemini_tokens(dir.path(), AuthCredentialsStoreMode::File, tokens.clone())?;
+        let auth = persist_google_tokens(
+            dir.path(),
+            AuthCredentialsStoreMode::File,
+            tokens.clone(),
+            GoogleProviderKind::Gemini,
+        )?;
 
-        assert_eq!(auth.gemini_accounts, vec![tokens.clone()]);
+        assert_eq!(auth.gemini_accounts, vec![tokens]);
         Ok(())
     }
 
@@ -533,14 +623,22 @@ mod tests {
         let first = sample_tokens("one");
         let second = sample_tokens("two");
 
-        let initial =
-            persist_gemini_tokens(dir.path(), AuthCredentialsStoreMode::File, first.clone())?;
+        let initial = persist_google_tokens(
+            dir.path(),
+            AuthCredentialsStoreMode::File,
+            first.clone(),
+            GoogleProviderKind::Gemini,
+        )?;
         assert_eq!(initial.gemini_accounts, vec![first.clone()]);
 
-        let updated =
-            persist_gemini_tokens(dir.path(), AuthCredentialsStoreMode::File, second.clone())?;
+        let updated = persist_google_tokens(
+            dir.path(),
+            AuthCredentialsStoreMode::File,
+            second.clone(),
+            GoogleProviderKind::Gemini,
+        )?;
 
-        assert_eq!(updated.gemini_accounts, vec![second.clone(), first.clone()]);
+        assert_eq!(updated.gemini_accounts, vec![second, first]);
         Ok(())
     }
 
@@ -551,17 +649,39 @@ mod tests {
         let mut updated_token = sample_tokens("two");
         updated_token.email = first.email.clone();
 
-        let initial =
-            persist_gemini_tokens(dir.path(), AuthCredentialsStoreMode::File, first.clone())?;
-        assert_eq!(initial.gemini_accounts, vec![first.clone()]);
+        let initial = persist_google_tokens(
+            dir.path(),
+            AuthCredentialsStoreMode::File,
+            first.clone(),
+            GoogleProviderKind::Gemini,
+        )?;
+        assert_eq!(initial.gemini_accounts, vec![first]);
 
-        let updated = persist_gemini_tokens(
+        let updated = persist_google_tokens(
             dir.path(),
             AuthCredentialsStoreMode::File,
             updated_token.clone(),
+            GoogleProviderKind::Gemini,
         )?;
 
         assert_eq!(updated.gemini_accounts, vec![updated_token]);
+        Ok(())
+    }
+
+    #[test]
+    fn antigravity_tokens_persist_to_separate_collection() -> std::io::Result<()> {
+        let dir = tempdir()?;
+        let tokens = sample_tokens("antigravity");
+
+        let saved = persist_google_tokens(
+            dir.path(),
+            AuthCredentialsStoreMode::File,
+            tokens.clone(),
+            GoogleProviderKind::Antigravity,
+        )?;
+
+        assert_eq!(saved.antigravity_accounts, vec![tokens]);
+        assert!(saved.gemini_accounts.is_empty());
         Ok(())
     }
 }

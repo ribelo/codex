@@ -528,11 +528,12 @@ impl ChatWidget {
         self.reasoning_buffer.clear();
         self.full_reasoning_buffer.clear();
         // If both streams are finished, stop commit animation promptly.
-        if self.stream_controller.is_none() && self.reasoning_stream_controller.is_none() {
-            if self.commit_animation_active {
-                self.commit_animation_active = false;
-                self.app_event_tx.send(AppEvent::StopCommitAnimation);
-            }
+        if self.stream_controller.is_none()
+            && self.reasoning_stream_controller.is_none()
+            && self.commit_animation_active
+        {
+            self.commit_animation_active = false;
+            self.app_event_tx.send(AppEvent::StopCommitAnimation);
         }
         self.request_redraw();
     }

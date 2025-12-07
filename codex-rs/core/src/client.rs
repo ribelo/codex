@@ -38,6 +38,7 @@ use tracing::warn;
 
 use crate::AuthManager;
 use crate::anthropic_messages::stream_anthropic_messages;
+use crate::antigravity_messages::stream_antigravity_messages;
 use crate::auth::RefreshTokenError;
 use crate::client_common::Prompt;
 use crate::client_common::ResponseEvent;
@@ -147,6 +148,22 @@ impl ModelClient {
                 let model_family = self.get_model_family();
                 let provider = self.provider.to_gemini_provider()?;
                 stream_gemini_messages(
+                    prompt,
+                    &self.config,
+                    &model_family,
+                    &client,
+                    &provider,
+                    &self.otel_event_manager,
+                    auth,
+                )
+                .await
+            }
+            WireApi::Antigravity => {
+                let client = create_client();
+                let auth = self.auth_manager.as_ref().and_then(|m| m.auth());
+                let model_family = self.get_model_family();
+                let provider = self.provider.to_gemini_provider()?;
+                stream_antigravity_messages(
                     prompt,
                     &self.config,
                     &model_family,

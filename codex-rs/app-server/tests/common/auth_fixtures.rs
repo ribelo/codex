@@ -129,6 +129,7 @@ pub fn write_chatgpt_auth(
         openai_api_key: None,
         tokens: Some(tokens),
         gemini_accounts: Vec::new(),
+        antigravity_accounts: Vec::new(),
         last_refresh,
     };
 

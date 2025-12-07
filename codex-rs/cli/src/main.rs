@@ -11,6 +11,7 @@ use codex_cli::SeatbeltCommand;
 use codex_cli::WindowsCommand;
 use codex_cli::login::read_api_key_from_stdin;
 use codex_cli::login::run_login_status;
+use codex_cli::login::run_login_with_antigravity;
 use codex_cli::login::run_login_with_api_key;
 use codex_cli::login::run_login_with_chatgpt;
 use codex_cli::login::run_login_with_device_code;
@@ -207,6 +208,9 @@ struct LoginCommand {
 
     #[arg(long = "gemini", help = "Login with Google (Gemini)")]
     gemini: bool,
+
+    #[arg(long = "antigravity", help = "Login with Google (Antigravity)")]
+    antigravity: bool,
 
     #[arg(long = "device-auth")]
     use_device_code: bool,
@@ -516,7 +520,9 @@ async fn cli_main(codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()
                     run_login_status(login_cli.config_overrides).await;
                 }
                 None => {
-                    if login_cli.gemini {
+                    if login_cli.antigravity {
+                        run_login_with_antigravity(login_cli.config_overrides).await;
+                    } else if login_cli.gemini {
                         run_login_with_gemini(login_cli.config_overrides).await;
                     } else if login_cli.use_device_code {
                         run_login_with_device_code(

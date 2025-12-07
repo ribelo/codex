@@ -53,7 +53,7 @@ use uuid::Uuid;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct GeminiRequest {
+pub(crate) struct GeminiRequest {
     contents: Vec<GeminiContent>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<GeminiTool>>,
@@ -66,14 +66,14 @@ struct GeminiRequest {
 }
 
 #[derive(Serialize)]
-struct GeminiContent {
+pub(crate) struct GeminiContent {
     role: String,
     parts: Vec<GeminiPart>,
 }
 
 #[derive(Serialize, Default)]
 #[serde(rename_all = "camelCase")]
-struct GeminiPart {
+pub(crate) struct GeminiPart {
     #[serde(skip_serializing_if = "Option::is_none")]
     text: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -86,27 +86,27 @@ struct GeminiPart {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct GeminiFunctionCall {
+pub(crate) struct GeminiFunctionCall {
     name: String,
     args: Value,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct GeminiFunctionResponse {
+pub(crate) struct GeminiFunctionResponse {
     name: String,
     response: Value,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct GeminiTool {
+pub(crate) struct GeminiTool {
     function_declarations: Vec<GeminiFunctionDeclaration>,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct GeminiFunctionDeclaration {
+pub(crate) struct GeminiFunctionDeclaration {
     name: String,
     description: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -115,7 +115,7 @@ struct GeminiFunctionDeclaration {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct GeminiToolConfig {
+pub(crate) struct GeminiToolConfig {
     function_calling_config: GeminiFunctionCallingConfig,
 }
 
@@ -123,13 +123,13 @@ const SYNTHETIC_THOUGHT_SIGNATURE: &str = "skip_thought_signature_validator";
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct GeminiFunctionCallingConfig {
+pub(crate) struct GeminiFunctionCallingConfig {
     mode: String, // "AUTO", "ANY", "NONE"
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct GeminiGenerationConfig {
+pub(crate) struct GeminiGenerationConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     candidate_count: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -149,7 +149,7 @@ struct GeminiGenerationConfig {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct GeminiThinkingConfig {
+pub(crate) struct GeminiThinkingConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     thinking_budget: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -304,19 +304,15 @@ fn reasoning_effort_to_thinking_level(effort: ReasoningEffort) -> Option<String>
 // Implementation
 // ─────────────────────────────────────────────────────────────────────────────
 
-pub(crate) async fn stream_gemini_messages(
+pub(crate) fn build_gemini_payload(
     prompt: &Prompt,
     config: &Config,
     model_family: &ModelFamily,
-    client: &CodexHttpClient,
-    provider: &GeminiProvider,
-    otel_event_manager: &OtelEventManager,
-    auth: Option<CodexAuth>,
-) -> Result<ResponseStream> {
+) -> Result<(GeminiRequest, String)> {
+    let normalized_model = normalize_model_name(&config.model);
     let full_instructions = prompt.get_full_instructions(model_family);
     let (contents, system_instruction) = build_gemini_messages(prompt, full_instructions.as_ref())?;
     let tools = build_gemini_tools(&prompt.tools)?;
-    let normalized_model = normalize_model_name(&config.model);
 
     let tool_config = if tools.is_some() {
         // Force AUTO if tools are present, effectively same as None but explicit.
@@ -355,6 +351,19 @@ pub(crate) async fn stream_gemini_messages(
         generation_config: Some(generation_config),
     };
 
+    Ok((payload, normalized_model))
+}
+
+pub(crate) async fn stream_gemini_messages(
+    prompt: &Prompt,
+    config: &Config,
+    model_family: &ModelFamily,
+    client: &CodexHttpClient,
+    provider: &GeminiProvider,
+    otel_event_manager: &OtelEventManager,
+    auth: Option<CodexAuth>,
+) -> Result<ResponseStream> {
+    let (payload, normalized_model) = build_gemini_payload(prompt, config, model_family)?;
     let payload_json = serde_json::to_value(&payload)?;
     let mut attempt = 0_u64;
     let max_retries = provider.request_max_retries();
@@ -671,7 +680,7 @@ fn apply_provider_headers(
     builder
 }
 
-fn normalize_model_name(model: &str) -> String {
+pub(crate) fn normalize_model_name(model: &str) -> String {
     for (pattern, fallback) in GEMINI_MODEL_FALLBACKS {
         if pattern == &model {
             return fallback.to_string();
@@ -1057,7 +1066,7 @@ fn gemini_error_from_value(value: &Value) -> Option<ProviderError> {
     Some(ProviderError { message, code })
 }
 
-async fn process_gemini_sse<S, E>(
+pub(crate) async fn process_gemini_sse<S, E>(
     stream: S,
     tx_event: mpsc::Sender<Result<ResponseEvent>>,
     idle_timeout: Duration,
@@ -1666,6 +1675,7 @@ mod tests {
                 email: None,
                 expires_at: None,
             }],
+            antigravity_accounts: Vec::new(),
             last_refresh: None,
         });
         drop(guard);
