@@ -1114,8 +1114,9 @@ impl Config {
         let model_family = find_family_for_model(&model);
 
         let openai_model_info = get_model_info(&model_family);
-        let model_context_window = cfg
+        let model_context_window = config_profile
             .model_context_window
+            .or(cfg.model_context_window)
             .or_else(|| openai_model_info.as_ref().map(|info| info.context_window));
         let model_auto_compact_token_limit = cfg.model_auto_compact_token_limit.or_else(|| {
             openai_model_info
