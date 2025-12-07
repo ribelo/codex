@@ -163,6 +163,9 @@ pub async fn run_main(
             }
         };
 
+    // Extract available profile names for the /profile command.
+    let available_profiles: Vec<String> = config_toml.profiles.keys().cloned().collect();
+
     let model_provider_override = if cli.oss {
         let resolved = resolve_oss_provider(
             cli.oss_provider.as_deref(),
@@ -331,6 +334,7 @@ pub async fn run_main(
         overrides,
         cli_kv_overrides,
         active_profile,
+        available_profiles,
         feedback,
     )
     .await
@@ -343,6 +347,7 @@ async fn run_ratatui_app(
     overrides: ConfigOverrides,
     cli_kv_overrides: Vec<(String, toml::Value)>,
     active_profile: Option<String>,
+    available_profiles: Vec<String>,
     feedback: codex_feedback::CodexFeedback,
 ) -> color_eyre::Result<AppExitInfo> {
     color_eyre::install()?;
@@ -422,7 +427,7 @@ async fn run_ratatui_app(
             .map(|d| d == TrustDirectorySelection::Trust)
             .unwrap_or(false)
         {
-            load_config_or_exit(cli_kv_overrides, overrides).await
+            load_config_or_exit(cli_kv_overrides.clone(), overrides.clone()).await
         } else {
             initial_config
         }
@@ -502,6 +507,9 @@ async fn run_ratatui_app(
         auth_manager,
         config,
         active_profile,
+        available_profiles,
+        overrides,
+        cli_kv_overrides,
         prompt,
         images,
         resume_selection,

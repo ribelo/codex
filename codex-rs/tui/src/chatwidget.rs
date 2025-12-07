@@ -262,6 +262,7 @@ pub(crate) struct ChatWidgetInit {
     pub(crate) feedback: codex_feedback::CodexFeedback,
     pub(crate) skills: Option<Vec<SkillMetadata>>,
     pub(crate) is_first_run: bool,
+    pub(crate) available_profiles: Vec<String>,
 }
 
 #[derive(Default)]
@@ -334,6 +335,8 @@ pub(crate) struct ChatWidget {
     feedback: codex_feedback::CodexFeedback,
     // Current session rollout path (if known)
     current_rollout_path: Option<PathBuf>,
+    // Available profiles for /profile command
+    available_profiles: Vec<String>,
 }
 
 struct UserMessage {
@@ -1360,6 +1363,7 @@ impl ChatWidget {
             feedback,
             skills,
             is_first_run,
+            available_profiles,
         } = common;
         let mut rng = rand::rng();
         let placeholder = EXAMPLE_PROMPTS[rng.random_range(0..EXAMPLE_PROMPTS.len())].to_string();
@@ -1419,6 +1423,7 @@ impl ChatWidget {
             last_rendered_width: std::cell::Cell::new(None),
             feedback,
             current_rollout_path: None,
+            available_profiles,
         };
 
         widget.prefetch_rate_limits();
@@ -1443,7 +1448,8 @@ impl ChatWidget {
             models_manager,
             feedback,
             skills,
-            ..
+            is_first_run: _,
+            available_profiles,
         } = common;
         let mut rng = rand::rng();
         let placeholder = EXAMPLE_PROMPTS[rng.random_range(0..EXAMPLE_PROMPTS.len())].to_string();
@@ -1505,6 +1511,7 @@ impl ChatWidget {
             last_rendered_width: std::cell::Cell::new(None),
             feedback,
             current_rollout_path: None,
+            available_profiles,
         };
 
         widget.prefetch_rate_limits();
@@ -1648,6 +1655,9 @@ impl ChatWidget {
             }
             SlashCommand::Model => {
                 self.open_model_popup();
+            }
+            SlashCommand::Profile => {
+                self.open_profile_popup();
             }
             SlashCommand::Approvals => {
                 self.open_approvals_popup();
@@ -2314,6 +2324,47 @@ impl ChatWidget {
                     .to_string(),
             ),
             footer_hint: Some("Press enter to select reasoning effort, or esc to dismiss.".into()),
+            items,
+            ..Default::default()
+        });
+    }
+
+    /// Open a popup to switch to a different profile.
+    /// Switching profiles starts a new session since message formats may be incompatible.
+    fn open_profile_popup(&mut self) {
+        let current_profile = self.config.active_profile.clone();
+
+        if self.available_profiles.is_empty() {
+            self.add_info_message(
+                "No profiles configured. Add profiles to your config.toml.".to_string(),
+                None,
+            );
+            return;
+        }
+
+        let mut items: Vec<SelectionItem> = Vec::new();
+        for profile_name in self.available_profiles.iter() {
+            let is_current = current_profile.as_ref() == Some(profile_name);
+            let profile_name_clone = profile_name.clone();
+            let actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
+                tx.send(AppEvent::NewSessionWithProfile {
+                    profile_name: profile_name_clone.clone(),
+                });
+            })];
+            items.push(SelectionItem {
+                name: profile_name.clone(),
+                description: None,
+                is_current,
+                actions,
+                dismiss_on_select: true,
+                ..Default::default()
+            });
+        }
+
+        self.bottom_pane.show_selection_view(SelectionViewParams {
+            title: Some("Select Profile".to_string()),
+            subtitle: Some("Switching profiles will start a new session.".to_string()),
+            footer_hint: Some("Press enter to select, or esc to dismiss.".into()),
             items,
             ..Default::default()
         });

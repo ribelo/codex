@@ -24,6 +24,7 @@ use codex_app_server_protocol::AuthMode;
 use codex_core::AuthManager;
 use codex_core::ConversationManager;
 use codex_core::config::Config;
+use codex_core::config::ConfigOverrides;
 use codex_core::config::edit::ConfigEditsBuilder;
 use codex_core::features::Feature;
 use codex_core::openai_models::model_presets::HIDE_GPT_5_1_CODEX_MAX_MIGRATION_PROMPT_CONFIG;
@@ -208,6 +209,11 @@ pub(crate) struct App {
     /// Config is stored here so we can recreate ChatWidgets as needed.
     pub(crate) config: Config,
     pub(crate) active_profile: Option<String>,
+    pub(crate) available_profiles: Vec<String>,
+    /// Stored to allow reloading config with a different profile.
+    config_overrides: ConfigOverrides,
+    /// Stored to allow reloading config with a different profile.
+    cli_kv_overrides: Vec<(String, toml::Value)>,
 
     pub(crate) file_search: FileSearchManager,
 
@@ -254,6 +260,9 @@ impl App {
         auth_manager: Arc<AuthManager>,
         mut config: Config,
         active_profile: Option<String>,
+        available_profiles: Vec<String>,
+        config_overrides: ConfigOverrides,
+        cli_kv_overrides: Vec<(String, toml::Value)>,
         initial_prompt: Option<String>,
         initial_images: Vec<PathBuf>,
         resume_selection: ResumeSelection,
@@ -317,6 +326,7 @@ impl App {
                     feedback: feedback.clone(),
                     skills: skills.clone(),
                     is_first_run,
+                    available_profiles: available_profiles.clone(),
                 };
                 ChatWidget::new(init, conversation_manager.clone())
             }
@@ -343,6 +353,7 @@ impl App {
                     feedback: feedback.clone(),
                     skills: skills.clone(),
                     is_first_run,
+                    available_profiles: available_profiles.clone(),
                 };
                 ChatWidget::new_from_existing(
                     init,
@@ -365,6 +376,9 @@ impl App {
             auth_manager: auth_manager.clone(),
             config,
             active_profile,
+            available_profiles,
+            config_overrides,
+            cli_kv_overrides,
             file_search,
             enhanced_keys_supported,
             transcript_cells: Vec::new(),
@@ -500,6 +514,7 @@ impl App {
                     feedback: self.feedback.clone(),
                     skills: self.skills.clone(),
                     is_first_run: false,
+                    available_profiles: self.available_profiles.clone(),
                 };
                 self.chat_widget = ChatWidget::new(init, self.server.clone());
                 if let Some(summary) = summary {
@@ -509,6 +524,96 @@ impl App {
                         lines.push(spans.into());
                     }
                     self.chat_widget.add_plain_history_lines(lines);
+                }
+                tui.frame_requester().schedule_frame();
+            }
+            AppEvent::NewSessionWithProfile { profile_name } => {
+                // Create new overrides with the selected profile.
+                let mut new_overrides = self.config_overrides.clone();
+                new_overrides.config_profile = Some(profile_name.clone());
+
+                // Try to load config with the new profile BEFORE shutting down the current session.
+                // This ensures we don't lose the current conversation if the new profile fails to load.
+                match Config::load_with_cli_overrides(
+                    self.cli_kv_overrides.clone(),
+                    new_overrides.clone(),
+                )
+                .await
+                {
+                    Ok(new_config) => {
+                        // Config loaded successfully - now safe to shut down the current session.
+                        let summary = session_summary(
+                            self.chat_widget.token_usage(),
+                            self.chat_widget.conversation_id(),
+                        );
+                        self.shutdown_current_conversation().await;
+
+                        // Reload skills for the new profile.
+                        let skills_outcome = load_skills(&new_config);
+                        if !skills_outcome.errors.is_empty() {
+                            for err in &skills_outcome.errors {
+                                tracing::warn!("Skill loading error in new profile: {err:?}");
+                            }
+                        }
+                        let new_skills = if new_config.features.enabled(Feature::Skills) {
+                            Some(skills_outcome.skills)
+                        } else {
+                            None
+                        };
+
+                        self.config = new_config;
+                        self.active_profile = Some(profile_name.clone());
+                        self.config_overrides = new_overrides;
+                        self.skills = new_skills.clone();
+
+                        // Recreate file search manager with the new config's cwd.
+                        self.file_search = FileSearchManager::new(
+                            self.config.cwd.clone(),
+                            self.app_event_tx.clone(),
+                        );
+
+                        let init = crate::chatwidget::ChatWidgetInit {
+                            config: self.config.clone(),
+                            frame_requester: tui.frame_requester(),
+                            app_event_tx: self.app_event_tx.clone(),
+                            initial_prompt: None,
+                            initial_images: Vec::new(),
+                            enhanced_keys_supported: self.enhanced_keys_supported,
+                            auth_manager: self.auth_manager.clone(),
+                            models_manager: self.server.get_models_manager(),
+                            feedback: self.feedback.clone(),
+                            skills: new_skills,
+                            is_first_run: false,
+                            available_profiles: self.available_profiles.clone(),
+                        };
+                        self.chat_widget = ChatWidget::new(init, self.server.clone());
+
+                        // Show info about the profile switch.
+                        let info_line: Line<'static> =
+                            format!("Switched to profile: {profile_name}").into();
+                        self.chat_widget.add_plain_history_lines(vec![info_line]);
+
+                        if let Some(summary) = summary {
+                            let mut lines: Vec<Line<'static>> =
+                                vec![summary.usage_line.clone().into()];
+                            if let Some(command) = summary.resume_command {
+                                let spans =
+                                    vec!["To continue this session, run ".into(), command.cyan()];
+                                lines.push(spans.into());
+                            }
+                            self.chat_widget.add_plain_history_lines(lines);
+                        }
+                    }
+                    Err(err) => {
+                        tracing::error!(
+                            "Failed to reload config with profile {profile_name}: {err}"
+                        );
+                        // Show error but keep the current session intact.
+                        self.chat_widget.add_info_message(
+                            format!("Failed to switch to profile '{profile_name}': {err}"),
+                            None,
+                        );
+                    }
                 }
                 tui.frame_requester().schedule_frame();
             }
@@ -549,6 +654,7 @@ impl App {
                                     feedback: self.feedback.clone(),
                                     skills: self.skills.clone(),
                                     is_first_run: false,
+                                    available_profiles: self.available_profiles.clone(),
                                 };
                                 self.chat_widget = ChatWidget::new_from_existing(
                                     init,
@@ -1157,6 +1263,9 @@ mod tests {
             auth_manager,
             config,
             active_profile: None,
+            available_profiles: Vec::new(),
+            config_overrides: ConfigOverrides::default(),
+            cli_kv_overrides: Vec::new(),
             file_search,
             transcript_cells: Vec::new(),
             overlay: None,
@@ -1195,6 +1304,9 @@ mod tests {
                 auth_manager,
                 config,
                 active_profile: None,
+                available_profiles: Vec::new(),
+                config_overrides: ConfigOverrides::default(),
+                cli_kv_overrides: Vec::new(),
                 file_search,
                 transcript_cells: Vec::new(),
                 overlay: None,

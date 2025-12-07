@@ -361,6 +361,7 @@ async fn helpers_are_available_and_do_not_panic() {
         feedback: codex_feedback::CodexFeedback::new(),
         skills: None,
         is_first_run: true,
+        available_profiles: Vec::new(),
     };
     let mut w = ChatWidget::new(init, conversation_manager);
     // Basic construction sanity.
@@ -430,6 +431,7 @@ fn make_chatwidget_manual() -> (
         last_rendered_width: std::cell::Cell::new(None),
         feedback: codex_feedback::CodexFeedback::new(),
         current_rollout_path: None,
+        available_profiles: Vec::new(),
     };
     (widget, rx, op_rx)
 }
