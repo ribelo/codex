@@ -311,7 +311,10 @@ impl App {
         };
 
         let enhanced_keys_supported = tui.enhanced_keys_supported();
-
+        let model_family = conversation_manager
+            .get_models_manager()
+            .construct_model_family(&config.model, &config)
+            .await;
         let mut chat_widget = match resume_selection {
             ResumeSelection::StartFresh | ResumeSelection::Exit => {
                 let init = crate::chatwidget::ChatWidgetInit {
@@ -327,6 +330,7 @@ impl App {
                     skills: skills.clone(),
                     is_first_run,
                     available_profiles: available_profiles.clone(),
+                    model_family,
                 };
                 ChatWidget::new(init, conversation_manager.clone())
             }
@@ -354,6 +358,7 @@ impl App {
                     skills: skills.clone(),
                     is_first_run,
                     available_profiles: available_profiles.clone(),
+                    model_family,
                 };
                 ChatWidget::new_from_existing(
                     init,
@@ -495,6 +500,11 @@ impl App {
     }
 
     async fn handle_event(&mut self, tui: &mut tui::Tui, event: AppEvent) -> Result<bool> {
+        let model_family = self
+            .server
+            .get_models_manager()
+            .construct_model_family(&self.config.model, &self.config)
+            .await;
         match event {
             AppEvent::NewSession => {
                 let summary = session_summary(
@@ -515,6 +525,7 @@ impl App {
                     skills: self.skills.clone(),
                     is_first_run: false,
                     available_profiles: self.available_profiles.clone(),
+                    model_family,
                 };
                 self.chat_widget = ChatWidget::new(init, self.server.clone());
                 if let Some(summary) = summary {
@@ -585,6 +596,7 @@ impl App {
                             skills: new_skills,
                             is_first_run: false,
                             available_profiles: self.available_profiles.clone(),
+                            model_family: model_family.clone(),
                         };
                         self.chat_widget = ChatWidget::new(init, self.server.clone());
 
@@ -655,6 +667,7 @@ impl App {
                                     skills: self.skills.clone(),
                                     is_first_run: false,
                                     available_profiles: self.available_profiles.clone(),
+                                    model_family: model_family.clone(),
                                 };
                                 self.chat_widget = ChatWidget::new_from_existing(
                                     init,
@@ -783,7 +796,12 @@ impl App {
                 self.on_update_reasoning_effort(effort);
             }
             AppEvent::UpdateModel(model) => {
-                self.chat_widget.set_model(&model);
+                let model_family = self
+                    .server
+                    .get_models_manager()
+                    .construct_model_family(&model, &self.config)
+                    .await;
+                self.chat_widget.set_model(&model, model_family);
                 self.config.model = model;
             }
             AppEvent::OpenReasoningPopup { model } => {
