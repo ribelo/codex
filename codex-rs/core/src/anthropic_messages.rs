@@ -116,8 +116,7 @@ enum AnthropicToolChoice {
     Auto,
 }
 
-const DEFAULT_MAX_OUTPUT_TOKENS: i64 = 4_096;
-const ANTHROPIC_MAX_PROVIDER_OUTPUT_TOKENS: i64 = 8_192;
+const DEFAULT_MAX_OUTPUT_TOKENS: i64 = 64_000;
 
 pub(crate) async fn stream_anthropic_messages(
     prompt: &Prompt,
@@ -156,7 +155,6 @@ pub(crate) async fn stream_anthropic_messages(
         model_family,
         prompt_tokens,
         DEFAULT_MAX_OUTPUT_TOKENS,
-        ANTHROPIC_MAX_PROVIDER_OUTPUT_TOKENS,
     );
     let thinking = thinking.map(|cfg| AnthropicThinking {
         budget_tokens: Some(resolve_thinking_budget(
@@ -376,8 +374,64 @@ fn build_anthropic_messages(prompt: &Prompt) -> Result<(Vec<AnthropicMessage>, O
                     })],
                 });
             }
-            ResponseItem::Reasoning { .. }
-            | ResponseItem::WebSearchCall { .. }
+            ResponseItem::Reasoning {
+                summary,
+                content,
+                encrypted_content,
+                ..
+            } => {
+                // Build the thinking text from content or summary
+                let thinking_text = if let Some(content_items) = content {
+                    content_items
+                        .iter()
+                        .map(|c| match c {
+                            codex_protocol::models::ReasoningItemContent::ReasoningText {
+                                text,
+                            } => text.as_str(),
+                            codex_protocol::models::ReasoningItemContent::Text { text } => {
+                                text.as_str()
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                } else {
+                    summary
+                        .iter()
+                        .map(|s| {
+                            match s {
+                            codex_protocol::models::ReasoningItemReasoningSummary::SummaryText {
+                                text,
+                            } => text.as_str(),
+                        }
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                };
+
+                if !thinking_text.is_empty() || encrypted_content.is_some() {
+                    let pending = ensure_pending_assistant(&mut pending_assistant);
+                    // If we have encrypted content but no thinking text, use redacted_thinking
+                    if thinking_text.is_empty() {
+                        if let Some(data) = encrypted_content {
+                            pending.content.push(json!({
+                                "type": "redacted_thinking",
+                                "data": data,
+                            }));
+                        }
+                    } else {
+                        // Use thinking block with optional signature
+                        let mut block = json!({
+                            "type": "thinking",
+                            "thinking": thinking_text,
+                        });
+                        if let Some(sig) = encrypted_content {
+                            block["signature"] = json!(sig);
+                        }
+                        pending.content.push(block);
+                    }
+                }
+            }
+            ResponseItem::WebSearchCall { .. }
             | ResponseItem::GhostSnapshot { .. }
             | ResponseItem::CompactionSummary { .. }
             | ResponseItem::Other => {}
@@ -529,10 +583,8 @@ fn resolve_max_tokens(
     config: &Config,
     model_family: &ModelFamily,
     prompt_tokens: i64,
-    fallback_cap: i64,
-    provider_cap: i64,
+    hard_cap: i64,
 ) -> i64 {
-    let hard_cap = fallback_cap.min(provider_cap);
     let Some(window) = effective_context_window(config, model_family) else {
         return hard_cap;
     };

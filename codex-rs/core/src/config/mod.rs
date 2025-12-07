@@ -1159,9 +1159,20 @@ impl Config {
         let compact_prompt = compact_prompt.or(file_compact_prompt);
 
         // Default review model when not set in config; allow CLI override to take precedence.
+        // For OpenAI providers, use the specialized review model; for other providers,
+        // fall back to the session's main model to avoid 404 errors.
+        let is_openai_provider = model_provider_id == "openai"
+            || model_provider_id.starts_with("openai-")
+            || model_provider_id == "chatgpt";
         let review_model = override_review_model
             .or(cfg.review_model)
-            .unwrap_or_else(default_review_model);
+            .unwrap_or_else(|| {
+                if is_openai_provider {
+                    OPENAI_DEFAULT_REVIEW_MODEL.to_string()
+                } else {
+                    model.clone()
+                }
+            });
 
         let check_for_update_on_startup = cfg.check_for_update_on_startup.unwrap_or(true);
 
@@ -1330,10 +1341,6 @@ impl Config {
 
 fn default_model() -> String {
     OPENAI_DEFAULT_MODEL.to_string()
-}
-
-fn default_review_model() -> String {
-    OPENAI_DEFAULT_REVIEW_MODEL.to_string()
 }
 
 /// Returns the path to the Codex configuration directory, which can be

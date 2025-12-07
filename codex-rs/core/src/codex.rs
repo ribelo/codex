@@ -1930,7 +1930,11 @@ async fn spawn_review_thread(
     // Build per‑turn client with the requested model/family.
     let mut per_turn_config = (*config).clone();
     per_turn_config.model = model.clone();
-    per_turn_config.model_reasoning_effort = Some(ReasoningEffortConfig::Low);
+    if config.model_provider_id == "antigravity" {
+        per_turn_config.model_reasoning_effort = config.model_reasoning_effort;
+    } else {
+        per_turn_config.model_reasoning_effort = Some(ReasoningEffortConfig::Low);
+    }
     per_turn_config.model_reasoning_summary = ReasoningSummaryConfig::Detailed;
     per_turn_config.features = review_features.clone();
     if let Some(model_info) = get_model_info(&model_family) {

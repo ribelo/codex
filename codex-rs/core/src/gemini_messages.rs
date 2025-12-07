@@ -95,6 +95,9 @@ pub(crate) struct GeminiPart {
     function_response: Option<GeminiFunctionResponse>,
     #[serde(skip_serializing_if = "Option::is_none")]
     thought_signature: Option<String>,
+    /// Indicates this is a thinking/reasoning part (for Claude on Antigravity)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thought: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -176,8 +179,7 @@ pub(crate) struct GeminiThinkingConfig {
     include_thoughts: Option<bool>,
 }
 
-const GEMINI_MAX_PROVIDER_OUTPUT_TOKENS: i64 = 8_192;
-const DEFAULT_MAX_OUTPUT_TOKENS: i64 = 4_096;
+const DEFAULT_MAX_OUTPUT_TOKENS: i64 = 64_000;
 
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -277,10 +279,13 @@ fn gemini_thinking_config(
 
     let effort = config
         .model_reasoning_effort
-        .or(model_family.default_reasoning_effort)?;
+        .or(model_family.default_reasoning_effort);
 
     if is_gemini3(model) {
-        let level = reasoning_effort_to_thinking_level(effort)?;
+        // Gemini 3: default to "high" if no effort is specified
+        let level = effort
+            .and_then(reasoning_effort_to_thinking_level)
+            .unwrap_or_else(|| "high".to_string());
         return Some(GeminiThinkingConfig {
             thinking_budget: None,
             thinking_level: Some(level),
@@ -288,21 +293,45 @@ fn gemini_thinking_config(
         });
     }
 
-    reasoning_effort_to_thinking_budget(effort).map(|budget| GeminiThinkingConfig {
+    // For Gemini 2.5 and Claude models, use thinkingBudget
+    let budget = reasoning_effort_to_thinking_budget(effort, model);
+    Some(GeminiThinkingConfig {
         thinking_budget: Some(budget),
         thinking_level: None,
         include_thoughts: Some(true),
     })
 }
 
-fn reasoning_effort_to_thinking_budget(effort: ReasoningEffort) -> Option<i64> {
+/// Map reasoning effort to thinking budget tokens.
+/// Values are based on LLM-API-Key-Proxy's antigravity_provider.py.
+/// Returns -1 for "auto" when no effort is specified.
+fn reasoning_effort_to_thinking_budget(effort: Option<ReasoningEffort>, model: &str) -> i64 {
+    let Some(effort) = effort else {
+        // No effort specified: use -1 for auto (model decides)
+        return -1;
+    };
+
+    // Model-specific budgets (matching LLM-API-Key-Proxy)
+    let is_claude = model.starts_with("claude");
+    let is_gemini_25_pro = model.contains("gemini-2.5-pro");
+    let is_gemini_25_flash = model.contains("gemini-2.5-flash");
+
+    let (low, medium, high) = if is_gemini_25_pro || is_claude {
+        // Gemini 2.5 Pro and Claude: higher budgets
+        (8192, 16384, 32768)
+    } else if is_gemini_25_flash {
+        // Gemini 2.5 Flash: medium budgets
+        (6144, 12288, 24576)
+    } else {
+        // Default/fallback
+        (1024, 2048, 4096)
+    };
+
     match effort {
-        ReasoningEffort::None => Some(0),
-        ReasoningEffort::Minimal => Some(0),
-        ReasoningEffort::Low => Some(512),
-        ReasoningEffort::Medium => Some(2048),
-        ReasoningEffort::High => Some(8192),
-        ReasoningEffort::XHigh => Some(16384),
+        ReasoningEffort::None | ReasoningEffort::Minimal => 0,
+        ReasoningEffort::Low => low,
+        ReasoningEffort::Medium => medium,
+        ReasoningEffort::High | ReasoningEffort::XHigh => high,
     }
 }
 
@@ -551,7 +580,7 @@ fn resolve_max_output_tokens(
     model_family: &ModelFamily,
     prompt_tokens: i64,
 ) -> Option<i64> {
-    let hard_cap = DEFAULT_MAX_OUTPUT_TOKENS.min(GEMINI_MAX_PROVIDER_OUTPUT_TOKENS);
+    let hard_cap = DEFAULT_MAX_OUTPUT_TOKENS;
     if let Some(window) = effective_context_window(config, model_family) {
         let remaining = window.saturating_sub(prompt_tokens).max(1);
         return Some(remaining.min(hard_cap));
@@ -864,6 +893,61 @@ fn build_gemini_messages(
             | ResponseItem::CustomToolCallOutput { .. } => {
                 // Handle similarly if needed, or ignore.
                 // Local shell is often treated as a tool.
+            }
+            ResponseItem::Reasoning {
+                summary, content, ..
+            } => {
+                // Build thinking text from content or summary
+                // Check content first, but fall back to summary if content is empty
+                let thinking_text = if let Some(content_items) = content
+                    && !content_items.is_empty()
+                {
+                    content_items
+                        .iter()
+                        .map(|c| match c {
+                            codex_protocol::models::ReasoningItemContent::ReasoningText {
+                                text,
+                            } => text.as_str(),
+                            codex_protocol::models::ReasoningItemContent::Text { text } => {
+                                text.as_str()
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                } else {
+                    summary
+                        .iter()
+                        .map(|s| {
+                            match s {
+                            codex_protocol::models::ReasoningItemReasoningSummary::SummaryText {
+                                text,
+                            } => text.as_str(),
+                        }
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                };
+
+                if !thinking_text.is_empty() {
+                    let part = GeminiPart {
+                        text: Some(thinking_text),
+                        thought: Some(true),
+                        ..Default::default()
+                    };
+
+                    // Thinking parts belong to the model role
+                    if let Some(last) = messages.last_mut()
+                        && last.role == "model"
+                    {
+                        // Insert at the beginning of the model's parts
+                        last.parts.insert(0, part);
+                    } else {
+                        messages.push(GeminiContent {
+                            role: "model".to_string(),
+                            parts: vec![part],
+                        });
+                    }
+                }
             }
             _ => {} // Ignore other ResponseItem types for now
         }
