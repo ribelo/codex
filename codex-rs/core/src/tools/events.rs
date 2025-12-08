@@ -263,12 +263,19 @@ impl ToolEmitter {
         &self,
         output: &ExecToolCallOutput,
         ctx: ToolEventCtx<'_>,
+        hint: Option<&str>,
     ) -> String {
         match self {
-            Self::Shell { freeform: true, .. } => {
-                super::format_exec_output_for_model_freeform(output, ctx.turn.truncation_policy)
-            }
-            _ => super::format_exec_output_for_model_structured(output, ctx.turn.truncation_policy),
+            Self::Shell { freeform: true, .. } => super::format_exec_output_for_model_freeform(
+                output,
+                ctx.turn.truncation_policy,
+                hint,
+            ),
+            _ => super::format_exec_output_for_model_structured(
+                output,
+                ctx.turn.truncation_policy,
+                hint,
+            ),
         }
     }
 
@@ -279,7 +286,7 @@ impl ToolEmitter {
     ) -> Result<String, FunctionCallError> {
         let (event, result) = match out {
             Ok(output) => {
-                let content = self.format_exec_output_for_model(&output, ctx);
+                let content = self.format_exec_output_for_model(&output, ctx, None);
                 let exit_code = output.exit_code;
                 let event = ToolEventStage::Success(output);
                 let result = if exit_code == 0 {
@@ -289,9 +296,25 @@ impl ToolEmitter {
                 };
                 (event, result)
             }
-            Err(ToolError::Codex(CodexErr::Sandbox(SandboxErr::Timeout { output })))
-            | Err(ToolError::Codex(CodexErr::Sandbox(SandboxErr::Denied { output }))) => {
-                let response = self.format_exec_output_for_model(&output, ctx);
+            Err(ToolError::Codex(CodexErr::Sandbox(SandboxErr::Timeout { output }))) => {
+                let response = self.format_exec_output_for_model(&output, ctx, None);
+                let event = ToolEventStage::Failure(ToolEventFailure::Output(*output));
+                let result = Err(FunctionCallError::RespondToModel(response));
+                (event, result)
+            }
+            Err(ToolError::Codex(CodexErr::Sandbox(SandboxErr::Denied { output }))) => {
+                let escalation_hint = if matches!(
+                    ctx.turn.approval_policy,
+                    codex_protocol::protocol::AskForApproval::OnRequest
+                ) {
+                    Some(
+                        "This command was denied by the sandbox. If it is important and safe, retry with `with_escalated_permissions: true` and a short `justification`.",
+                    )
+                } else {
+                    None
+                };
+                let response =
+                    self.format_exec_output_for_model(&output, ctx, escalation_hint.as_deref());
                 let event = ToolEventStage::Failure(ToolEventFailure::Output(*output));
                 let result = Err(FunctionCallError::RespondToModel(response));
                 (event, result)
