@@ -17,6 +17,7 @@ use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
 use tracing_test::traced_test;
 
+use core_test_support::echo_path;
 use core_test_support::responses::ev_local_shell_call;
 
 #[tokio::test]
@@ -578,6 +579,7 @@ async fn handle_response_item_records_tool_result_for_function_call() {
 #[traced_test]
 async fn handle_response_item_records_tool_result_for_local_shell_missing_ids() {
     let server = start_mock_server().await;
+    let echo = echo_path();
 
     mount_sse_once(
         &server,
@@ -589,7 +591,7 @@ async fn handle_response_item_records_tool_result_for_local_shell_missing_ids() 
                     "status": "completed",
                     "action": {
                         "type": "exec",
-                        "command": vec!["/bin/echo", "hello"],
+                        "command": vec![echo, "hello".to_string()],
                     }
                 }
             }),
@@ -649,11 +651,12 @@ async fn handle_response_item_records_tool_result_for_local_shell_missing_ids() 
 #[traced_test]
 async fn handle_response_item_records_tool_result_for_local_shell_call() {
     let server = start_mock_server().await;
+    let echo = echo_path();
 
     mount_sse_once(
         &server,
         sse(vec![
-            ev_local_shell_call("shell-call", "completed", vec!["/bin/echo", "shell"]),
+            ev_local_shell_call("shell-call", "completed", vec![&echo, "shell"]),
             ev_completed("done"),
         ]),
     )
@@ -696,7 +699,7 @@ async fn handle_response_item_records_tool_result_for_local_shell_call() {
         if !line.contains("tool_name=local_shell") {
             return Err("missing tool_name field".to_string());
         }
-        if !line.contains("arguments=/bin/echo shell") {
+        if !line.contains(&format!("arguments={echo} shell")) {
             return Err("missing arguments field".to_string());
         }
         let output_idx = line
@@ -749,14 +752,11 @@ fn tool_decision_assertion<'a>(
 #[traced_test]
 async fn handle_container_exec_autoapprove_from_config_records_tool_decision() {
     let server = start_mock_server().await;
+    let echo = echo_path();
     mount_sse_once(
         &server,
         sse(vec![
-            ev_local_shell_call(
-                "auto_config_call",
-                "completed",
-                vec!["/bin/echo", "local shell"],
-            ),
+            ev_local_shell_call("auto_config_call", "completed", vec![&echo, "local shell"]),
             ev_completed("done"),
         ]),
     )

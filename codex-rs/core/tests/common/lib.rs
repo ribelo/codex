@@ -324,6 +324,38 @@ pub mod fs_wait {
     }
 }
 
+/// Returns the path to `bash` on the system, searching PATH.
+/// This is NixOS-friendly as it doesn't assume /bin/bash exists.
+pub fn bash_path() -> String {
+    which::which("bash")
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| "/bin/bash".to_string())
+}
+
+/// Returns the path to `sh` on the system, searching PATH.
+/// This is NixOS-friendly as it doesn't assume /bin/sh exists.
+pub fn sh_path() -> String {
+    which::which("sh")
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| "/bin/sh".to_string())
+}
+
+/// Returns the path to `echo` on the system, searching PATH.
+/// This is NixOS-friendly as it doesn't assume /bin/echo exists.
+pub fn echo_path() -> String {
+    which::which("echo")
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| "/bin/echo".to_string())
+}
+
+/// Returns the path to `sed` on the system, searching PATH.
+/// This is NixOS-friendly as it doesn't assume /usr/bin/sed exists.
+pub fn sed_path() -> String {
+    which::which("sed")
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| "/usr/bin/sed".to_string())
+}
+
 #[macro_export]
 macro_rules! skip_if_sandbox {
     () => {{
@@ -375,6 +407,30 @@ macro_rules! skip_if_windows {
     ($return_value:expr $(,)?) => {{
         if cfg!(target_os = "windows") {
             println!("Skipping test because it cannot execute on Windows.");
+            return $return_value;
+        }
+    }};
+}
+
+/// Returns true if we're running on NixOS.
+/// NixOS has unique filesystem layout that makes some tests incompatible.
+pub fn is_nixos() -> bool {
+    std::fs::read_to_string("/etc/os-release")
+        .map(|s| s.to_lowercase().contains("nixos"))
+        .unwrap_or(false)
+}
+
+#[macro_export]
+macro_rules! skip_if_nixos {
+    () => {{
+        if $crate::is_nixos() {
+            println!("Skipping test because it cannot execute correctly on NixOS.");
+            return;
+        }
+    }};
+    ($return_value:expr $(,)?) => {{
+        if $crate::is_nixos() {
+            println!("Skipping test because it cannot execute correctly on NixOS.");
             return $return_value;
         }
     }};
