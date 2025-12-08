@@ -27,6 +27,7 @@ pub(crate) const TELEMETRY_PREVIEW_TRUNCATION_NOTICE: &str =
 pub fn format_exec_output_for_model_structured(
     exec_output: &ExecToolCallOutput,
     truncation_policy: TruncationPolicy,
+    hint: Option<&str>,
 ) -> String {
     let ExecToolCallOutput {
         exit_code,
@@ -44,6 +45,8 @@ pub fn format_exec_output_for_model_structured(
     struct ExecOutput<'a> {
         output: &'a str,
         metadata: ExecMetadata,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        hint: Option<&'a str>,
     }
 
     // round to 1 decimal place
@@ -57,6 +60,7 @@ pub fn format_exec_output_for_model_structured(
             exit_code: *exit_code,
             duration_seconds,
         },
+        hint,
     };
 
     #[expect(clippy::expect_used)]
@@ -66,6 +70,7 @@ pub fn format_exec_output_for_model_structured(
 pub fn format_exec_output_for_model_freeform(
     exec_output: &ExecToolCallOutput,
     truncation_policy: TruncationPolicy,
+    hint: Option<&str>,
 ) -> String {
     // round to 1 decimal place
     let duration_seconds = ((exec_output.duration.as_secs_f32()) * 10.0).round() / 10.0;
@@ -84,6 +89,9 @@ pub fn format_exec_output_for_model_freeform(
 
     sections.push("Output:".to_string());
     sections.push(formatted_output);
+    if let Some(hint) = hint {
+        sections.push(format!("Hint: {hint}"));
+    }
 
     sections.join("\n")
 }
