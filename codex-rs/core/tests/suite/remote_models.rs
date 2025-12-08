@@ -20,6 +20,7 @@ use codex_protocol::openai_models::ModelsResponse;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::openai_models::ReasoningEffortPreset;
 use codex_protocol::user_input::UserInput;
+use core_test_support::echo_path;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_function_call;
@@ -120,8 +121,9 @@ async fn remote_models_remote_model_uses_unified_exec() -> Result<()> {
         .await?;
 
     let call_id = "call";
+    let echo = echo_path();
     let args = json!({
-        "cmd": "/bin/echo call",
+        "cmd": format!("{echo} call"),
         "yield_time_ms": 250,
     });
     let responses = vec![

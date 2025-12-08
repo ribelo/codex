@@ -12,6 +12,7 @@ use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::plan_tool::StepStatus;
 use codex_protocol::user_input::UserInput;
 use core_test_support::assert_regex_match;
+use core_test_support::echo_path;
 use core_test_support::responses;
 use core_test_support::responses::ResponsesRequest;
 use core_test_support::responses::ev_apply_patch_function_call;
@@ -62,7 +63,8 @@ async fn shell_tool_executes_command_and_streams_output() -> anyhow::Result<()> 
     } = builder.build(&server).await?;
 
     let call_id = "shell-tool-call";
-    let command = vec!["/bin/echo", "tool harness"];
+    let echo = echo_path();
+    let command = vec![echo.as_str(), "tool harness"];
     let first_response = sse(vec![
         ev_response_created("resp-1"),
         ev_local_shell_call(call_id, "completed", command),

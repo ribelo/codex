@@ -14,6 +14,8 @@ use codex_core::protocol::SandboxPolicy;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::user_input::UserInput;
 use core_test_support::assert_regex_match;
+use core_test_support::bash_path;
+use core_test_support::echo_path;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_function_call;
@@ -21,6 +23,7 @@ use core_test_support::responses::ev_response_created;
 use core_test_support::responses::mount_sse_sequence;
 use core_test_support::responses::sse;
 use core_test_support::responses::start_mock_server;
+use core_test_support::skip_if_nixos;
 use core_test_support::skip_if_no_network;
 use core_test_support::skip_if_sandbox;
 use core_test_support::skip_if_windows;
@@ -296,9 +299,11 @@ async fn unified_exec_emits_exec_command_begin_event() -> Result<()> {
     } = builder.build(&server).await?;
 
     let call_id = "uexec-begin-event";
+    let echo = echo_path();
+    let cmd = format!("{echo} hello unified exec");
     let args = json!({
         "shell": "bash".to_string(),
-        "cmd": "/bin/echo hello unified exec".to_string(),
+        "cmd": cmd.clone(),
         "yield_time_ms": 250,
     });
 
@@ -339,7 +344,7 @@ async fn unified_exec_emits_exec_command_begin_event() -> Result<()> {
     })
     .await;
 
-    assert_command(&begin_event.command, "-lc", "/bin/echo hello unified exec");
+    assert_command(&begin_event.command, "-lc", &cmd);
 
     assert_eq!(begin_event.cwd, cwd.path());
 
@@ -510,6 +515,7 @@ async fn unified_exec_emits_exec_command_end_event() -> Result<()> {
     skip_if_no_network!(Ok(()));
     skip_if_sandbox!(Ok(()));
     skip_if_windows!(Ok(()));
+    skip_if_nixos!(Ok(()));
 
     let server = start_mock_server().await;
 
@@ -525,8 +531,9 @@ async fn unified_exec_emits_exec_command_end_event() -> Result<()> {
     } = builder.build(&server).await?;
 
     let call_id = "uexec-end-event";
+    let echo = echo_path();
     let args = json!({
-        "cmd": "/bin/echo END-EVENT".to_string(),
+        "cmd": format!("{echo} END-EVENT"),
         "yield_time_ms": 250,
     });
     let poll_call_id = "uexec-end-event-poll";
@@ -597,6 +604,7 @@ async fn unified_exec_emits_output_delta_for_exec_command() -> Result<()> {
     skip_if_no_network!(Ok(()));
     skip_if_sandbox!(Ok(()));
     skip_if_windows!(Ok(()));
+    skip_if_nixos!(Ok(()));
 
     let server = start_mock_server().await;
 
@@ -669,6 +677,7 @@ async fn unified_exec_emits_output_delta_for_write_stdin() -> Result<()> {
     skip_if_no_network!(Ok(()));
     skip_if_sandbox!(Ok(()));
     skip_if_windows!(Ok(()));
+    skip_if_nixos!(Ok(()));
 
     let server = start_mock_server().await;
 
@@ -684,8 +693,9 @@ async fn unified_exec_emits_output_delta_for_write_stdin() -> Result<()> {
     } = builder.build(&server).await?;
 
     let open_call_id = "uexec-open";
+    let bash = bash_path();
     let open_args = json!({
-        "cmd": "/bin/bash -i",
+        "cmd": format!("{bash} -i"),
         "yield_time_ms": 200,
     });
 
@@ -1189,6 +1199,7 @@ async fn write_stdin_returns_exit_metadata_and_clears_session() -> Result<()> {
     skip_if_no_network!(Ok(()));
     skip_if_sandbox!(Ok(()));
     skip_if_windows!(Ok(()));
+    skip_if_nixos!(Ok(()));
 
     let server = start_mock_server().await;
 
@@ -1351,6 +1362,7 @@ async fn unified_exec_emits_end_event_when_session_dies_via_stdin() -> Result<()
     skip_if_no_network!(Ok(()));
     skip_if_sandbox!(Ok(()));
     skip_if_windows!(Ok(()));
+    skip_if_nixos!(Ok(()));
 
     let server = start_mock_server().await;
 
@@ -1456,6 +1468,7 @@ async fn unified_exec_reuses_session_via_stdin() -> Result<()> {
     skip_if_no_network!(Ok(()));
     skip_if_sandbox!(Ok(()));
     skip_if_windows!(Ok(()));
+    skip_if_nixos!(Ok(()));
 
     let server = start_mock_server().await;
 
@@ -1893,6 +1906,7 @@ async fn unified_exec_runs_under_sandbox() -> Result<()> {
     skip_if_no_network!(Ok(()));
     skip_if_sandbox!(Ok(()));
     skip_if_windows!(Ok(()));
+    skip_if_nixos!(Ok(()));
 
     let server = start_mock_server().await;
 
@@ -2089,6 +2103,7 @@ async fn unified_exec_python_prompt_under_seatbelt() -> Result<()> {
 async fn unified_exec_runs_on_all_platforms() -> Result<()> {
     skip_if_no_network!(Ok(()));
     skip_if_sandbox!(Ok(()));
+    skip_if_nixos!(Ok(()));
 
     let server = start_mock_server().await;
 

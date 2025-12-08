@@ -11,6 +11,7 @@ use codex_core::features::Feature;
 use codex_core::protocol::AskForApproval;
 use codex_core::protocol::SandboxPolicy;
 use core_test_support::assert_regex_match;
+use core_test_support::echo_path;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_custom_tool_call;
@@ -20,6 +21,7 @@ use core_test_support::responses::mount_sse_once;
 use core_test_support::responses::mount_sse_sequence;
 use core_test_support::responses::sse;
 use core_test_support::responses::start_mock_server;
+use core_test_support::sh_path;
 use core_test_support::skip_if_no_network;
 use core_test_support::test_codex::test_codex;
 use regex_lite::Regex;
@@ -98,7 +100,8 @@ async fn shell_escalated_permissions_rejected_then_ok() -> Result<()> {
     let mut builder = test_codex().with_model("gpt-5");
     let test = builder.build(&server).await?;
 
-    let command = ["/bin/echo", "shell ok"];
+    let echo = echo_path();
+    let command = [echo.as_str(), "shell ok"];
     let call_id_blocked = "shell-blocked";
     let call_id_success = "shell-success";
 
@@ -199,7 +202,7 @@ async fn sandbox_denied_shell_returns_original_output() -> Result<()> {
     let target_path = fixture.workspace_path("sandbox-denied.txt");
     let sentinel = "sandbox-denied sentinel output";
     let command = vec![
-        "/bin/sh".to_string(),
+        sh_path(),
         "-c".to_string(),
         format!(
             "printf {sentinel:?}; printf {content:?} > {path:?}",
@@ -347,8 +350,9 @@ async fn shell_timeout_includes_timeout_prefix_and_metadata() -> Result<()> {
 
     let call_id = "shell-timeout";
     let timeout_ms = 50u64;
+    let sh = sh_path();
     let args = json!({
-        "command": ["/bin/sh", "-c", "yes line | head -n 400; sleep 1"],
+        "command": [sh, "-c", "yes line | head -n 400; sleep 1"],
         "timeout_ms": timeout_ms,
     });
 
@@ -421,13 +425,14 @@ async fn shell_timeout_handles_background_grandchild_stdout() -> Result<()> {
     let call_id = "shell-grandchild-timeout";
     let pid_path = test.cwd.path().join("grandchild_pid.txt");
     let script_path = test.cwd.path().join("spawn_detached.py");
+    let sh = sh_path();
     let script = format!(
         r#"import subprocess
 import time
 from pathlib import Path
 
 # Spawn a detached grandchild that inherits stdout/stderr so the pipe stays open.
-proc = subprocess.Popen(["/bin/sh", "-c", "sleep 60"], start_new_session=True)
+proc = subprocess.Popen([{sh:?}, "-c", "sleep 60"], start_new_session=True)
 Path({pid_path:?}).write_text(str(proc.pid))
 time.sleep(60)
 "#
