@@ -30,6 +30,7 @@ pub(crate) struct ToolsConfigParams<'a> {
     pub(crate) model_family: &'a ModelFamily,
     pub(crate) features: &'a Features,
     pub(crate) codex_home: &'a std::path::Path,
+    pub(crate) experimental_tools_enable: &'a [String],
 }
 
 impl ToolsConfig {
@@ -38,6 +39,7 @@ impl ToolsConfig {
             model_family,
             features,
             codex_home,
+            experimental_tools_enable,
         } = params;
         let include_apply_patch_tool = features.enabled(Feature::ApplyPatchFreeform);
         let include_web_search_request = features.enabled(Feature::WebSearchRequest);
@@ -63,13 +65,20 @@ impl ToolsConfig {
             }
         };
 
+        // Start from the model family's hardcoded experimental_supported_tools.
+        let mut experimental = model_family.experimental_supported_tools.clone();
+        // Add anything in experimental_enable.
+        experimental.extend_from_slice(experimental_tools_enable);
+        experimental.sort();
+        experimental.dedup();
+
         Self {
             codex_home: codex_home.to_path_buf(),
             shell_type,
             apply_patch_tool_type,
             web_search_request: include_web_search_request,
             include_view_image_tool,
-            experimental_supported_tools: model_family.experimental_supported_tools.clone(),
+            experimental_supported_tools: experimental,
         }
     }
 }
@@ -1235,6 +1244,7 @@ mod tests {
             model_family: &model_family,
             features: &features,
             codex_home: std::path::Path::new("."),
+            experimental_tools_enable: &[],
         });
         let (tools, _) = build_specs(&config, None).build();
 
@@ -1292,6 +1302,7 @@ mod tests {
             model_family: &model_family,
             features,
             codex_home: std::path::Path::new("."),
+            experimental_tools_enable: &[],
         });
         let (tools, _) = build_specs(&config, Some(HashMap::new())).build();
         let tool_names = tools.iter().map(|t| t.spec.name()).collect::<Vec<_>>();
@@ -1498,6 +1509,7 @@ mod tests {
             model_family: &model_family,
             features: &features,
             codex_home: std::path::Path::new("."),
+            experimental_tools_enable: &[],
         });
         let (tools, _) = build_specs(&config, Some(HashMap::new())).build();
 
@@ -1520,6 +1532,7 @@ mod tests {
             model_family: &model_family,
             features: &features,
             codex_home: std::path::Path::new("."),
+            experimental_tools_enable: &[],
         });
         let (tools, _) = build_specs(&config, None).build();
 
@@ -1539,6 +1552,7 @@ mod tests {
             model_family: &model_family,
             features: &features,
             codex_home: std::path::Path::new("."),
+            experimental_tools_enable: &[],
         });
         let (tools, _) = build_specs(&config, None).build();
 
@@ -1570,6 +1584,7 @@ mod tests {
             model_family: &model_family,
             features: &features,
             codex_home: std::path::Path::new("."),
+            experimental_tools_enable: &[],
         });
         let (tools, _) = build_specs(
             &config,
@@ -1664,6 +1679,7 @@ mod tests {
             model_family: &model_family,
             features: &features,
             codex_home: std::path::Path::new("."),
+            experimental_tools_enable: &[],
         });
 
         // Intentionally construct a map with keys that would sort alphabetically.
@@ -1741,6 +1757,7 @@ mod tests {
             model_family: &model_family,
             features: &features,
             codex_home: std::path::Path::new("."),
+            experimental_tools_enable: &[],
         });
 
         let (tools, _) = build_specs(
@@ -1798,6 +1815,7 @@ mod tests {
             model_family: &model_family,
             features: &features,
             codex_home: std::path::Path::new("."),
+            experimental_tools_enable: &[],
         });
 
         let (tools, _) = build_specs(
@@ -1852,6 +1870,7 @@ mod tests {
             model_family: &model_family,
             features: &features,
             codex_home: std::path::Path::new("."),
+            experimental_tools_enable: &[],
         });
 
         let (tools, _) = build_specs(
@@ -1908,6 +1927,7 @@ mod tests {
             model_family: &model_family,
             features: &features,
             codex_home: std::path::Path::new("."),
+            experimental_tools_enable: &[],
         });
 
         let (tools, _) = build_specs(
@@ -2020,6 +2040,7 @@ Examples of valid command strings:
             model_family: &model_family,
             features: &features,
             codex_home: std::path::Path::new("."),
+            experimental_tools_enable: &[],
         });
         let (tools, _) = build_specs(
             &config,
@@ -2176,5 +2197,68 @@ Examples of valid command strings:
                 }
             })]
         );
+    }
+
+    #[test]
+    fn test_experimental_tools_enable_from_config() {
+        // Test that tools can be added via config's experimental_enable
+        let model_family = find_family_for_model("gpt-5-codex");
+        let features = Features::with_defaults();
+
+        // Model without read_file by default
+        let config_without_enable = ToolsConfig::new(&ToolsConfigParams {
+            model_family: &model_family,
+            features: &features,
+            codex_home: std::path::Path::new("."),
+            experimental_tools_enable: &[],
+        });
+
+        // Verify read_file is not in the default set
+        assert!(
+            !config_without_enable
+                .experimental_supported_tools
+                .contains(&"read_file".to_string())
+        );
+
+        // Now enable read_file via config
+        let config_with_enable = ToolsConfig::new(&ToolsConfigParams {
+            model_family: &model_family,
+            features: &features,
+            codex_home: std::path::Path::new("."),
+            experimental_tools_enable: &["read_file".to_string()],
+        });
+
+        // Verify read_file is now in the set
+        assert!(
+            config_with_enable
+                .experimental_supported_tools
+                .contains(&"read_file".to_string())
+        );
+    }
+
+    #[test]
+    fn test_experimental_tools_enable_deduplicates() {
+        // Test that duplicate entries are deduplicated
+        let model_family = find_family_for_model("gpt-5-codex");
+        let features = Features::with_defaults();
+
+        let config = ToolsConfig::new(&ToolsConfigParams {
+            model_family: &model_family,
+            features: &features,
+            codex_home: std::path::Path::new("."),
+            experimental_tools_enable: &[
+                "read_file".to_string(),
+                "read_file".to_string(),
+                "grep_files".to_string(),
+            ],
+        });
+
+        // Count occurrences of read_file
+        let read_file_count = config
+            .experimental_supported_tools
+            .iter()
+            .filter(|&t| t == "read_file")
+            .count();
+        assert_eq!(read_file_count, 1, "read_file should appear only once");
     }
 }
