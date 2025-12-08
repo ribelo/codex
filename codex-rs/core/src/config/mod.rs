@@ -247,6 +247,9 @@ pub struct Config {
 
     pub tools_web_search_request: bool,
 
+    /// Experimental tools to add to the model's hardcoded set.
+    pub experimental_tools_enable: Vec<String>,
+
     /// When `true`, run a model-based assessment for commands denied by the sandbox.
     pub experimental_sandbox_command_assessment: bool,
 
@@ -775,6 +778,10 @@ pub struct ToolsToml {
     /// Enable the `view_image` tool that lets the agent attach local images.
     #[serde(default)]
     pub view_image: Option<bool>,
+
+    /// Add experimental tools to the model's hardcoded set.
+    #[serde(default)]
+    pub experimental_enable: Option<Vec<String>>,
 }
 
 impl From<ToolsToml> for Tools {
@@ -1000,6 +1007,23 @@ impl Config {
         {
             crate::safety::set_windows_sandbox_enabled(features.enabled(Feature::WindowsSandbox));
         }
+
+        // Merge experimental tools lists from base config and active profile.
+        let mut experimental_tools_enable = cfg
+            .tools
+            .as_ref()
+            .and_then(|t| t.experimental_enable.clone())
+            .unwrap_or_default();
+        if let Some(ref profile_enable) = config_profile.tools_experimental_enable {
+            experimental_tools_enable.extend_from_slice(profile_enable);
+        }
+        // Normalize: lowercase, trim, sort, dedup.
+        experimental_tools_enable = experimental_tools_enable
+            .into_iter()
+            .map(|s| s.trim().to_lowercase())
+            .collect();
+        experimental_tools_enable.sort();
+        experimental_tools_enable.dedup();
 
         let resolved_cwd = {
             use std::env;
@@ -1251,6 +1275,7 @@ impl Config {
             forced_login_method,
             include_apply_patch_tool: include_apply_patch_tool_flag,
             tools_web_search_request,
+            experimental_tools_enable,
             experimental_sandbox_command_assessment,
             use_experimental_unified_exec_tool,
             use_experimental_use_rmcp_client,
@@ -3002,6 +3027,7 @@ model_verbosity = "high"
                 forced_login_method: None,
                 include_apply_patch_tool: false,
                 tools_web_search_request: false,
+                experimental_tools_enable: vec![],
                 experimental_sandbox_command_assessment: false,
                 use_experimental_unified_exec_tool: false,
                 use_experimental_use_rmcp_client: false,
@@ -3077,6 +3103,7 @@ model_verbosity = "high"
             forced_login_method: None,
             include_apply_patch_tool: false,
             tools_web_search_request: false,
+            experimental_tools_enable: vec![],
             experimental_sandbox_command_assessment: false,
             use_experimental_unified_exec_tool: false,
             use_experimental_use_rmcp_client: false,
@@ -3167,6 +3194,7 @@ model_verbosity = "high"
             forced_login_method: None,
             include_apply_patch_tool: false,
             tools_web_search_request: false,
+            experimental_tools_enable: vec![],
             experimental_sandbox_command_assessment: false,
             use_experimental_unified_exec_tool: false,
             use_experimental_use_rmcp_client: false,
@@ -3243,6 +3271,7 @@ model_verbosity = "high"
             forced_login_method: None,
             include_apply_patch_tool: false,
             tools_web_search_request: false,
+            experimental_tools_enable: vec![],
             experimental_sandbox_command_assessment: false,
             use_experimental_unified_exec_tool: false,
             use_experimental_use_rmcp_client: false,

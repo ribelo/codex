@@ -35,6 +35,8 @@ pub struct ConfigProfile {
     pub experimental_sandbox_command_assessment: Option<bool>,
     pub tools_web_search: Option<bool>,
     pub tools_view_image: Option<bool>,
+    #[serde(default)]
+    pub tools_experimental_enable: Option<Vec<String>>,
     /// Optional feature toggles scoped to this profile.
     #[serde(default)]
     pub features: Option<crate::features::FeaturesToml>,

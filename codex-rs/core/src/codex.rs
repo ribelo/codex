@@ -446,6 +446,9 @@ impl Session {
             model_family: &model_family,
             features: &per_turn_config.features,
             codex_home: &session_configuration.original_config_do_not_use.codex_home,
+            experimental_tools_enable: &session_configuration
+                .original_config_do_not_use
+                .experimental_tools_enable,
         });
 
         TurnContext {
@@ -1944,6 +1947,7 @@ async fn spawn_review_thread(
         model_family: &review_model_family,
         features: &review_features,
         codex_home: &config.codex_home,
+        experimental_tools_enable: &config.experimental_tools_enable,
     });
 
     let base_instructions = REVIEW_PROMPT.to_string();
