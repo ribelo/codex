@@ -7,6 +7,14 @@ use codex_protocol::models::FunctionCallOutputContentItem;
 
 const APPROX_BYTES_PER_TOKEN: usize = 4;
 
+/// Default byte limit for tool output truncation.
+/// 50KB allows roughly 500-1500 lines of typical code when reading files via `cat`.
+pub const DEFAULT_TOOL_OUTPUT_BYTES: usize = 50_000;
+
+/// Default byte limit for MCP tool output truncation.
+/// Matches Claude Code's 25k token limit (~100KB at 4 bytes/token).
+pub const DEFAULT_MCP_TOOL_OUTPUT_BYTES: usize = 100_000;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TruncationPolicy {
     Bytes(usize),

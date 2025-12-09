@@ -300,6 +300,7 @@ pub(crate) struct TurnContext {
     pub(crate) tool_call_gate: Arc<ReadinessFlag>,
     pub(crate) exec_policy: Arc<RwLock<ExecPolicy>>,
     pub(crate) truncation_policy: TruncationPolicy,
+    pub(crate) mcp_truncation_policy: TruncationPolicy,
 }
 
 impl TurnContext {
@@ -470,6 +471,10 @@ impl Session {
             truncation_policy: TruncationPolicy::new(
                 per_turn_config.as_ref(),
                 model_family.truncation_policy,
+            ),
+            mcp_truncation_policy: TruncationPolicy::new(
+                per_turn_config.as_ref(),
+                model_family.mcp_truncation_policy,
             ),
         }
     }
@@ -2008,6 +2013,10 @@ async fn spawn_review_thread(
         tool_call_gate: Arc::new(ReadinessFlag::new()),
         exec_policy: parent_turn_context.exec_policy.clone(),
         truncation_policy: TruncationPolicy::new(&per_turn_config, model_family.truncation_policy),
+        mcp_truncation_policy: TruncationPolicy::new(
+            &per_turn_config,
+            model_family.mcp_truncation_policy,
+        ),
     };
 
     // Seed the child task with the review prompt as the initial user message.

@@ -235,8 +235,8 @@ async fn tool_call_output_exceeds_limit_truncated_chars_limit() -> Result<()> {
 
     let len = output.len();
     assert!(
-        (9_900..=10_100).contains(&len),
-        "expected ~10k chars after truncation, got {len}"
+        (49_900..=50_100).contains(&len),
+        "expected ~50k chars after truncation, got {len}"
     );
 
     Ok(())
