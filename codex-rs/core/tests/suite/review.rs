@@ -18,10 +18,6 @@ use codex_core::protocol::ReviewOutputEvent;
 use codex_core::protocol::ReviewRequest;
 use codex_core::protocol::ReviewTarget;
 use codex_core::protocol::RolloutItem;
-
-/// Parallel instructions that are always appended to the base instructions.
-const PARALLEL_INSTRUCTIONS: &str = include_str!("../../templates/parallel/instructions.md");
-
 use codex_core::protocol::RolloutLine;
 use codex_core::review_format::render_review_output_text;
 use codex_protocol::user_input::UserInput;
@@ -587,11 +583,10 @@ async fn review_input_isolated_from_parent_history() {
         "review environment context must run with read-only sandbox"
     );
 
-    // Ensure the REVIEW_PROMPT rubric is sent via instructions.
+    // Ensure the REVIEW_PROMPT rubric is sent via instructions (without parallel
+    // instructions, since base_instructions_override is used for review).
     let instructions = body["instructions"].as_str().expect("instructions string");
-    // Parallel instructions are always appended now.
-    let expected_instructions = format!("{REVIEW_PROMPT}{PARALLEL_INSTRUCTIONS}");
-    assert_eq!(instructions, expected_instructions);
+    assert_eq!(instructions, REVIEW_PROMPT);
 
     // Also verify that a user interruption note was recorded in the rollout.
     let path = codex.rollout_path();
