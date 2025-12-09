@@ -264,71 +264,7 @@ fn create_write_stdin_tool() -> ToolSpec {
     })
 }
 
-fn create_shell_tool() -> ToolSpec {
-    let mut properties = BTreeMap::new();
-    properties.insert(
-        "command".to_string(),
-        JsonSchema::Array {
-            items: Box::new(JsonSchema::String { description: None }),
-            description: Some("The command to execute".to_string()),
-        },
-    );
-    properties.insert(
-        "workdir".to_string(),
-        JsonSchema::String {
-            description: Some("The working directory to execute the command in".to_string()),
-        },
-    );
-    properties.insert(
-        "timeout_ms".to_string(),
-        JsonSchema::Number {
-            description: Some("The timeout for the command in milliseconds".to_string()),
-        },
-    );
-
-    properties.insert(
-        "with_escalated_permissions".to_string(),
-        JsonSchema::Boolean {
-            description: Some("Whether to request escalated permissions. Set to true if command needs to be run without sandbox restrictions".to_string()),
-        },
-    );
-    properties.insert(
-        "justification".to_string(),
-        JsonSchema::String {
-            description: Some("Only set if with_escalated_permissions is true. 1-sentence explanation of why we want to run this command.".to_string()),
-        },
-    );
-
-    let description  = if cfg!(windows) {
-        r#"Runs a Powershell command (Windows) and returns its output. Arguments to `shell` will be passed to CreateProcessW(). Most commands should be prefixed with ["powershell.exe", "-Command"].
-        
-Examples of valid command strings:
-
-- ls -a (show hidden): ["powershell.exe", "-Command", "Get-ChildItem -Force"]
-- recursive find by name: ["powershell.exe", "-Command", "Get-ChildItem -Recurse -Filter *.py"]
-- recursive grep: ["powershell.exe", "-Command", "Get-ChildItem -Path C:\\myrepo -Recurse | Select-String -Pattern 'TODO' -CaseSensitive"]
-- ps aux | grep python: ["powershell.exe", "-Command", "Get-Process | Where-Object { $_.ProcessName -like '*python*' }"]
-- setting an env var: ["powershell.exe", "-Command", "$env:FOO='bar'; echo $env:FOO"]
-- running an inline Python script: ["powershell.exe", "-Command", "@'\\nprint('Hello, world!')\\n'@ | python -"]"#
-    } else {
-        r#"Runs a shell command and returns its output.
-- The arguments to `shell` will be passed to execvp(). Most terminal commands should be prefixed with ["bash", "-lc"].
-- Always set the `workdir` param when using the shell function. Do not use `cd` unless absolutely necessary."#
-    }.to_string();
-
-    ToolSpec::Function(ResponsesApiTool {
-        name: "shell".to_string(),
-        description,
-        strict: false,
-        parameters: JsonSchema::Object {
-            properties,
-            required: Some(vec!["command".to_string()]),
-            additional_properties: Some(false.into()),
-        },
-    })
-}
-
-fn create_shell_command_tool() -> ToolSpec {
+fn create_shell_command_tool_with_name(tool_name: &str) -> ToolSpec {
     let mut properties = BTreeMap::new();
     properties.insert(
         "command".to_string(),
@@ -389,7 +325,7 @@ Examples of valid command strings:
     }.to_string();
 
     ToolSpec::Function(ResponsesApiTool {
-        name: "shell_command".to_string(),
+        name: tool_name.to_string(),
         description,
         strict: false,
         parameters: JsonSchema::Object {
@@ -398,6 +334,10 @@ Examples of valid command strings:
             additional_properties: Some(false.into()),
         },
     })
+}
+
+fn create_shell_command_tool() -> ToolSpec {
+    create_shell_command_tool_with_name("shell_command")
 }
 
 fn create_view_image_tool() -> ToolSpec {
@@ -996,7 +936,6 @@ pub(crate) fn build_specs(
     use crate::tools::handlers::PlanHandler;
     use crate::tools::handlers::ReadFileHandler;
     use crate::tools::handlers::ShellCommandHandler;
-    use crate::tools::handlers::ShellHandler;
     use crate::tools::handlers::TaskHandler;
     use crate::tools::handlers::TestSyncHandler;
     use crate::tools::handlers::UnifiedExecHandler;
@@ -1006,7 +945,6 @@ pub(crate) fn build_specs(
 
     let mut builder = ToolRegistryBuilder::new();
 
-    let shell_handler = Arc::new(ShellHandler);
     let unified_exec_handler = Arc::new(UnifiedExecHandler);
     let plan_handler = Arc::new(PlanHandler);
     let apply_patch_handler = Arc::new(ApplyPatchHandler);
@@ -1018,10 +956,8 @@ pub(crate) fn build_specs(
 
     match &config.shell_type {
         ConfigShellToolType::Default => {
-            builder.push_spec(create_shell_tool());
-        }
-        ConfigShellToolType::Local => {
-            builder.push_spec(ToolSpec::LocalShell {});
+            builder.push_spec(create_shell_command_tool());
+            builder.register_handler("shell_command", shell_command_handler.clone());
         }
         ConfigShellToolType::UnifiedExec => {
             builder.push_spec(create_exec_command_tool());
@@ -1034,15 +970,15 @@ pub(crate) fn build_specs(
         }
         ConfigShellToolType::ShellCommand => {
             builder.push_spec(create_shell_command_tool());
+            builder.register_handler("shell_command", shell_command_handler.clone());
         }
     }
 
     if config.shell_type != ConfigShellToolType::Disabled {
-        // Always register shell aliases so older prompts remain compatible.
-        builder.register_handler("shell", shell_handler.clone());
-        builder.register_handler("container.exec", shell_handler.clone());
-        builder.register_handler("local_shell", shell_handler);
-        builder.register_handler("shell_command", shell_command_handler);
+        // Register shell_command as fallback for backwards compatibility.
+        if config.shell_type != ConfigShellToolType::ShellCommand {
+            builder.register_handler("shell_command", shell_command_handler);
+        }
     }
 
     builder.push_spec_with_parallel_support(create_list_mcp_resources_tool(), true);
@@ -1150,7 +1086,6 @@ mod tests {
     fn tool_name(tool: &ToolSpec) -> &str {
         match tool {
             ToolSpec::Function(ResponsesApiTool { name, .. }) => name,
-            ToolSpec::LocalShell {} => "local_shell",
             ToolSpec::WebSearch {} => "web_search",
             ToolSpec::Freeform(FreeformTool { name, .. }) => name,
         }
@@ -1181,7 +1116,6 @@ mod tests {
     fn shell_tool_name(config: &ToolsConfig) -> Option<&'static str> {
         match config.shell_type {
             ConfigShellToolType::Default => Some("shell"),
-            ConfigShellToolType::Local => Some("local_shell"),
             ConfigShellToolType::UnifiedExec => None,
             ConfigShellToolType::Disabled => None,
             ConfigShellToolType::ShellCommand => Some("shell_command"),
@@ -1229,13 +1163,13 @@ mod tests {
             ToolSpec::Function(ResponsesApiTool { parameters, .. }) => {
                 strip_descriptions_schema(parameters);
             }
-            ToolSpec::Freeform(_) | ToolSpec::LocalShell {} | ToolSpec::WebSearch {} => {}
+            ToolSpec::WebSearch {} | ToolSpec::Freeform(_) => {}
         }
     }
 
     #[test]
     fn test_full_toolset_specs_for_gpt5_codex_unified_exec_web_search() {
-        let model_family = find_family_for_model("gpt-5-codex");
+        let model_family = find_family_for_model("gpt-5.1-codex");
         let mut features = Features::with_defaults();
         features.enable(Feature::UnifiedExec);
         features.enable(Feature::WebSearchRequest);
@@ -1310,24 +1244,6 @@ mod tests {
     }
 
     #[test]
-    fn test_build_specs_gpt5_codex_default() {
-        assert_model_tools(
-            "gpt-5-codex",
-            &Features::with_defaults(),
-            &[
-                "shell_command",
-                "list_mcp_resources",
-                "list_mcp_resource_templates",
-                "read_mcp_resource",
-                "update_plan",
-                "apply_patch",
-                "task",
-                "view_image",
-            ],
-        );
-    }
-
-    #[test]
     fn test_build_specs_gpt51_codex_default() {
         assert_model_tools(
             "gpt-5.1-codex",
@@ -1339,28 +1255,6 @@ mod tests {
                 "read_mcp_resource",
                 "update_plan",
                 "apply_patch",
-                "task",
-                "view_image",
-            ],
-        );
-    }
-
-    #[test]
-    fn test_build_specs_gpt5_codex_unified_exec_web_search() {
-        assert_model_tools(
-            "gpt-5-codex",
-            Features::with_defaults()
-                .enable(Feature::UnifiedExec)
-                .enable(Feature::WebSearchRequest),
-            &[
-                "exec_command",
-                "write_stdin",
-                "list_mcp_resources",
-                "list_mcp_resource_templates",
-                "read_mcp_resource",
-                "update_plan",
-                "apply_patch",
-                "web_search",
                 "task",
                 "view_image",
             ],
@@ -1390,23 +1284,6 @@ mod tests {
     }
 
     #[test]
-    fn test_codex_mini_defaults() {
-        assert_model_tools(
-            "codex-mini-latest",
-            &Features::with_defaults(),
-            &[
-                "local_shell",
-                "list_mcp_resources",
-                "list_mcp_resource_templates",
-                "read_mcp_resource",
-                "update_plan",
-                "task",
-                "view_image",
-            ],
-        );
-    }
-
-    #[test]
     fn test_codex_5_1_mini_defaults() {
         assert_model_tools(
             "gpt-5.1-codex-mini",
@@ -1418,23 +1295,6 @@ mod tests {
                 "read_mcp_resource",
                 "update_plan",
                 "apply_patch",
-                "task",
-                "view_image",
-            ],
-        );
-    }
-
-    #[test]
-    fn test_gpt_5_defaults() {
-        assert_model_tools(
-            "gpt-5",
-            &Features::with_defaults(),
-            &[
-                "shell",
-                "list_mcp_resources",
-                "list_mcp_resource_templates",
-                "read_mcp_resource",
-                "update_plan",
                 "task",
                 "view_image",
             ],
@@ -1479,27 +1339,6 @@ mod tests {
     }
 
     #[test]
-    fn test_codex_mini_unified_exec_web_search() {
-        assert_model_tools(
-            "codex-mini-latest",
-            Features::with_defaults()
-                .enable(Feature::UnifiedExec)
-                .enable(Feature::WebSearchRequest),
-            &[
-                "exec_command",
-                "write_stdin",
-                "list_mcp_resources",
-                "list_mcp_resource_templates",
-                "read_mcp_resource",
-                "update_plan",
-                "web_search",
-                "task",
-                "view_image",
-            ],
-        );
-    }
-
-    #[test]
     fn test_build_specs_default_shell_present() {
         let model_family = find_family_for_model("o3");
         let mut features = Features::with_defaults();
@@ -1524,7 +1363,7 @@ mod tests {
     #[test]
     #[ignore]
     fn test_parallel_support_flags() {
-        let model_family = find_family_for_model("gpt-5-codex");
+        let model_family = find_family_for_model("gpt-5.1-codex");
         let mut features = Features::with_defaults();
         features.disable(Feature::ViewImageTool);
         features.enable(Feature::UnifiedExec);
@@ -1545,7 +1384,7 @@ mod tests {
 
     #[test]
     fn test_test_model_family_includes_sync_tool() {
-        let model_family = find_family_for_model("test-gpt-5-codex");
+        let model_family = find_family_for_model("test-gpt-5.1-codex");
         let mut features = Features::with_defaults();
         features.disable(Feature::ViewImageTool);
         let config = ToolsConfig::new(&ToolsConfigParams {
@@ -1749,7 +1588,7 @@ mod tests {
 
     #[test]
     fn test_mcp_tool_property_missing_type_defaults_to_string() {
-        let model_family = find_family_for_model("gpt-5-codex");
+        let model_family = find_family_for_model("gpt-5.1-codex");
         let mut features = Features::with_defaults();
         features.enable(Feature::UnifiedExec);
         features.enable(Feature::WebSearchRequest);
@@ -1807,7 +1646,7 @@ mod tests {
 
     #[test]
     fn test_mcp_tool_integer_normalized_to_number() {
-        let model_family = find_family_for_model("gpt-5-codex");
+        let model_family = find_family_for_model("gpt-5.1-codex");
         let mut features = Features::with_defaults();
         features.enable(Feature::UnifiedExec);
         features.enable(Feature::WebSearchRequest);
@@ -1861,7 +1700,7 @@ mod tests {
 
     #[test]
     fn test_mcp_tool_array_without_items_gets_default_string_items() {
-        let model_family = find_family_for_model("gpt-5-codex");
+        let model_family = find_family_for_model("gpt-5.1-codex");
         let mut features = Features::with_defaults();
         features.enable(Feature::UnifiedExec);
         features.enable(Feature::WebSearchRequest);
@@ -1919,7 +1758,7 @@ mod tests {
 
     #[test]
     fn test_mcp_tool_anyof_defaults_to_string() {
-        let model_family = find_family_for_model("gpt-5-codex");
+        let model_family = find_family_for_model("gpt-5.1-codex");
         let mut features = Features::with_defaults();
         features.enable(Feature::UnifiedExec);
         features.enable(Feature::WebSearchRequest);
@@ -1972,36 +1811,6 @@ mod tests {
     }
 
     #[test]
-    fn test_shell_tool() {
-        let tool = super::create_shell_tool();
-        let ToolSpec::Function(ResponsesApiTool {
-            description, name, ..
-        }) = &tool
-        else {
-            panic!("expected function tool");
-        };
-        assert_eq!(name, "shell");
-
-        let expected = if cfg!(windows) {
-            r#"Runs a Powershell command (Windows) and returns its output. Arguments to `shell` will be passed to CreateProcessW(). Most commands should be prefixed with ["powershell.exe", "-Command"].
-        
-Examples of valid command strings:
-
-- ls -a (show hidden): ["powershell.exe", "-Command", "Get-ChildItem -Force"]
-- recursive find by name: ["powershell.exe", "-Command", "Get-ChildItem -Recurse -Filter *.py"]
-- recursive grep: ["powershell.exe", "-Command", "Get-ChildItem -Path C:\\myrepo -Recurse | Select-String -Pattern 'TODO' -CaseSensitive"]
-- ps aux | grep python: ["powershell.exe", "-Command", "Get-Process | Where-Object { $_.ProcessName -like '*python*' }"]
-- setting an env var: ["powershell.exe", "-Command", "$env:FOO='bar'; echo $env:FOO"]
-- running an inline Python script: ["powershell.exe", "-Command", "@'\\nprint('Hello, world!')\\n'@ | python -"]"#
-        } else {
-            r#"Runs a shell command and returns its output.
-- The arguments to `shell` will be passed to execvp(). Most terminal commands should be prefixed with ["bash", "-lc"].
-- Always set the `workdir` param when using the shell function. Do not use `cd` unless absolutely necessary."#
-        }.to_string();
-        assert_eq!(description, &expected);
-    }
-
-    #[test]
     fn test_shell_command_tool() {
         let tool = super::create_shell_command_tool();
         let ToolSpec::Function(ResponsesApiTool {
@@ -2032,7 +1841,7 @@ Examples of valid command strings:
 
     #[test]
     fn test_get_openai_tools_mcp_tools_with_additional_properties_schema() {
-        let model_family = find_family_for_model("gpt-5-codex");
+        let model_family = find_family_for_model("gpt-5.1-codex");
         let mut features = Features::with_defaults();
         features.enable(Feature::UnifiedExec);
         features.enable(Feature::WebSearchRequest);
@@ -2202,7 +2011,7 @@ Examples of valid command strings:
     #[test]
     fn test_experimental_tools_enable_from_config() {
         // Test that tools can be added via config's experimental_enable
-        let model_family = find_family_for_model("gpt-5-codex");
+        let model_family = find_family_for_model("gpt-5.1-codex");
         let features = Features::with_defaults();
 
         // Model without read_file by default
@@ -2239,7 +2048,7 @@ Examples of valid command strings:
     #[test]
     fn test_experimental_tools_enable_deduplicates() {
         // Test that duplicate entries are deduplicated
-        let model_family = find_family_for_model("gpt-5-codex");
+        let model_family = find_family_for_model("gpt-5.1-codex");
         let features = Features::with_defaults();
 
         let config = ToolsConfig::new(&ToolsConfigParams {

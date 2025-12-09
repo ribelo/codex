@@ -639,7 +639,7 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             with_escalated_permissions: false,
             features: vec![],
-            model_override: Some("gpt-5"),
+            model_override: Some("gpt-5.1"),
             outcome: Outcome::Auto,
             expectation: Expectation::FileCreated {
                 target: TargetPath::OutsideWorkspace("dfa_on_request.txt"),
@@ -673,7 +673,7 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             with_escalated_permissions: false,
             features: vec![],
-            model_override: Some("gpt-5"),
+            model_override: Some("gpt-5.1"),
             outcome: Outcome::Auto,
             expectation: Expectation::NetworkSuccess {
                 body_contains: "danger-network-ok",
@@ -704,7 +704,7 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             with_escalated_permissions: false,
             features: vec![],
-            model_override: Some("gpt-5"),
+            model_override: Some("gpt-5.1"),
             outcome: Outcome::Auto,
             expectation: Expectation::CommandSuccess {
                 stdout_contains: "trusted-unless",
@@ -735,7 +735,7 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             with_escalated_permissions: false,
             features: vec![],
-            model_override: Some("gpt-5"),
+            model_override: Some("gpt-5.1"),
             outcome: Outcome::Auto,
             expectation: Expectation::FileCreated {
                 target: TargetPath::OutsideWorkspace("dfa_on_failure.txt"),
@@ -769,7 +769,7 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             with_escalated_permissions: false,
             features: vec![],
-            model_override: Some("gpt-5"),
+            model_override: Some("gpt-5.1"),
             outcome: Outcome::ExecApproval {
                 decision: ReviewDecision::Approved,
                 expected_reason: None,
@@ -809,7 +809,7 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             with_escalated_permissions: false,
             features: vec![],
-            model_override: Some("gpt-5"),
+            model_override: Some("gpt-5.1"),
             outcome: Outcome::Auto,
             expectation: Expectation::FileCreated {
                 target: TargetPath::OutsideWorkspace("dfa_never.txt"),
@@ -843,7 +843,7 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             with_escalated_permissions: true,
             features: vec![],
-            model_override: Some("gpt-5"),
+            model_override: Some("gpt-5.1"),
             outcome: Outcome::ExecApproval {
                 decision: ReviewDecision::Approved,
                 expected_reason: None,
@@ -882,7 +882,7 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             with_escalated_permissions: false,
             features: vec![],
-            model_override: Some("gpt-5"),
+            model_override: Some("gpt-5.1"),
             outcome: Outcome::Auto,
             expectation: Expectation::CommandSuccess {
                 stdout_contains: "trusted-read-only",
@@ -948,7 +948,7 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             with_escalated_permissions: false,
             features: vec![],
-            model_override: Some("gpt-5"),
+            model_override: Some("gpt-5.1"),
             outcome: Outcome::ExecApproval {
                 decision: ReviewDecision::Approved,
                 expected_reason: Some("command failed; retry without sandbox?"),
@@ -989,7 +989,7 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             with_escalated_permissions: true,
             features: vec![],
-            model_override: Some("gpt-5"),
+            model_override: Some("gpt-5.1"),
             outcome: Outcome::ExecApproval {
                 decision: ReviewDecision::Approved,
                 expected_reason: None,
@@ -1180,7 +1180,7 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             with_escalated_permissions: false,
             features: vec![],
-            model_override: Some("gpt-5"),
+            model_override: Some("gpt-5.1"),
             outcome: Outcome::ExecApproval {
                 decision: ReviewDecision::Approved,
                 expected_reason: None,
@@ -1243,7 +1243,7 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             with_escalated_permissions: false,
             features: vec![],
-            model_override: Some("gpt-5"),
+            model_override: Some("gpt-5.1"),
             outcome: Outcome::Auto,
             expectation: Expectation::CommandSuccess {
                 stdout_contains: "trusted-never",
@@ -1259,7 +1259,7 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             with_escalated_permissions: false,
             features: vec![],
-            model_override: Some("gpt-5"),
+            model_override: Some("gpt-5.1"),
             outcome: Outcome::Auto,
             expectation: Expectation::FileCreated {
                 target: TargetPath::Workspace("ww_on_request.txt"),
@@ -1290,7 +1290,7 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             with_escalated_permissions: true,
             features: vec![],
-            model_override: Some("gpt-5"),
+            model_override: Some("gpt-5.1"),
             outcome: Outcome::ExecApproval {
                 decision: ReviewDecision::Approved,
                 expected_reason: None,
@@ -1310,7 +1310,7 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             with_escalated_permissions: false,
             features: vec![],
-            model_override: Some("gpt-5"),
+            model_override: Some("gpt-5.1"),
             outcome: Outcome::Auto,
             expectation: Expectation::NetworkSuccess {
                 body_contains: "workspace-network-ok",
@@ -1327,7 +1327,7 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             with_escalated_permissions: false,
             features: vec![],
-            model_override: Some("gpt-5"),
+            model_override: Some("gpt-5.1"),
             outcome: Outcome::ExecApproval {
                 decision: ReviewDecision::Approved,
                 expected_reason: Some("command failed; retry without sandbox?"),
@@ -1347,7 +1347,7 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             with_escalated_permissions: false,
             features: vec![],
-            model_override: Some("gpt-5"),
+            model_override: Some("gpt-5.1"),
             outcome: Outcome::ExecApproval {
                 decision: ReviewDecision::Approved,
                 expected_reason: None,
@@ -1391,7 +1391,7 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             with_escalated_permissions: false,
             features: vec![Feature::UnifiedExec],
-            model_override: Some("gpt-5"),
+            model_override: Some("gpt-5.1"),
             outcome: Outcome::Auto,
             expectation: Expectation::CommandSuccess {
                 stdout_contains: "hello unified exec",
@@ -1409,7 +1409,7 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             with_escalated_permissions: true,
             features: vec![Feature::UnifiedExec],
-            model_override: Some("gpt-5"),
+            model_override: Some("gpt-5.1"),
             outcome: Outcome::ExecApproval {
                 decision: ReviewDecision::Approved,
                 expected_reason: Some(DEFAULT_UNIFIED_EXEC_JUSTIFICATION),

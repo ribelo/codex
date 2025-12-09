@@ -21,7 +21,6 @@ pub(crate) fn should_persist_response_item(item: &ResponseItem) -> bool {
     match item {
         ResponseItem::Message { .. }
         | ResponseItem::Reasoning { .. }
-        | ResponseItem::LocalShellCall { .. }
         | ResponseItem::FunctionCall { .. }
         | ResponseItem::FunctionCallOutput { .. }
         | ResponseItem::CustomToolCall { .. }

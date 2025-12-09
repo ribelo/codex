@@ -100,7 +100,7 @@ fn gpt_5_1_codex() -> ModelPreset {
             ),
         ],
         is_default: false,
-        upgrade: Some(gpt_5_1_codex_max_upgrade()),
+        upgrade: None,
         show_in_picker: true,
     }
 }
@@ -123,7 +123,7 @@ fn gpt_5_1_codex_mini() -> ModelPreset {
             ),
         ],
         is_default: false,
-        upgrade: Some(gpt_5_1_codex_max_upgrade()),
+        upgrade: None,
         show_in_picker: true,
     }
 }
@@ -150,16 +150,8 @@ fn gpt_5_1() -> ModelPreset {
             ),
         ],
         is_default: false,
-        upgrade: Some(gpt_5_1_codex_max_upgrade()),
+        upgrade: None,
         show_in_picker: true,
-    }
-}
-
-fn gpt_5_1_codex_max_upgrade() -> codex_protocol::openai_models::ModelUpgrade {
-    codex_protocol::openai_models::ModelUpgrade {
-        id: "gpt-5.1-codex-max".to_string(),
-        reasoning_effort_mapping: None,
-        migration_config_key: "hide_gpt-5.1-codex-max_migration_prompt".to_string(),
     }
 }
 

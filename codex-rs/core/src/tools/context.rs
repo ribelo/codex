@@ -7,7 +7,6 @@ use crate::turn_diff_tracker::TurnDiffTracker;
 use codex_protocol::models::FunctionCallOutputContentItem;
 use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ResponseInputItem;
-use codex_protocol::models::ShellToolCallParams;
 use codex_utils_string::take_bytes_at_char_boundary;
 use mcp_types::CallToolResult;
 use std::borrow::Cow;
@@ -34,9 +33,6 @@ pub enum ToolPayload {
     Custom {
         input: String,
     },
-    LocalShell {
-        params: ShellToolCallParams,
-    },
     UnifiedExec {
         arguments: String,
     },
@@ -52,7 +48,6 @@ impl ToolPayload {
         match self {
             ToolPayload::Function { arguments } => Cow::Borrowed(arguments),
             ToolPayload::Custom { input } => Cow::Borrowed(input),
-            ToolPayload::LocalShell { params } => Cow::Owned(params.command.join(" ")),
             ToolPayload::UnifiedExec { arguments } => Cow::Borrowed(arguments),
             ToolPayload::Mcp { raw_arguments, .. } => Cow::Borrowed(raw_arguments),
         }

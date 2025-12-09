@@ -12,10 +12,8 @@ use crate::tools::registry::ConfiguredToolSpec;
 use crate::tools::registry::ToolRegistry;
 use crate::tools::spec::ToolsConfig;
 use crate::tools::spec::build_specs;
-use codex_protocol::models::LocalShellAction;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
-use codex_protocol::models::ShellToolCallParams;
 
 #[derive(Clone)]
 pub struct ToolCall {
@@ -98,33 +96,6 @@ impl ToolRouter {
                 call_id,
                 payload: ToolPayload::Custom { input },
             })),
-            ResponseItem::LocalShellCall {
-                id,
-                call_id,
-                action,
-                ..
-            } => {
-                let call_id = call_id
-                    .or(id)
-                    .ok_or(FunctionCallError::MissingLocalShellCallId)?;
-
-                match action {
-                    LocalShellAction::Exec(exec) => {
-                        let params = ShellToolCallParams {
-                            command: exec.command,
-                            workdir: exec.working_directory,
-                            timeout_ms: exec.timeout_ms,
-                            with_escalated_permissions: None,
-                            justification: None,
-                        };
-                        Ok(Some(ToolCall {
-                            tool_name: "local_shell".to_string(),
-                            call_id,
-                            payload: ToolPayload::LocalShell { params },
-                        }))
-                    }
-                }
-            }
             _ => Ok(None),
         }
     }

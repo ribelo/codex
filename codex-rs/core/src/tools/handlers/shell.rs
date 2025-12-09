@@ -1,6 +1,5 @@
 use async_trait::async_trait;
 use codex_protocol::models::ShellCommandToolCallParams;
-use codex_protocol::models::ShellToolCallParams;
 use std::sync::Arc;
 
 use crate::codex::TurnContext;
@@ -24,23 +23,7 @@ use crate::tools::runtimes::shell::ShellRequest;
 use crate::tools::runtimes::shell::ShellRuntime;
 use crate::tools::sandboxing::ToolCtx;
 
-pub struct ShellHandler;
-
 pub struct ShellCommandHandler;
-
-impl ShellHandler {
-    fn to_exec_params(params: ShellToolCallParams, turn_context: &TurnContext) -> ExecParams {
-        ExecParams {
-            command: params.command,
-            cwd: turn_context.resolve_path(params.workdir.clone()),
-            expiration: params.timeout_ms.into(),
-            env: create_env(&turn_context.shell_environment_policy),
-            with_escalated_permissions: params.with_escalated_permissions,
-            justification: params.justification,
-            arg0: None,
-        }
-    }
-}
 
 impl ShellCommandHandler {
     fn to_exec_params(
@@ -64,81 +47,6 @@ impl ShellCommandHandler {
 }
 
 #[async_trait]
-impl ToolHandler for ShellHandler {
-    fn kind(&self) -> ToolKind {
-        ToolKind::Function
-    }
-
-    fn matches_kind(&self, payload: &ToolPayload) -> bool {
-        matches!(
-            payload,
-            ToolPayload::Function { .. } | ToolPayload::LocalShell { .. }
-        )
-    }
-
-    fn is_mutating(&self, invocation: &ToolInvocation) -> bool {
-        match &invocation.payload {
-            ToolPayload::Function { arguments } => {
-                serde_json::from_str::<ShellToolCallParams>(arguments)
-                    .map(|params| !is_known_safe_command(&params.command))
-                    .unwrap_or(true)
-            }
-            ToolPayload::LocalShell { params } => !is_known_safe_command(&params.command),
-            _ => true, // unknown payloads => assume mutating
-        }
-    }
-
-    async fn handle(&self, invocation: ToolInvocation) -> Result<ToolOutput, FunctionCallError> {
-        let ToolInvocation {
-            session,
-            turn,
-            tracker,
-            call_id,
-            tool_name,
-            payload,
-        } = invocation;
-
-        match payload {
-            ToolPayload::Function { arguments } => {
-                let params: ShellToolCallParams =
-                    serde_json::from_str(&arguments).map_err(|e| {
-                        FunctionCallError::RespondToModel(format!(
-                            "failed to parse function arguments: {e:?}"
-                        ))
-                    })?;
-                let exec_params = Self::to_exec_params(params, turn.as_ref());
-                Self::run_exec_like(
-                    tool_name.as_str(),
-                    exec_params,
-                    session,
-                    turn,
-                    tracker,
-                    call_id,
-                    false,
-                )
-                .await
-            }
-            ToolPayload::LocalShell { params } => {
-                let exec_params = Self::to_exec_params(params, turn.as_ref());
-                Self::run_exec_like(
-                    tool_name.as_str(),
-                    exec_params,
-                    session,
-                    turn,
-                    tracker,
-                    call_id,
-                    false,
-                )
-                .await
-            }
-            _ => Err(FunctionCallError::RespondToModel(format!(
-                "unsupported payload for shell handler: {tool_name}"
-            ))),
-        }
-    }
-}
-
-#[async_trait]
 impl ToolHandler for ShellCommandHandler {
     fn kind(&self) -> ToolKind {
         ToolKind::Function
@@ -146,6 +54,25 @@ impl ToolHandler for ShellCommandHandler {
 
     fn matches_kind(&self, payload: &ToolPayload) -> bool {
         matches!(payload, ToolPayload::Function { .. })
+    }
+
+    fn is_mutating(&self, invocation: &ToolInvocation) -> bool {
+        let ToolPayload::Function { arguments } = &invocation.payload else {
+            return true; // unknown payloads => assume mutating
+        };
+
+        let Ok(params) = serde_json::from_str::<ShellCommandToolCallParams>(arguments) else {
+            return true; // parse failure => assume mutating
+        };
+
+        let command = Self::to_exec_params(
+            params,
+            invocation.session.as_ref(),
+            invocation.turn.as_ref(),
+        )
+        .command;
+
+        !is_known_safe_command(&command)
     }
 
     async fn handle(&self, invocation: ToolInvocation) -> Result<ToolOutput, FunctionCallError> {
@@ -168,7 +95,7 @@ impl ToolHandler for ShellCommandHandler {
             FunctionCallError::RespondToModel(format!("failed to parse function arguments: {e:?}"))
         })?;
         let exec_params = Self::to_exec_params(params, session.as_ref(), turn.as_ref());
-        ShellHandler::run_exec_like(
+        Self::run_exec_like(
             tool_name.as_str(),
             exec_params,
             session,
@@ -181,7 +108,7 @@ impl ToolHandler for ShellCommandHandler {
     }
 }
 
-impl ShellHandler {
+impl ShellCommandHandler {
     async fn run_exec_like(
         tool_name: &str,
         exec_params: ExecParams,

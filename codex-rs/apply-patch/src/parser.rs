@@ -116,7 +116,7 @@ enum ParseMode {
     /// Parse the patch text argument as is.
     Strict,
 
-    /// GPT-4.1 is known to formulate the `command` array for the `local_shell`
+    /// GPT-4.1 is known to formulate the `command` array for the `shell_command`
     /// tool call for `apply_patch` call using something like the following:
     ///
     /// ```json
@@ -126,7 +126,7 @@ enum ParseMode {
     /// ]
     /// ```
     ///
-    /// This is a problem because `local_shell` is a bit of a misnomer: the
+    /// This is a problem because `shell_command` is a bit of a misnomer: the
     /// `command` is not invoked by passing the arguments to a shell like Bash,
     /// but are invoked using something akin to `execvpe(3)`.
     ///
@@ -134,7 +134,7 @@ enum ParseMode {
     /// `<<'EOF'...` as a heredoc and pass the contents via stdin (which is
     /// fine, as `apply_patch` is specified to read from stdin if no argument is
     /// passed), `execvpe(3)` interprets the heredoc as a literal string. To get
-    /// the `local_shell` tool to run a command the way shell would, the
+    /// the `shell_command` tool to run a command the way shell would, the
     /// `command` array must be something like:
     ///
     /// ```json

@@ -437,21 +437,6 @@ pub fn ev_custom_tool_call(call_id: &str, name: &str, input: &str) -> Value {
     })
 }
 
-pub fn ev_local_shell_call(call_id: &str, status: &str, command: Vec<&str>) -> Value {
-    serde_json::json!({
-        "type": "response.output_item.done",
-        "item": {
-            "type": "local_shell_call",
-            "call_id": call_id,
-            "status": status,
-            "action": {
-                "type": "exec",
-                "command": command,
-            }
-        }
-    })
-}
-
 pub fn ev_apply_patch_call(
     call_id: &str,
     patch: &str,
@@ -460,10 +445,6 @@ pub fn ev_apply_patch_call(
     match output_type {
         ApplyPatchModelOutput::Freeform => ev_apply_patch_custom_tool_call(call_id, patch),
         ApplyPatchModelOutput::Function => ev_apply_patch_function_call(call_id, patch),
-        ApplyPatchModelOutput::Shell => ev_apply_patch_shell_call(call_id, patch),
-        ApplyPatchModelOutput::ShellViaHeredoc => {
-            ev_apply_patch_shell_call_via_heredoc(call_id, patch)
-        }
         ApplyPatchModelOutput::ShellCommandViaHeredoc => {
             ev_apply_patch_shell_command_call_via_heredoc(call_id, patch)
         }
@@ -508,24 +489,16 @@ pub fn ev_shell_command_call(call_id: &str, command: &str) -> Value {
     ev_shell_command_call_with_args(call_id, &args)
 }
 
+/// Helper for tests that previously used ev_local_shell_call.
+/// Takes a command as Vec<&str> and joins them into a string for shell_command.
+pub fn ev_shell_command_call_from_vec(call_id: &str, command: Vec<&str>) -> Value {
+    let cmd = shlex::try_join(command).expect("valid shell command");
+    ev_shell_command_call(call_id, &cmd)
+}
+
 pub fn ev_shell_command_call_with_args(call_id: &str, args: &serde_json::Value) -> Value {
     let arguments = serde_json::to_string(args).expect("serialize shell command arguments");
     ev_function_call(call_id, "shell_command", &arguments)
-}
-
-pub fn ev_apply_patch_shell_call(call_id: &str, patch: &str) -> Value {
-    let args = serde_json::json!({ "command": ["apply_patch", patch] });
-    let arguments = serde_json::to_string(&args).expect("serialize apply_patch arguments");
-
-    ev_function_call(call_id, "shell", &arguments)
-}
-
-pub fn ev_apply_patch_shell_call_via_heredoc(call_id: &str, patch: &str) -> Value {
-    let script = format!("apply_patch <<'EOF'\n{patch}\nEOF\n");
-    let args = serde_json::json!({ "command": ["bash", "-lc", script] });
-    let arguments = serde_json::to_string(&args).expect("serialize apply_patch arguments");
-
-    ev_function_call(call_id, "shell", &arguments)
 }
 
 pub fn ev_apply_patch_shell_command_call_via_heredoc(call_id: &str, patch: &str) -> Value {
@@ -801,7 +774,6 @@ fn validate_request_body_invariants(request: &wiremock::Request) {
 
     let function_calls = gather_ids(items, "function_call");
     let custom_tool_calls = gather_ids(items, "custom_tool_call");
-    let local_shell_calls = gather_ids(items, "local_shell_call");
     let function_call_outputs = gather_output_ids(
         items,
         "function_call_output",
@@ -815,7 +787,7 @@ fn validate_request_body_invariants(request: &wiremock::Request) {
 
     for cid in &function_call_outputs {
         assert!(
-            function_calls.contains(cid) || local_shell_calls.contains(cid),
+            function_calls.contains(cid),
             "function_call_output without matching call in input: {cid}",
         );
     }

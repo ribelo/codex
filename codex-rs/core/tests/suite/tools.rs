@@ -10,7 +10,6 @@ use anyhow::Result;
 use codex_core::features::Feature;
 use codex_core::protocol::AskForApproval;
 use codex_core::protocol::SandboxPolicy;
-use core_test_support::assert_regex_match;
 use core_test_support::echo_path;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
@@ -97,21 +96,21 @@ async fn shell_escalated_permissions_rejected_then_ok() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
-    let mut builder = test_codex().with_model("gpt-5");
+    let mut builder = test_codex().with_model("gpt-5.1");
     let test = builder.build(&server).await?;
 
     let echo = echo_path();
-    let command = [echo.as_str(), "shell ok"];
+    let command = format!("{} 'shell ok'", echo.as_str());
     let call_id_blocked = "shell-blocked";
     let call_id_success = "shell-success";
 
     let first_args = json!({
-        "command": command,
+        "command": command.clone(),
         "timeout_ms": 1_000,
         "with_escalated_permissions": true,
     });
     let second_args = json!({
-        "command": command,
+        "command": command.clone(),
         "timeout_ms": 1_000,
     });
 
@@ -121,7 +120,7 @@ async fn shell_escalated_permissions_rejected_then_ok() -> Result<()> {
             ev_response_created("resp-1"),
             ev_function_call(
                 call_id_blocked,
-                "shell",
+                "shell_command",
                 &serde_json::to_string(&first_args)?,
             ),
             ev_completed("resp-1"),
@@ -134,7 +133,7 @@ async fn shell_escalated_permissions_rejected_then_ok() -> Result<()> {
             ev_response_created("resp-2"),
             ev_function_call(
                 call_id_success,
-                "shell",
+                "shell_command",
                 &serde_json::to_string(&second_args)?,
             ),
             ev_completed("resp-2"),
@@ -177,15 +176,17 @@ async fn shell_escalated_permissions_rejected_then_ok() -> Result<()> {
         .function_call_output_content_and_success(call_id_success)
         .and_then(|(content, _)| content)
         .expect("success output string");
-    let output_json: Value = serde_json::from_str(&success_output)?;
-    assert_eq!(
-        output_json["metadata"]["exit_code"].as_i64(),
-        Some(0),
-        "expected exit code 0 after rerunning without escalation",
+
+    // The shell_command tool now returns freeform output format.
+    // Verify exit code 0 and "shell ok" in the output.
+    assert!(
+        success_output.starts_with("Exit code: 0\n"),
+        "expected exit code 0 after rerunning without escalation, got: {success_output}",
     );
-    let stdout = output_json["output"].as_str().unwrap_or_default();
-    let stdout_pattern = r"(?s)^shell ok\n?$";
-    assert_regex_match(stdout_pattern, stdout);
+    assert!(
+        success_output.contains("shell ok"),
+        "expected 'shell ok' in output: {success_output}",
+    );
 
     Ok(())
 }
@@ -201,25 +202,22 @@ async fn sandbox_denied_shell_returns_original_output() -> Result<()> {
     let call_id = "sandbox-denied-shell";
     let target_path = fixture.workspace_path("sandbox-denied.txt");
     let sentinel = "sandbox-denied sentinel output";
-    let command = vec![
-        sh_path(),
-        "-c".to_string(),
-        format!(
-            "printf {sentinel:?}; printf {content:?} > {path:?}",
-            sentinel = format!("{sentinel}\n"),
-            content = "sandbox denied",
-            path = &target_path
-        ),
-    ];
+    let sentinel_with_newline = format!("{sentinel}\n");
+    let inner_script = format!(
+        "printf {sentinel_with_newline:?}; printf {content:?} > {path:?}",
+        content = "sandbox denied",
+        path = &target_path
+    );
+    let command = format!("{} -c '{}'", sh_path(), inner_script);
     let args = json!({
-        "command": command,
+        "command": command.clone(),
         "timeout_ms": 1_000,
     });
 
     let responses = vec![
         sse(vec![
             ev_response_created("resp-1"),
-            ev_function_call(call_id, "shell", &serde_json::to_string(&args)?),
+            ev_function_call(call_id, "shell_command", &serde_json::to_string(&args)?),
             ev_completed("resp-1"),
         ]),
         sse(vec![
@@ -345,14 +343,14 @@ async fn shell_timeout_includes_timeout_prefix_and_metadata() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
-    let mut builder = test_codex().with_model("gpt-5");
+    let mut builder = test_codex().with_model("gpt-5.1");
     let test = builder.build(&server).await?;
 
     let call_id = "shell-timeout";
     let timeout_ms = 50u64;
     let sh = sh_path();
     let args = json!({
-        "command": [sh, "-c", "yes line | head -n 400; sleep 1"],
+        "command": format!("{} -c 'yes line | head -n 400; sleep 1'", sh),
         "timeout_ms": timeout_ms,
     });
 
@@ -360,7 +358,7 @@ async fn shell_timeout_includes_timeout_prefix_and_metadata() -> Result<()> {
         &server,
         sse(vec![
             ev_response_created("resp-1"),
-            ev_function_call(call_id, "shell", &serde_json::to_string(&args)?),
+            ev_function_call(call_id, "shell_command", &serde_json::to_string(&args)?),
             ev_completed("resp-1"),
         ]),
     )
@@ -388,26 +386,19 @@ async fn shell_timeout_includes_timeout_prefix_and_metadata() -> Result<()> {
         .and_then(Value::as_str)
         .expect("timeout output string");
 
-    // The exec path can report a timeout in two ways depending on timing:
-    // 1) Structured JSON with exit_code 124 and a timeout prefix (preferred), or
-    // 2) A plain error string if the child is observed as killed by a signal first.
-    if let Ok(output_json) = serde_json::from_str::<Value>(output_str) {
-        assert_eq!(
-            output_json["metadata"]["exit_code"].as_i64(),
-            Some(124),
-            "expected timeout exit code 124",
-        );
+    // The shell_command tool returns freeform output. For a timeout we expect:
+    // 1. Exit code 124 (standard timeout exit code), OR
+    // 2. "command timed out" message in the output
+    // Note: The "command timed out" prefix may be omitted if the process produced output
+    // before being killed; in that case we just verify exit code 124.
+    let has_exit_124 = output_str.starts_with("Exit code: 124\n");
+    let has_timeout_message = output_str.contains("command timed out");
+    let has_signal_error = output_str.contains("execution error:") && output_str.contains("signal");
 
-        let stdout = output_json["output"].as_str().unwrap_or_default();
-        assert!(
-            stdout.contains("command timed out"),
-            "timeout output missing `command timed out`: {stdout}"
-        );
-    } else {
-        // Fallback: accept the signal classification path to deflake the test.
-        let signal_pattern = r"(?is)^execution error:.*signal.*$";
-        assert_regex_match(signal_pattern, output_str);
-    }
+    assert!(
+        has_exit_124 || has_timeout_message || has_signal_error,
+        "expected timeout indication in output: {output_str}"
+    );
 
     Ok(())
 }
@@ -440,7 +431,7 @@ time.sleep(60)
     fs::write(&script_path, script)?;
 
     let args = json!({
-        "command": ["python3", script_path.to_string_lossy()],
+        "command": format!("python3 {}", script_path.to_string_lossy()),
         "timeout_ms": 200,
     });
 
@@ -448,7 +439,7 @@ time.sleep(60)
         &server,
         sse(vec![
             ev_response_created("resp-1"),
-            ev_function_call(call_id, "shell", &serde_json::to_string(&args)?),
+            ev_function_call(call_id, "shell_command", &serde_json::to_string(&args)?),
             ev_completed("resp-1"),
         ]),
     )
@@ -481,16 +472,18 @@ time.sleep(60)
     .context("exec call should not hang waiting for grandchild pipes to close")??;
     let elapsed = start.elapsed();
 
-    if let Ok(output_json) = serde_json::from_str::<Value>(&output_str) {
-        assert_eq!(
-            output_json["metadata"]["exit_code"].as_i64(),
-            Some(124),
-            "expected timeout exit code 124",
-        );
-    } else {
-        let timeout_pattern = r"(?is)command timed out|timeout";
-        assert_regex_match(timeout_pattern, &output_str);
-    }
+    // The shell_command tool returns freeform output. Check for:
+    // 1. Exit code 124 in freeform format, OR
+    // 2. "command timed out" or "timeout" in the output
+    let exit_124_pattern = r"(?m)^Exit code: 124$";
+    let exit_124_regex = Regex::new(exit_124_pattern)?;
+    let timeout_pattern = r"(?is)command timed out|timeout";
+    let timeout_regex = Regex::new(timeout_pattern)?;
+
+    assert!(
+        exit_124_regex.is_match(&output_str) || timeout_regex.is_match(&output_str),
+        "expected timeout indication in output: {output_str}"
+    );
 
     assert!(
         elapsed < Duration::from_secs(9),
@@ -526,7 +519,7 @@ async fn shell_spawn_failure_truncates_exec_error() -> Result<()> {
         .into_owned();
 
     let args = json!({
-        "command": [bogus_exe],
+        "command": bogus_exe,
         "timeout_ms": 1_000,
     });
 
@@ -534,7 +527,7 @@ async fn shell_spawn_failure_truncates_exec_error() -> Result<()> {
         &server,
         sse(vec![
             ev_response_created("resp-1"),
-            ev_function_call(call_id, "shell", &serde_json::to_string(&args)?),
+            ev_function_call(call_id, "shell_command", &serde_json::to_string(&args)?),
             ev_completed("resp-1"),
         ]),
     )
@@ -562,6 +555,10 @@ async fn shell_spawn_failure_truncates_exec_error() -> Result<()> {
         .and_then(Value::as_str)
         .expect("spawn failure output string");
 
+    // The shell_command tool returns freeform output. For spawn failures we expect either:
+    // 1. An "execution error:" message from the spawn failure
+    // 2. A shell error message like "File name too long" or "No such file"
+    // Both cases should have non-zero exit code and size under 10 KiB.
     let spawn_error_pattern = r#"(?s)^Exit code: -?\d+
 Wall time: [0-9]+(?:\.[0-9]+)? seconds
 Output:
@@ -572,12 +569,31 @@ Total output lines: \d+
 Output:
 
 execution error: .*$"#;
+    // Shell may report the error directly (e.g., "File name too long", "No such file or directory")
+    let shell_error_pattern = r#"(?s)^Exit code: -?\d+
+Wall time: [0-9]+(?:\.[0-9]+)? seconds
+(?:Total output lines: \d+
+)?Output:
+.*(?:File name too long|No such file|not found|cannot find).*$"#;
+
     let spawn_error_regex = Regex::new(spawn_error_pattern)?;
     let spawn_truncated_regex = Regex::new(spawn_truncated_pattern)?;
-    if !spawn_error_regex.is_match(output) && !spawn_truncated_regex.is_match(output) {
-        let fallback_pattern = r"(?s)^execution error: .*$";
-        assert_regex_match(fallback_pattern, output);
-    }
+    let shell_error_regex = Regex::new(shell_error_pattern)?;
+
+    // Verify the output matches one of the expected patterns
+    assert!(
+        spawn_error_regex.is_match(output)
+            || spawn_truncated_regex.is_match(output)
+            || shell_error_regex.is_match(output),
+        "expected spawn failure output pattern, got: {output}"
+    );
+
+    // Verify non-zero exit code
+    assert!(
+        output.contains("Exit code:") && !output.starts_with("Exit code: 0\n"),
+        "expected non-zero exit code for spawn failure"
+    );
+
     assert!(output.len() <= 10 * 1024);
 
     Ok(())

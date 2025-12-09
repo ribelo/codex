@@ -19,7 +19,6 @@ use core_test_support::responses::ev_apply_patch_function_call;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_function_call;
-use core_test_support::responses::ev_local_shell_call;
 use core_test_support::responses::ev_response_created;
 use core_test_support::responses::sse;
 use core_test_support::responses::start_mock_server;
@@ -54,7 +53,7 @@ async fn shell_tool_executes_command_and_streams_output() -> anyhow::Result<()> 
 
     let server = start_mock_server().await;
 
-    let mut builder = test_codex().with_model("gpt-5");
+    let mut builder = test_codex().with_model("gpt-5.1");
     let TestCodex {
         codex,
         cwd,
@@ -64,10 +63,15 @@ async fn shell_tool_executes_command_and_streams_output() -> anyhow::Result<()> 
 
     let call_id = "shell-tool-call";
     let echo = echo_path();
-    let command = vec![echo.as_str(), "tool harness"];
+    let command = format!("{echo} 'tool harness'");
+    let args = serde_json::json!({ "command": command });
     let first_response = sse(vec![
         ev_response_created("resp-1"),
-        ev_local_shell_call(call_id, "completed", command),
+        ev_function_call(
+            call_id,
+            "shell_command",
+            &serde_json::to_string(&args).unwrap(),
+        ),
         ev_completed("resp-1"),
     ]);
     responses::mount_sse_once(&server, first_response).await;
@@ -99,10 +103,13 @@ async fn shell_tool_executes_command_and_streams_output() -> anyhow::Result<()> 
 
     let req = second_mock.single_request();
     let (output_text, _) = call_output(&req, call_id);
-    let exec_output: Value = serde_json::from_str(&output_text)?;
-    assert_eq!(exec_output["metadata"]["exit_code"], 0);
-    let stdout = exec_output["output"].as_str().expect("stdout field");
-    assert_regex_match(r"(?s)^tool harness\n?$", stdout);
+
+    // shell_command returns freeform output format
+    let expected_pattern = r"(?s)^Exit code: 0
+Wall time: [0-9]+(?:\.[0-9]+)? seconds
+Output:
+tool harness\n?$";
+    assert_regex_match(expected_pattern, &output_text);
 
     Ok(())
 }

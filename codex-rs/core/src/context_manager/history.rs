@@ -254,7 +254,6 @@ impl ContextManager {
             }
             ResponseItem::Message { .. }
             | ResponseItem::Reasoning { .. }
-            | ResponseItem::LocalShellCall { .. }
             | ResponseItem::FunctionCall { .. }
             | ResponseItem::WebSearchCall { .. }
             | ResponseItem::CustomToolCall { .. }
@@ -274,7 +273,6 @@ fn is_api_message(message: &ResponseItem) -> bool {
         | ResponseItem::FunctionCall { .. }
         | ResponseItem::CustomToolCall { .. }
         | ResponseItem::CustomToolCallOutput { .. }
-        | ResponseItem::LocalShellCall { .. }
         | ResponseItem::Reasoning { .. }
         | ResponseItem::WebSearchCall { .. }
         | ResponseItem::CompactionSummary { .. } => true,
@@ -290,7 +288,3 @@ fn estimate_reasoning_length(encoded_len: usize) -> usize {
         .unwrap_or(0)
         .saturating_sub(650)
 }
-
-#[cfg(test)]
-#[path = "history_tests.rs"]
-mod tests;

@@ -888,9 +888,8 @@ fn build_gemini_messages(
                     parts: vec![part],
                 });
             }
-            ResponseItem::LocalShellCall { .. }
-            | ResponseItem::CustomToolCall { .. }
-            | ResponseItem::CustomToolCallOutput { .. } => {
+
+            ResponseItem::CustomToolCall { .. } | ResponseItem::CustomToolCallOutput { .. } => {
                 // Handle similarly if needed, or ignore.
                 // Local shell is often treated as a tool.
             }
