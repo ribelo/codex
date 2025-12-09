@@ -6,6 +6,8 @@ use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::AgentMessageContentDeltaEvent;
 use codex_protocol::protocol::AgentMessageDeltaEvent;
+use codex_protocol::protocol::ReasoningContentDeltaEvent;
+use codex_protocol::protocol::ReasoningRawContentDeltaEvent;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ExitedReviewModeEvent;
@@ -142,6 +144,8 @@ async fn process_review_events(
                 ..
             })
             | EventMsg::AgentMessageDelta(AgentMessageDeltaEvent { .. })
+            | EventMsg::ReasoningContentDelta(ReasoningContentDeltaEvent { .. })
+            | EventMsg::ReasoningRawContentDelta(ReasoningRawContentDeltaEvent { .. })
             | EventMsg::AgentMessageContentDelta(AgentMessageContentDeltaEvent { .. }) => {}
             EventMsg::TaskComplete(task_complete) => {
                 // Parse review output from the last agent message (if present).
