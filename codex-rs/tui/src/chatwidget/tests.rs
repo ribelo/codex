@@ -436,6 +436,8 @@ fn make_chatwidget_manual() -> (
         feedback: codex_feedback::CodexFeedback::new(),
         current_rollout_path: None,
         available_profiles: Vec::new(),
+        subagent_states: HashMap::new(),
+        active_subagent_cells: HashMap::new(),
     };
     (widget, rx, op_rx)
 }

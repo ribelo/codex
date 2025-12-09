@@ -45,6 +45,7 @@ use codex_core::protocol::RateLimitSnapshot;
 use codex_core::protocol::ReviewRequest;
 use codex_core::protocol::ReviewTarget;
 use codex_core::protocol::StreamErrorEvent;
+use codex_core::protocol::SubagentEventPayload;
 use codex_core::protocol::TaskCompleteEvent;
 use codex_core::protocol::TokenUsage;
 use codex_core::protocol::TokenUsageInfo;
@@ -102,6 +103,7 @@ use crate::history_cell::AgentMessageCell;
 use crate::history_cell::HistoryCell;
 use crate::history_cell::McpToolCallCell;
 use crate::history_cell::PlainHistoryCell;
+use crate::history_cell::SubagentTaskCell;
 use crate::markdown::append_markdown;
 use crate::render::Insets;
 use crate::render::renderable::ColumnRenderable;
@@ -340,6 +342,10 @@ pub(crate) struct ChatWidget {
     current_rollout_path: Option<PathBuf>,
     // Available profiles for /profile command
     available_profiles: Vec<String>,
+    // Track subagent states by parent_call_id so cells can share mutable state
+    subagent_states: HashMap<String, Arc<std::sync::Mutex<history_cell::SubagentState>>>,
+    // Active subagent cells that should be rendered dynamically (not flushed to history until complete)
+    active_subagent_cells: HashMap<String, SubagentTaskCell>,
 }
 
 struct UserMessage {
@@ -527,7 +533,7 @@ impl ChatWidget {
         if !streamed_reasoning && !self.full_reasoning_buffer.is_empty() {
             let cell = history_cell::new_reasoning_summary_block(
                 self.full_reasoning_buffer.clone(),
-                reasoning_summary_format.clone(),
+                reasoning_summary_format,
             );
             self.add_boxed_history(cell);
         }
@@ -1309,6 +1315,7 @@ impl ChatWidget {
     pub(crate) fn handle_mcp_begin_now(&mut self, ev: McpToolCallBeginEvent) {
         self.flush_answer_stream_with_separator();
         self.flush_active_cell();
+
         self.active_cell = Some(Box::new(history_cell::new_active_mcp_tool_call(
             ev.call_id,
             ev.invocation,
@@ -1430,6 +1437,8 @@ impl ChatWidget {
             feedback,
             current_rollout_path: None,
             available_profiles,
+            subagent_states: HashMap::new(),
+            active_subagent_cells: HashMap::new(),
         };
 
         widget.prefetch_rate_limits();
@@ -1479,6 +1488,8 @@ impl ChatWidget {
                 skills,
             }),
             active_cell: None,
+            subagent_states: HashMap::new(),
+            active_subagent_cells: HashMap::new(),
             config: config.clone(),
             model_family,
             auth_manager,
@@ -1997,6 +2008,7 @@ impl ChatWidget {
             | EventMsg::AgentMessageContentDelta(_)
             | EventMsg::ReasoningContentDelta(_)
             | EventMsg::ReasoningRawContentDelta(_) => {}
+            EventMsg::SubagentEvent(payload) => self.on_subagent_event(payload),
         }
     }
 
@@ -2056,6 +2068,153 @@ impl ChatWidget {
         self.request_redraw();
     }
 
+    fn on_subagent_event(&mut self, payload: SubagentEventPayload) {
+        let SubagentEventPayload {
+            parent_call_id,
+            subagent_type,
+            task_description,
+            inner,
+        } = payload;
+
+        // Get or create the shared state for this subagent task
+        let state = self
+            .subagent_states
+            .entry(parent_call_id.clone())
+            .or_insert_with(|| {
+                Arc::new(std::sync::Mutex::new(history_cell::SubagentState {
+                    activities: Vec::new(),
+                    status: history_cell::SubagentTaskStatus::Running,
+                }))
+            })
+            .clone();
+
+        // Create a new cell if we don't have one for this call_id yet
+        if !self.active_subagent_cells.contains_key(&parent_call_id) {
+            let cell = history_cell::new_subagent_task_cell(
+                parent_call_id.clone(),
+                subagent_type,
+                task_description,
+                state.clone(),
+                self.config.animations,
+            );
+            self.active_subagent_cells
+                .insert(parent_call_id.clone(), cell);
+        }
+
+        // Update the shared state with the inner event
+        self.update_subagent_state_with_event(&state, &inner);
+
+        // If the task completed or aborted, move the cell from active_subagent_cells to history
+        if matches!(
+            inner.as_ref(),
+            EventMsg::TaskComplete(_) | EventMsg::TurnAborted(_)
+        ) {
+            if let Some(cell) = self.active_subagent_cells.remove(&parent_call_id) {
+                // The cell's state has already been updated via the shared Arc<Mutex>
+                // Now flush it to history so it renders with the final state
+                self.app_event_tx
+                    .send(AppEvent::InsertHistoryCell(Box::new(cell)));
+                self.needs_final_message_separator = true;
+            }
+            // Also clean up the state from the HashMap
+            self.subagent_states.remove(&parent_call_id);
+        }
+
+        self.request_redraw();
+    }
+
+    fn update_subagent_state_with_event(
+        &self,
+        state: &Arc<std::sync::Mutex<history_cell::SubagentState>>,
+        inner: &EventMsg,
+    ) {
+        let mut guard = match state.lock() {
+            Ok(g) => g,
+            Err(_) => return,
+        };
+
+        // Convert the inner event to an activity summary
+        match inner {
+            EventMsg::ExecCommandBegin(ev) => {
+                let cmd_summary = if ev.command.is_empty() {
+                    "Running command".to_string()
+                } else {
+                    let cmd_display = ev.command.join(" ");
+                    if cmd_display.len() > 60 {
+                        format!("{}...", &cmd_display[..57])
+                    } else {
+                        cmd_display
+                    }
+                };
+                guard.activities.push(history_cell::SubagentActivityItem {
+                    summary: format!("Run {cmd_summary}"),
+                    success: None,
+                });
+            }
+            EventMsg::ExecCommandEnd(ev) => {
+                let success = ev.exit_code == 0;
+                guard.activities.push(history_cell::SubagentActivityItem {
+                    summary: format!("Completed (exit {})", ev.exit_code),
+                    success: Some(success),
+                });
+            }
+            EventMsg::McpToolCallBegin(ev) => {
+                let summary = format!("Called {}::{}", ev.invocation.server, ev.invocation.tool);
+                guard.activities.push(history_cell::SubagentActivityItem {
+                    summary,
+                    success: None,
+                });
+            }
+            EventMsg::McpToolCallEnd(ev) => {
+                let success = ev
+                    .result
+                    .as_ref()
+                    .ok()
+                    .map(|r| !r.is_error.unwrap_or(false));
+                guard.activities.push(history_cell::SubagentActivityItem {
+                    summary: "MCP call completed".to_string(),
+                    success,
+                });
+            }
+            EventMsg::PatchApplyBegin(ev) => {
+                let file_count = ev.changes.len();
+                let summary = if file_count == 1 {
+                    format!(
+                        "Patching {}",
+                        ev.changes
+                            .keys()
+                            .next()
+                            .map(|p| p.display().to_string())
+                            .unwrap_or_default()
+                    )
+                } else {
+                    format!("Patching {file_count} files")
+                };
+                guard.activities.push(history_cell::SubagentActivityItem {
+                    summary,
+                    success: None,
+                });
+            }
+            EventMsg::PatchApplyEnd(ev) => {
+                let success = ev.success;
+                guard.activities.push(history_cell::SubagentActivityItem {
+                    summary: "Patch applied".to_string(),
+                    success: Some(success),
+                });
+            }
+            EventMsg::AgentMessage(_) | EventMsg::AgentMessageDelta(_) => {
+                // Don't add individual message deltas as activities
+            }
+            EventMsg::TaskComplete(_) => {
+                guard.status = history_cell::SubagentTaskStatus::Completed;
+            }
+            EventMsg::TurnAborted(_) => {
+                guard.status = history_cell::SubagentTaskStatus::Failed;
+            }
+            _ => {}
+        }
+    }
+
     fn on_user_message_event(&mut self, event: UserMessageEvent) {
         let message = event.message.trim();
         if !message.is_empty() {
@@ -2093,9 +2252,19 @@ impl ChatWidget {
                 exec.mark_failed();
             } else if let Some(tool) = cell.as_any_mut().downcast_mut::<McpToolCallCell>() {
                 tool.mark_failed();
+            } else if let Some(subagent) = cell.as_any_mut().downcast_mut::<SubagentTaskCell>() {
+                subagent.mark_failed();
             }
             self.add_boxed_history(cell);
         }
+
+        // Also mark all active subagent cells as failed and move to history
+        for (_, cell) in self.active_subagent_cells.drain() {
+            cell.mark_failed();
+            self.app_event_tx
+                .send(AppEvent::InsertHistoryCell(Box::new(cell)));
+        }
+        self.subagent_states.clear();
     }
 
     // If idle and there are queued inputs, submit exactly one to start the next turn.
@@ -3310,11 +3479,25 @@ impl ChatWidget {
     }
 
     fn as_renderable(&self) -> RenderableItem<'_> {
+        let mut flex = FlexRenderable::new();
+
+        // Render each active subagent cell (these are dynamically updated)
+        // Use flex=0 so each cell takes only as much space as it needs
+        for cell in self.active_subagent_cells.values() {
+            let lines = cell.display_lines(u16::MAX);
+            if !lines.is_empty() {
+                let history_cell: Box<dyn HistoryCell> = Box::new(PlainHistoryCell::new(lines));
+                flex.push(
+                    0,
+                    RenderableItem::Owned(Box::new(history_cell)).inset(Insets::tlbr(1, 0, 0, 0)),
+                );
+            }
+        }
+
         let active_cell_renderable = match &self.active_cell {
             Some(cell) => RenderableItem::Borrowed(cell).inset(Insets::tlbr(1, 0, 0, 0)),
             None => RenderableItem::Owned(Box::new(())),
         };
-        let mut flex = FlexRenderable::new();
         flex.push(1, active_cell_renderable);
         flex.push(
             0,

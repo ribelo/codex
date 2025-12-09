@@ -19,6 +19,7 @@ use crate::tools::registry::ToolHandler;
 use crate::tools::spec::JsonSchema;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
+use codex_protocol::protocol::SubagentEventPayload;
 use codex_protocol::user_input::UserInput;
 
 pub fn create_task_tool(codex_home: &Path) -> ToolSpec {
@@ -99,6 +100,21 @@ struct TaskArgs {
 }
 
 pub struct TaskHandler;
+
+/// Helper to wrap an inner event with subagent context.
+fn wrap_subagent_event(
+    parent_call_id: &str,
+    subagent_type: &str,
+    task_description: &str,
+    inner: EventMsg,
+) -> EventMsg {
+    EventMsg::SubagentEvent(SubagentEventPayload {
+        parent_call_id: parent_call_id.to_string(),
+        subagent_type: subagent_type.to_string(),
+        task_description: task_description.to_string(),
+        inner: Box::new(inner),
+    })
+}
 
 #[async_trait]
 impl ToolHandler for TaskHandler {
@@ -193,22 +209,55 @@ impl ToolHandler for TaskHandler {
 
             match event.msg {
                 EventMsg::TaskComplete(tc) => {
-                    if let Some(msg) = tc.last_agent_message {
-                        final_output = msg;
+                    if let Some(ref msg) = tc.last_agent_message {
+                        final_output = msg.clone();
                     }
+                    // Send a wrapped TaskComplete so the TUI can mark the cell as completed
+                    let wrapped = wrap_subagent_event(
+                        &invocation.call_id,
+                        &args.subagent_type,
+                        &args.description,
+                        EventMsg::TaskComplete(tc),
+                    );
+                    invocation
+                        .session
+                        .send_event(invocation.turn.as_ref(), wrapped)
+                        .await;
                     break;
                 }
                 EventMsg::TurnAborted(ta) => {
                     let reason_str = format!("Turn aborted: {:?}", ta.reason);
+                    // Send a wrapped TurnAborted so the TUI can mark the cell as failed
+                    let wrapped = wrap_subagent_event(
+                        &invocation.call_id,
+                        &args.subagent_type,
+                        &args.description,
+                        EventMsg::TurnAborted(ta),
+                    );
+                    invocation
+                        .session
+                        .send_event(invocation.turn.as_ref(), wrapped)
+                        .await;
                     return Err(FunctionCallError::RespondToModel(reason_str));
                 }
                 EventMsg::ExecCommandBegin(_)
                 | EventMsg::ExecCommandEnd(_)
+                | EventMsg::ExecCommandOutputDelta(_)
                 | EventMsg::McpToolCallBegin(_)
-                | EventMsg::McpToolCallEnd(_) => {
+                | EventMsg::McpToolCallEnd(_)
+                | EventMsg::PatchApplyBegin(_)
+                | EventMsg::PatchApplyEnd(_)
+                | EventMsg::AgentMessageDelta(_)
+                | EventMsg::AgentMessage(_) => {
+                    let wrapped = wrap_subagent_event(
+                        &invocation.call_id,
+                        &args.subagent_type,
+                        &args.description,
+                        event.msg,
+                    );
                     invocation
                         .session
-                        .send_event(invocation.turn.as_ref(), event.msg)
+                        .send_event(invocation.turn.as_ref(), wrapped)
                         .await;
                 }
                 _ => {}

@@ -1044,7 +1044,7 @@ pub(crate) fn build_specs(
         builder.push_spec(ToolSpec::WebSearch {});
     }
 
-    builder.push_spec(create_task_tool(&config.codex_home));
+    builder.push_spec_with_parallel_support(create_task_tool(&config.codex_home), true);
     builder.register_handler("task", task_handler);
 
     if config.include_view_image_tool {
@@ -1380,6 +1380,7 @@ mod tests {
         assert!(find_tool(&tools, "grep_files").supports_parallel_tool_calls);
         assert!(find_tool(&tools, "list_dir").supports_parallel_tool_calls);
         assert!(find_tool(&tools, "read_file").supports_parallel_tool_calls);
+        assert!(find_tool(&tools, "task").supports_parallel_tool_calls);
     }
 
     #[test]
