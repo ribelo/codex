@@ -8,14 +8,60 @@ use serde::Deserialize;
 use tracing::warn;
 
 use crate::codex::Codex;
+use crate::protocol::AskForApproval;
+use crate::protocol::SandboxPolicy;
 use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct SubagentMetadata {
     pub name: Option<String>,
     pub description: Option<String>,
+    pub model: Option<String>,
+    pub sandbox_policy: Option<SubagentSandboxPolicy>,
+    pub approval_policy: Option<AskForApproval>,
     #[serde(flatten)]
     pub extra: HashMap<String, serde_yaml::Value>,
+}
+
+/// Simplified sandbox policy for subagent frontmatter.
+/// Maps to the full SandboxPolicy enum but with simpler serialization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SubagentSandboxPolicy {
+    ReadOnly,
+    WorkspaceWrite,
+    #[serde(rename = "danger-full-access")]
+    DangerFullAccess,
+}
+
+impl SubagentSandboxPolicy {
+    /// Convert to the full SandboxPolicy enum.
+    pub fn to_sandbox_policy(self) -> SandboxPolicy {
+        match self {
+            SubagentSandboxPolicy::ReadOnly => SandboxPolicy::new_read_only_policy(),
+            SubagentSandboxPolicy::WorkspaceWrite => SandboxPolicy::new_workspace_write_policy(),
+            SubagentSandboxPolicy::DangerFullAccess => SandboxPolicy::DangerFullAccess,
+        }
+    }
+
+    /// Returns the restrictiveness level (lower = more restrictive).
+    /// Used to ensure subagents can only tighten, not loosen security.
+    pub fn restrictiveness(self) -> i32 {
+        match self {
+            SubagentSandboxPolicy::ReadOnly => 0,
+            SubagentSandboxPolicy::WorkspaceWrite => 1,
+            SubagentSandboxPolicy::DangerFullAccess => 2,
+        }
+    }
+
+    /// Convert from SandboxPolicy to SubagentSandboxPolicy for comparison.
+    pub fn from_sandbox_policy(policy: &SandboxPolicy) -> Self {
+        match policy {
+            SandboxPolicy::ReadOnly => SubagentSandboxPolicy::ReadOnly,
+            SandboxPolicy::WorkspaceWrite { .. } => SubagentSandboxPolicy::WorkspaceWrite,
+            SandboxPolicy::DangerFullAccess => SubagentSandboxPolicy::DangerFullAccess,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -71,6 +117,9 @@ impl SubagentRegistry {
             SubagentMetadata {
                 name: None,
                 description: None,
+                model: None,
+                sandbox_policy: None,
+                approval_policy: None,
                 extra: HashMap::new(),
             }
         };

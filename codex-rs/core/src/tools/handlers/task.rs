@@ -1,3 +1,6 @@
+/// Sandbox and approvals documentation to prepend to subagent prompts.
+const SANDBOX_AND_APPROVALS_PROMPT: &str = include_str!("../../../sandbox_and_approvals.md");
+
 use std::path::Path;
 use std::sync::Arc;
 
@@ -11,12 +14,14 @@ use crate::client_common::tools::ToolSpec;
 use crate::codex_delegate::run_codex_conversation_interactive;
 use crate::function_tool::FunctionCallError;
 use crate::subagents::SubagentRegistry;
+use crate::subagents::SubagentSandboxPolicy;
 use crate::subagents::SubagentSession;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
 use crate::tools::registry::ToolHandler;
 use crate::tools::spec::JsonSchema;
+use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::SubagentEventPayload;
@@ -161,9 +166,39 @@ impl ToolHandler for TaskHandler {
             } else {
                 let config = turn.client.config();
                 let mut sub_config = (*config).clone();
-                sub_config.base_instructions = Some(subagent_def.system_prompt.clone());
+                sub_config.base_instructions = Some(format!(
+                    "{}
+
+{SANDBOX_AND_APPROVALS_PROMPT}",
+                    subagent_def.system_prompt
+                ));
                 sub_config.codex_home = codex_home.clone();
 
+                // Apply model override from frontmatter
+                if let Some(ref model) = subagent_def.metadata.model {
+                    sub_config.model = model.clone();
+                }
+
+                // Apply sandbox_policy override (only if more restrictive than parent)
+                if let Some(subagent_sandbox) = subagent_def.metadata.sandbox_policy {
+                    let parent_sandbox =
+                        SubagentSandboxPolicy::from_sandbox_policy(&config.sandbox_policy);
+                    // Only apply if subagent policy is more restrictive (lower value)
+                    if subagent_sandbox.restrictiveness() <= parent_sandbox.restrictiveness() {
+                        sub_config.sandbox_policy = subagent_sandbox.to_sandbox_policy();
+                    }
+                }
+
+                // Apply approval_policy override (only if more restrictive than parent)
+                if let Some(subagent_approval) = subagent_def.metadata.approval_policy {
+                    let parent_approval = config.approval_policy;
+                    // Only apply if subagent policy is more restrictive
+                    if approval_restrictiveness(subagent_approval)
+                        <= approval_restrictiveness(parent_approval)
+                    {
+                        sub_config.approval_policy = subagent_approval;
+                    }
+                }
                 let session_token = CancellationToken::new();
 
                 let codex = run_codex_conversation_interactive(
@@ -269,5 +304,20 @@ impl ToolHandler for TaskHandler {
             content: final_output,
             content_items: None,
         })
+    }
+}
+
+/// Returns the restrictiveness level for an approval policy (lower = more restrictive).
+/// Used to ensure subagents can only tighten, not loosen approval requirements.
+fn approval_restrictiveness(policy: AskForApproval) -> i32 {
+    match policy {
+        // UnlessTrusted is most restrictive - asks for approval on almost everything
+        AskForApproval::UnlessTrusted => 0,
+        // OnRequest - model decides when to ask
+        AskForApproval::OnRequest => 1,
+        // OnFailure - auto-approve in sandbox, escalate on failure
+        AskForApproval::OnFailure => 2,
+        // Never - never ask, most permissive
+        AskForApproval::Never => 3,
     }
 }
