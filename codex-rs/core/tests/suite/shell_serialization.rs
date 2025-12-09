@@ -817,10 +817,11 @@ async fn shell_command_output_is_not_truncated_over_10k_bytes() -> Result<()> {
         .and_then(Value::as_str)
         .expect("shell_command output string");
 
+    // With 50KB default limit, 10001 bytes should NOT be truncated.
     let expected_pattern = r"(?s)^Exit code: 0
 Wall time: [0-9]+(?:\.[0-9]+)? seconds
 Output:
-1*…1 chars truncated…1*$";
+1{10001}$";
     assert_regex_match(expected_pattern, output);
 
     Ok(())

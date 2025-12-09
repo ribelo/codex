@@ -5,6 +5,8 @@ use codex_protocol::openai_models::ReasoningEffort;
 use crate::config::Config;
 use crate::config::types::ReasoningSummaryFormat;
 use crate::tools::handlers::apply_patch::ApplyPatchToolType;
+use crate::truncate::DEFAULT_MCP_TOOL_OUTPUT_BYTES;
+use crate::truncate::DEFAULT_TOOL_OUTPUT_BYTES;
 use crate::truncate::TruncationPolicy;
 use codex_protocol::openai_models::ConfigShellToolType;
 
@@ -67,7 +69,12 @@ pub struct ModelFamily {
     /// Preferred shell tool type for this model family when features do not override it.
     pub shell_type: ConfigShellToolType,
 
+    /// Truncation policy for shell/exec tool output.
     pub truncation_policy: TruncationPolicy,
+
+    /// Truncation policy for MCP tool output. MCP tools may return larger outputs
+    /// (e.g., file contents, API responses) so they have a separate, higher limit.
+    pub mcp_truncation_policy: TruncationPolicy,
 }
 
 impl ModelFamily {
@@ -111,7 +118,8 @@ macro_rules! model_family {
             shell_type: ConfigShellToolType::Default,
             default_verbosity: None,
             default_reasoning_effort: None,
-            truncation_policy: TruncationPolicy::Bytes(10_000),
+            truncation_policy: TruncationPolicy::Bytes(DEFAULT_TOOL_OUTPUT_BYTES),
+            mcp_truncation_policy: TruncationPolicy::Bytes(DEFAULT_MCP_TOOL_OUTPUT_BYTES),
         };
 
         // apply overrides
@@ -167,6 +175,7 @@ pub fn find_family_for_model(slug: &str) -> ModelFamily {
             shell_type: ConfigShellToolType::ShellCommand,
             support_verbosity: true,
             truncation_policy: TruncationPolicy::Tokens(10_000),
+            mcp_truncation_policy: TruncationPolicy::Tokens(10_000),
         )
     } else if slug.starts_with("codex-exp-") {
         model_family!(
@@ -183,6 +192,7 @@ pub fn find_family_for_model(slug: &str) -> ModelFamily {
             shell_type: ConfigShellToolType::ShellCommand,
             support_verbosity: true,
             truncation_policy: TruncationPolicy::Tokens(10_000),
+            mcp_truncation_policy: TruncationPolicy::Tokens(10_000),
         )
     } else if slug.starts_with("exp-") {
         model_family!(
@@ -193,7 +203,7 @@ pub fn find_family_for_model(slug: &str) -> ModelFamily {
             default_verbosity: Some(Verbosity::Low),
             base_instructions: BASE_INSTRUCTIONS.to_string(),
             default_reasoning_effort: Some(ReasoningEffort::Medium),
-            truncation_policy: TruncationPolicy::Bytes(10_000),
+            truncation_policy: TruncationPolicy::Bytes(DEFAULT_TOOL_OUTPUT_BYTES),
             shell_type: ConfigShellToolType::UnifiedExec,
         )
     // Production models.
@@ -207,6 +217,7 @@ pub fn find_family_for_model(slug: &str) -> ModelFamily {
             shell_type: ConfigShellToolType::ShellCommand,
             support_verbosity: false,
             truncation_policy: TruncationPolicy::Tokens(10_000),
+            mcp_truncation_policy: TruncationPolicy::Tokens(10_000),
         )
     } else if slug.starts_with("gpt-5.1-codex") || slug.starts_with("codex-") {
         model_family!(
@@ -218,6 +229,7 @@ pub fn find_family_for_model(slug: &str) -> ModelFamily {
             shell_type: ConfigShellToolType::ShellCommand,
             support_verbosity: false,
             truncation_policy: TruncationPolicy::Tokens(10_000),
+            mcp_truncation_policy: TruncationPolicy::Tokens(10_000),
         )
     } else if slug.starts_with("gpt-5.1") {
         model_family!(
@@ -228,7 +240,7 @@ pub fn find_family_for_model(slug: &str) -> ModelFamily {
             default_verbosity: Some(Verbosity::Low),
             base_instructions: GPT_5_1_INSTRUCTIONS.to_string(),
             default_reasoning_effort: Some(ReasoningEffort::Medium),
-            truncation_policy: TruncationPolicy::Bytes(10_000),
+            truncation_policy: TruncationPolicy::Bytes(DEFAULT_TOOL_OUTPUT_BYTES),
             shell_type: ConfigShellToolType::ShellCommand,
         )
     } else if slug.starts_with("claude") {
@@ -278,7 +290,8 @@ fn derive_default_model_family(model: &str) -> ModelFamily {
         shell_type: ConfigShellToolType::Default,
         default_verbosity: None,
         default_reasoning_effort: None,
-        truncation_policy: TruncationPolicy::Bytes(10_000),
+        truncation_policy: TruncationPolicy::Bytes(DEFAULT_TOOL_OUTPUT_BYTES),
+        mcp_truncation_policy: TruncationPolicy::Bytes(DEFAULT_MCP_TOOL_OUTPUT_BYTES),
     }
 }
 
