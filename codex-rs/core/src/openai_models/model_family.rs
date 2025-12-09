@@ -247,6 +247,7 @@ pub fn find_family_for_model(slug: &str) -> ModelFamily {
                 reasoning_summary_format: ReasoningSummaryFormat::None,
                 shell_type: ConfigShellToolType::ShellCommand,
                 base_instructions: GEMINI_3_INSTRUCTIONS.to_string(),
+                apply_patch_tool_type: Some(ApplyPatchToolType::Function),
             )
         } else {
             model_family!(
