@@ -8,6 +8,8 @@ use crate::codex::get_last_assistant_message_from_turn;
 use crate::error::CodexErr;
 use crate::error::Result as CodexResult;
 use crate::features::Feature;
+use crate::model_provider_info::ModelProviderInfo;
+use crate::model_provider_info::WireApi;
 use crate::protocol::CompactedItem;
 use crate::protocol::ContextCompactedEvent;
 use crate::protocol::EventMsg;
@@ -32,13 +34,17 @@ pub const SUMMARIZATION_PROMPT: &str = include_str!("../templates/compact/prompt
 pub const SUMMARY_PREFIX: &str = include_str!("../templates/compact/summary_prefix.md");
 const COMPACT_USER_MESSAGE_MAX_TOKENS: usize = 20_000;
 
-pub(crate) fn should_use_remote_compact_task(session: &Session) -> bool {
+pub(crate) fn should_use_remote_compact_task(
+    session: &Session,
+    provider: &ModelProviderInfo,
+) -> bool {
     session
         .services
         .auth_manager
         .auth()
         .is_some_and(|auth| auth.mode == AuthMode::ChatGPT)
         && session.enabled(Feature::RemoteCompaction)
+        && matches!(provider.wire_api, WireApi::Chat | WireApi::Responses)
 }
 
 pub(crate) async fn run_inline_auto_compact_task(
