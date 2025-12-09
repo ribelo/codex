@@ -74,7 +74,7 @@ fn session_configured_produces_thread_started_event() {
         "e1",
         EventMsg::SessionConfigured(SessionConfiguredEvent {
             session_id,
-            model: "codex-mini-latest".to_string(),
+            model: "gpt-5.1-codex-mini".to_string(),
             model_provider_id: "test-provider".to_string(),
             approval_policy: AskForApproval::Never,
             sandbox_policy: SandboxPolicy::ReadOnly,

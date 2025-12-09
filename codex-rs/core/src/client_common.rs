@@ -91,11 +91,6 @@ fn reserialize_shell_outputs(items: &mut [ResponseItem]) {
     let mut shell_call_ids: HashSet<String> = HashSet::new();
 
     items.iter_mut().for_each(|item| match item {
-        ResponseItem::LocalShellCall { call_id, id, .. } => {
-            if let Some(identifier) = call_id.clone().or_else(|| id.clone()) {
-                shell_call_ids.insert(identifier);
-            }
-        }
         ResponseItem::CustomToolCall {
             id: _,
             status: _,
@@ -131,7 +126,7 @@ fn reserialize_shell_outputs(items: &mut [ResponseItem]) {
 }
 
 fn is_shell_tool_name(name: &str) -> bool {
-    matches!(name, "shell" | "container.exec")
+    matches!(name, "shell" | "shell_command" | "container.exec")
 }
 
 #[derive(Deserialize)]
@@ -191,8 +186,6 @@ pub(crate) mod tools {
     pub(crate) enum ToolSpec {
         #[serde(rename = "function")]
         Function(ResponsesApiTool),
-        #[serde(rename = "local_shell")]
-        LocalShell {},
         // TODO: Understand why we get an error on web_search although the API docs say it's supported.
         // https://platform.openai.com/docs/guides/tools-web-search?api-mode=responses#:~:text=%7B%20type%3A%20%22web_search%22%20%7D%2C
         #[serde(rename = "web_search")]
@@ -205,7 +198,6 @@ pub(crate) mod tools {
         pub(crate) fn name(&self) -> &str {
             match self {
                 ToolSpec::Function(tool) => tool.name.as_str(),
-                ToolSpec::LocalShell {} => "local_shell",
                 ToolSpec::WebSearch {} => "web_search",
                 ToolSpec::Freeform(tool) => tool.name.as_str(),
             }
@@ -284,16 +276,8 @@ mod tests {
                 expects_apply_patch_instructions: true,
             },
             InstructionsTestCase {
-                slug: "gpt-5",
-                expects_apply_patch_instructions: true,
-            },
-            InstructionsTestCase {
                 slug: "gpt-5.1",
                 expects_apply_patch_instructions: false,
-            },
-            InstructionsTestCase {
-                slug: "codex-mini-latest",
-                expects_apply_patch_instructions: true,
             },
             InstructionsTestCase {
                 slug: "gpt-oss:120b",

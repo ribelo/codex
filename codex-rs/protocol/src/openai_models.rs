@@ -106,7 +106,6 @@ pub enum ModelVisibility {
 #[strum(serialize_all = "snake_case")]
 pub enum ConfigShellToolType {
     Default,
-    Local,
     UnifiedExec,
     Disabled,
     ShellCommand,

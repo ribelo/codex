@@ -2531,9 +2531,9 @@ mod tests {
     use crate::tasks::SessionTaskContext;
     use crate::tools::ToolRouter;
     use crate::tools::context::ToolInvocation;
-    use crate::tools::context::ToolOutput;
+
     use crate::tools::context::ToolPayload;
-    use crate::tools::handlers::ShellHandler;
+    use crate::tools::handlers::ShellCommandHandler;
     use crate::tools::handlers::UnifiedExecHandler;
     use crate::tools::registry::ToolHandler;
     use crate::turn_diff_tracker::TurnDiffTracker;
@@ -2546,7 +2546,7 @@ mod tests {
     use mcp_types::ContentBlock;
     use mcp_types::TextContent;
     use pretty_assertions::assert_eq;
-    use serde::Deserialize;
+
     use serde_json::json;
     use std::path::PathBuf;
     use std::sync::Arc;
@@ -3209,7 +3209,7 @@ mod tests {
             id: None,
             status: None,
             call_id: "call-1".to_string(),
-            name: "shell".to_string(),
+            name: "shell_command".to_string(),
             input: "{}".to_string(),
         };
 
@@ -3230,7 +3230,10 @@ mod tests {
 
         match err {
             FunctionCallError::Fatal(message) => {
-                assert_eq!(message, "tool shell invoked with incompatible payload");
+                assert_eq!(
+                    message,
+                    "tool shell_command invoked with incompatible payload"
+                );
             }
             other => panic!("expected FunctionCallError::Fatal, got {other:?}"),
         }
@@ -3345,57 +3348,24 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_escalated_permissions_when_policy_not_on_request() {
-        use crate::exec::ExecParams;
         use crate::protocol::AskForApproval;
-        use crate::protocol::SandboxPolicy;
         use crate::turn_diff_tracker::TurnDiffTracker;
-        use std::collections::HashMap;
 
         let (session, mut turn_context_raw) = make_session_and_context();
         // Ensure policy is NOT OnRequest so the early rejection path triggers
         turn_context_raw.approval_policy = AskForApproval::OnFailure;
         let session = Arc::new(session);
-        let mut turn_context = Arc::new(turn_context_raw);
+        let turn_context = Arc::new(turn_context_raw);
 
         let timeout_ms = 1000;
-        let params = ExecParams {
-            command: if cfg!(windows) {
-                vec![
-                    "cmd.exe".to_string(),
-                    "/C".to_string(),
-                    "echo hi".to_string(),
-                ]
-            } else {
-                vec![
-                    "/bin/sh".to_string(),
-                    "-c".to_string(),
-                    "echo hi".to_string(),
-                ]
-            },
-            cwd: turn_context.cwd.clone(),
-            expiration: timeout_ms.into(),
-            env: HashMap::new(),
-            with_escalated_permissions: Some(true),
-            justification: Some("test".to_string()),
-            arg0: None,
-        };
-
-        let params2 = ExecParams {
-            with_escalated_permissions: Some(false),
-            command: params.command.clone(),
-            cwd: params.cwd.clone(),
-            expiration: timeout_ms.into(),
-            env: HashMap::new(),
-            justification: params.justification.clone(),
-            arg0: None,
-        };
+        let command = "echo hi";
 
         let turn_diff_tracker = Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new()));
 
-        let tool_name = "shell";
+        let tool_name = "shell_command";
         let call_id = "test-call".to_string();
 
-        let handler = ShellHandler;
+        let handler = ShellCommandHandler;
         let resp = handler
             .handle(ToolInvocation {
                 session: Arc::clone(&session),
@@ -3405,11 +3375,11 @@ mod tests {
                 tool_name: tool_name.to_string(),
                 payload: ToolPayload::Function {
                     arguments: serde_json::json!({
-                        "command": params.command.clone(),
+                        "command": command,
                         "workdir": Some(turn_context.cwd.to_string_lossy().to_string()),
-                        "timeout_ms": params.expiration.timeout_ms(),
-                        "with_escalated_permissions": params.with_escalated_permissions,
-                        "justification": params.justification.clone(),
+                        "timeout_ms": timeout_ms,
+                        "with_escalated_permissions": true,
+                        "justification": "test",
                     })
                     .to_string(),
                 },
@@ -3426,55 +3396,8 @@ mod tests {
         );
 
         pretty_assertions::assert_eq!(output, expected);
-
-        // Now retry the same command WITHOUT escalated permissions; should succeed.
-        // Force DangerFullAccess to avoid platform sandbox dependencies in tests.
-        Arc::get_mut(&mut turn_context)
-            .expect("unique turn context Arc")
-            .sandbox_policy = SandboxPolicy::DangerFullAccess;
-
-        let resp2 = handler
-            .handle(ToolInvocation {
-                session: Arc::clone(&session),
-                turn: Arc::clone(&turn_context),
-                tracker: Arc::clone(&turn_diff_tracker),
-                call_id: "test-call-2".to_string(),
-                tool_name: tool_name.to_string(),
-                payload: ToolPayload::Function {
-                    arguments: serde_json::json!({
-                        "command": params2.command.clone(),
-                        "workdir": Some(turn_context.cwd.to_string_lossy().to_string()),
-                        "timeout_ms": params2.expiration.timeout_ms(),
-                        "with_escalated_permissions": params2.with_escalated_permissions,
-                        "justification": params2.justification.clone(),
-                    })
-                    .to_string(),
-                },
-            })
-            .await;
-
-        let output = match resp2.expect("expected Ok result") {
-            ToolOutput::Function { content, .. } => content,
-            _ => panic!("unexpected tool output"),
-        };
-
-        #[derive(Deserialize, PartialEq, Eq, Debug)]
-        struct ResponseExecMetadata {
-            exit_code: i32,
-        }
-
-        #[derive(Deserialize)]
-        struct ResponseExecOutput {
-            output: String,
-            metadata: ResponseExecMetadata,
-        }
-
-        let exec_output: ResponseExecOutput =
-            serde_json::from_str(&output).expect("valid exec output json");
-
-        pretty_assertions::assert_eq!(exec_output.metadata, ResponseExecMetadata { exit_code: 0 });
-        assert!(exec_output.output.contains("hi"));
     }
+
     #[tokio::test]
     async fn unified_exec_rejects_escalated_permissions_when_policy_not_on_request() {
         use crate::protocol::AskForApproval;

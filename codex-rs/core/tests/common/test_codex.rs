@@ -33,17 +33,13 @@ type ConfigMutator = dyn FnOnce(&mut Config) + Send;
 pub enum ApplyPatchModelOutput {
     Freeform,
     Function,
-    Shell,
-    ShellViaHeredoc,
     ShellCommandViaHeredoc,
 }
 
 /// A collection of different ways the model can output an apply_patch call
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ShellModelOutput {
-    Shell,
     ShellCommand,
-    LocalShell,
     // UnifiedExec has its own set of tests
 }
 
@@ -311,10 +307,7 @@ impl TestCodexHarness {
     ) -> String {
         match output_type {
             ApplyPatchModelOutput::Freeform => self.custom_tool_call_output(call_id).await,
-            ApplyPatchModelOutput::Function
-            | ApplyPatchModelOutput::Shell
-            | ApplyPatchModelOutput::ShellViaHeredoc
-            | ApplyPatchModelOutput::ShellCommandViaHeredoc => {
+            ApplyPatchModelOutput::Function | ApplyPatchModelOutput::ShellCommandViaHeredoc => {
                 self.function_call_stdout(call_id).await
             }
         }

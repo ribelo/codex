@@ -65,9 +65,7 @@ impl<'a> ChatRequestBuilder<'a> {
         for item in input {
             match item {
                 ResponseItem::Message { role, .. } => last_emitted_role = Some(role.as_str()),
-                ResponseItem::FunctionCall { .. } | ResponseItem::LocalShellCall { .. } => {
-                    last_emitted_role = Some("assistant")
-                }
+                ResponseItem::FunctionCall { .. } => last_emitted_role = Some("assistant"),
                 ResponseItem::FunctionCallOutput { .. } => last_emitted_role = Some("tool"),
                 ResponseItem::Reasoning { .. } | ResponseItem::Other => {}
                 ResponseItem::CustomToolCall { .. } => {}
@@ -127,8 +125,7 @@ impl<'a> ChatRequestBuilder<'a> {
 
                     if !attached && idx + 1 < input.len() {
                         match &input[idx + 1] {
-                            ResponseItem::FunctionCall { .. }
-                            | ResponseItem::LocalShellCall { .. } => {
+                            ResponseItem::FunctionCall { .. } => {
                                 reasoning_by_anchor_index
                                     .entry(idx + 1)
                                     .and_modify(|v| v.push_str(&text))
@@ -214,29 +211,6 @@ impl<'a> ChatRequestBuilder<'a> {
                                 "name": name,
                                 "arguments": arguments,
                             }
-                        }]
-                    });
-                    if let Some(reasoning) = reasoning_by_anchor_index.get(&idx)
-                        && let Some(obj) = msg.as_object_mut()
-                    {
-                        obj.insert("reasoning".to_string(), json!(reasoning));
-                    }
-                    messages.push(msg);
-                }
-                ResponseItem::LocalShellCall {
-                    id,
-                    call_id: _,
-                    status,
-                    action,
-                } => {
-                    let mut msg = json!({
-                        "role": "assistant",
-                        "content": null,
-                        "tool_calls": [{
-                            "id": id.clone().unwrap_or_default(),
-                            "type": "local_shell_call",
-                            "status": status,
-                            "action": action,
                         }]
                     });
                     if let Some(reasoning) = reasoning_by_anchor_index.get(&idx)

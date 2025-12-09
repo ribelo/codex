@@ -58,33 +58,6 @@ pub(crate) fn ensure_call_outputs_present(items: &mut Vec<ResponseItem>) {
                     ));
                 }
             }
-            // LocalShellCall is represented in upstream streams by a FunctionCallOutput
-            ResponseItem::LocalShellCall { call_id, .. } => {
-                if let Some(call_id) = call_id.as_ref() {
-                    let has_output = items.iter().any(|i| match i {
-                        ResponseItem::FunctionCallOutput {
-                            call_id: existing, ..
-                        } => existing == call_id,
-                        _ => false,
-                    });
-
-                    if !has_output {
-                        error_or_panic(format!(
-                            "Local shell call output is missing for call id: {call_id}"
-                        ));
-                        missing_outputs_to_insert.push((
-                            idx,
-                            ResponseItem::FunctionCallOutput {
-                                call_id: call_id.clone(),
-                                output: FunctionCallOutputPayload {
-                                    content: "aborted".to_string(),
-                                    ..Default::default()
-                                },
-                            },
-                        ));
-                    }
-                }
-            }
             _ => {}
         }
     }
@@ -104,17 +77,6 @@ pub(crate) fn remove_orphan_outputs(items: &mut Vec<ResponseItem>) {
         })
         .collect();
 
-    let local_shell_call_ids: HashSet<String> = items
-        .iter()
-        .filter_map(|i| match i {
-            ResponseItem::LocalShellCall {
-                call_id: Some(call_id),
-                ..
-            } => Some(call_id.clone()),
-            _ => None,
-        })
-        .collect();
-
     let custom_tool_call_ids: HashSet<String> = items
         .iter()
         .filter_map(|i| match i {
@@ -125,8 +87,7 @@ pub(crate) fn remove_orphan_outputs(items: &mut Vec<ResponseItem>) {
 
     items.retain(|item| match item {
         ResponseItem::FunctionCallOutput { call_id, .. } => {
-            let has_match =
-                function_call_ids.contains(call_id) || local_shell_call_ids.contains(call_id);
+            let has_match = function_call_ids.contains(call_id);
             if !has_match {
                 error_or_panic(format!(
                     "Orphan function call output for call id: {call_id}"
@@ -164,10 +125,6 @@ pub(crate) fn remove_corresponding_for(items: &mut Vec<ResponseItem>, item: &Res
                 matches!(i, ResponseItem::FunctionCall { call_id: existing, .. } if existing == call_id)
             }) {
                 items.remove(pos);
-            } else if let Some(pos) = items.iter().position(|i| {
-                matches!(i, ResponseItem::LocalShellCall { call_id: Some(existing), .. } if existing == call_id)
-            }) {
-                items.remove(pos);
             }
         }
         ResponseItem::CustomToolCall { call_id, .. } => {
@@ -185,19 +142,6 @@ pub(crate) fn remove_corresponding_for(items: &mut Vec<ResponseItem>, item: &Res
                 items,
                 |i| matches!(i, ResponseItem::CustomToolCall { call_id: existing, .. } if existing == call_id),
             );
-        }
-        ResponseItem::LocalShellCall {
-            call_id: Some(call_id),
-            ..
-        } => {
-            remove_first_matching(items, |i| {
-                matches!(
-                    i,
-                    ResponseItem::FunctionCallOutput {
-                        call_id: existing, ..
-                    } if existing == call_id
-                )
-            });
         }
         _ => {}
     }

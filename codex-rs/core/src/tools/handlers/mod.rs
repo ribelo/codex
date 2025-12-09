@@ -21,7 +21,6 @@ pub use mcp_resource::McpResourceHandler;
 pub use plan::PlanHandler;
 pub use read_file::ReadFileHandler;
 pub use shell::ShellCommandHandler;
-pub use shell::ShellHandler;
 pub use task::TaskHandler;
 pub use task::create_task_tool;
 pub use test_sync::TestSyncHandler;

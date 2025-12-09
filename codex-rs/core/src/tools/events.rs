@@ -313,8 +313,7 @@ impl ToolEmitter {
                 } else {
                     None
                 };
-                let response =
-                    self.format_exec_output_for_model(&output, ctx, escalation_hint.as_deref());
+                let response = self.format_exec_output_for_model(&output, ctx, escalation_hint);
                 let event = ToolEventStage::Failure(ToolEventFailure::Output(*output));
                 let result = Err(FunctionCallError::RespondToModel(response));
                 (event, result)

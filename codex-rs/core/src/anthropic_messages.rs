@@ -320,23 +320,6 @@ fn build_anthropic_messages(prompt: &Prompt) -> Result<(Vec<AnthropicMessage>, O
                     "input": input_json,
                 }));
             }
-            ResponseItem::LocalShellCall {
-                id,
-                call_id,
-                status,
-                action,
-                ..
-            } => {
-                let mut payload = serde_json::to_value(&action).unwrap_or_else(|_| json!({}));
-                payload["status"] = serde_json::to_value(&status).unwrap_or_else(|_| json!(status));
-                let pending = ensure_pending_assistant(&mut pending_assistant);
-                pending.content.push(json!({
-                    "type": "tool_use",
-                    "id": sanitize_tool_id(&call_id.clone().or_else(|| id.clone()).unwrap_or_default()),
-                    "name": "local_shell",
-                    "input": payload,
-                }));
-            }
             ResponseItem::FunctionCallOutput {
                 call_id, output, ..
             } => {

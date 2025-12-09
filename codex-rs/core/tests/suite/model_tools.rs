@@ -49,24 +49,9 @@ async fn model_selects_expected_tools() {
     skip_if_no_network!();
     use pretty_assertions::assert_eq;
 
-    let codex_tools = collect_tool_identifiers_for_model("codex-mini-latest").await;
+    let codex_tools = collect_tool_identifiers_for_model("gpt-5.1-codex-mini").await;
     assert_eq!(
         codex_tools,
-        vec![
-            "local_shell".to_string(),
-            "list_mcp_resources".to_string(),
-            "list_mcp_resource_templates".to_string(),
-            "read_mcp_resource".to_string(),
-            "update_plan".to_string(),
-            "task".to_string(),
-            "view_image".to_string()
-        ],
-        "codex-mini-latest should expose the local shell tool",
-    );
-
-    let gpt5_codex_tools = collect_tool_identifiers_for_model("gpt-5-codex").await;
-    assert_eq!(
-        gpt5_codex_tools,
         vec![
             "shell_command".to_string(),
             "list_mcp_resources".to_string(),
@@ -77,7 +62,7 @@ async fn model_selects_expected_tools() {
             "task".to_string(),
             "view_image".to_string()
         ],
-        "gpt-5-codex should expose the apply_patch tool",
+        "gpt-5.1-codex-mini should expose the shell_command tool",
     );
 
     let gpt51_codex_tools = collect_tool_identifiers_for_model("gpt-5.1-codex").await;
@@ -94,21 +79,6 @@ async fn model_selects_expected_tools() {
             "view_image".to_string()
         ],
         "gpt-5.1-codex should expose the apply_patch tool",
-    );
-
-    let gpt5_tools = collect_tool_identifiers_for_model("gpt-5").await;
-    assert_eq!(
-        gpt5_tools,
-        vec![
-            "shell".to_string(),
-            "list_mcp_resources".to_string(),
-            "list_mcp_resource_templates".to_string(),
-            "read_mcp_resource".to_string(),
-            "update_plan".to_string(),
-            "task".to_string(),
-            "view_image".to_string()
-        ],
-        "gpt-5 should expose the apply_patch tool",
     );
 
     let gpt51_tools = collect_tool_identifiers_for_model("gpt-5.1").await;

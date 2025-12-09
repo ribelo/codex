@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use base64::Engine;
 use codex_utils_image::load_and_resize_to_fit;
 use mcp_types::CallToolResult;
@@ -48,6 +46,7 @@ pub enum ContentItem {
     OutputText {
         text: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
         signature: Option<String>,
     },
 }
@@ -71,16 +70,6 @@ pub enum ResponseItem {
         #[ts(optional)]
         content: Option<Vec<ReasoningItemContent>>,
         encrypted_content: Option<String>,
-    },
-    LocalShellCall {
-        /// Set when using the chat completions API.
-        #[serde(default, skip_serializing)]
-        #[ts(skip)]
-        id: Option<String>,
-        /// Set when using the Responses API.
-        call_id: Option<String>,
-        status: LocalShellStatus,
-        action: LocalShellAction,
     },
     FunctionCall {
         #[serde(default, skip_serializing)]
@@ -213,29 +202,6 @@ impl From<ResponseInputItem> for ResponseItem {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonSchema, TS)]
-#[serde(rename_all = "snake_case")]
-pub enum LocalShellStatus {
-    Completed,
-    InProgress,
-    Incomplete,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonSchema, TS)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum LocalShellAction {
-    Exec(LocalShellExecAction),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonSchema, TS)]
-pub struct LocalShellExecAction {
-    pub command: Vec<String>,
-    pub timeout_ms: Option<u64>,
-    pub working_directory: Option<String>,
-    pub env: Option<HashMap<String, String>>,
-    pub user: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonSchema, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum WebSearchAction {
     Search {
@@ -333,24 +299,9 @@ impl From<Vec<UserInput>> for ResponseInputItem {
     }
 }
 
-/// If the `name` of a `ResponseItem::FunctionCall` is either `container.exec`
-/// or `shell`, the `arguments` field should deserialize to this struct.
-#[derive(Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
-pub struct ShellToolCallParams {
-    pub command: Vec<String>,
-    pub workdir: Option<String>,
-
-    /// This is the maximum time in milliseconds that the command is allowed to run.
-    #[serde(alias = "timeout")]
-    pub timeout_ms: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub with_escalated_permissions: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub justification: Option<String>,
-}
-
 /// If the `name` of a `ResponseItem::FunctionCall` is `shell_command`, the
 /// `arguments` field should deserialize to this struct.
+/// This is now also used for the default "shell" tool.
 #[derive(Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 pub struct ShellCommandToolCallParams {
     pub command: String,
@@ -741,28 +692,6 @@ mod tests {
             assert_eq!(serialized, original_value);
         }
 
-        Ok(())
-    }
-
-    #[test]
-    fn deserialize_shell_tool_call_params() -> Result<()> {
-        let json = r#"{
-            "command": ["ls", "-l"],
-            "workdir": "/tmp",
-            "timeout": 1000
-        }"#;
-
-        let params: ShellToolCallParams = serde_json::from_str(json)?;
-        assert_eq!(
-            ShellToolCallParams {
-                command: vec!["ls".to_string(), "-l".to_string()],
-                workdir: Some("/tmp".to_string()),
-                timeout_ms: Some(1000),
-                with_escalated_permissions: None,
-                justification: None,
-            },
-            params
-        );
         Ok(())
     }
 

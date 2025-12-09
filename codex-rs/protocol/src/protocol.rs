@@ -83,13 +83,13 @@ pub enum Op {
         items: Vec<UserInput>,
 
         /// `cwd` to use with the [`SandboxPolicy`] and potentially tool calls
-        /// such as `local_shell`.
+        /// such as `shell_command`.
         cwd: PathBuf,
 
         /// Policy to use for command approval.
         approval_policy: AskForApproval,
 
-        /// Policy to use for tool calls such as `local_shell`.
+        /// Policy to use for tool calls such as `shell_command`.
         sandbox_policy: SandboxPolicy,
 
         /// Must be a valid model slug for the [`crate::client::ModelClient`]
@@ -1766,7 +1766,7 @@ mod tests {
             id: "1234".to_string(),
             msg: EventMsg::SessionConfigured(SessionConfiguredEvent {
                 session_id: conversation_id,
-                model: "codex-mini-latest".to_string(),
+                model: "gpt-5.1-codex-mini".to_string(),
                 model_provider_id: "openai".to_string(),
                 approval_policy: AskForApproval::Never,
                 sandbox_policy: SandboxPolicy::ReadOnly,
@@ -1784,7 +1784,7 @@ mod tests {
             "msg": {
                 "type": "session_configured",
                 "session_id": "67e55044-10b1-426f-9247-bb680e5fe0c8",
-                "model": "codex-mini-latest",
+                "model": "gpt-5.1-codex-mini",
                 "model_provider_id": "openai",
                 "approval_policy": "never",
                 "sandbox_policy": {

@@ -18,7 +18,7 @@ use core_test_support::wait_for_event;
 use tracing_test::traced_test;
 
 use core_test_support::echo_path;
-use core_test_support::responses::ev_local_shell_call;
+use core_test_support::responses::ev_shell_command_call_from_vec;
 
 #[tokio::test]
 #[traced_test]
@@ -575,147 +575,6 @@ async fn handle_response_item_records_tool_result_for_function_call() {
     });
 }
 
-#[tokio::test]
-#[traced_test]
-async fn handle_response_item_records_tool_result_for_local_shell_missing_ids() {
-    let server = start_mock_server().await;
-    let echo = echo_path();
-
-    mount_sse_once(
-        &server,
-        sse(vec![
-            serde_json::json!({
-                "type": "response.output_item.done",
-                "item": {
-                    "type": "local_shell_call",
-                    "status": "completed",
-                    "action": {
-                        "type": "exec",
-                        "command": vec![echo, "hello".to_string()],
-                    }
-                }
-            }),
-            ev_completed("done"),
-        ]),
-    )
-    .await;
-
-    mount_sse_once(
-        &server,
-        sse(vec![
-            ev_assistant_message("msg-1", "local shell done"),
-            ev_completed("done"),
-        ]),
-    )
-    .await;
-
-    let TestCodex { codex, .. } = test_codex()
-        .with_config(move |config| {
-            config.features.disable(Feature::GhostCommit);
-        })
-        .build(&server)
-        .await
-        .unwrap();
-
-    codex
-        .submit(Op::UserInput {
-            items: vec![UserInput::Text {
-                text: "hello".into(),
-            }],
-        })
-        .await
-        .unwrap();
-
-    wait_for_event(&codex, |ev| matches!(ev, EventMsg::TokenCount(_))).await;
-
-    logs_assert(|lines: &[&str]| {
-        let line = lines
-            .iter()
-            .find(|line| {
-                line.contains("codex.tool_result")
-                    && line.contains(&"tool_name=local_shell".to_string())
-                    && line.contains("output=LocalShellCall without call_id or id")
-            })
-            .ok_or_else(|| "missing codex.tool_result event".to_string())?;
-
-        if !line.contains("success=false") {
-            return Err("missing success field".to_string());
-        }
-
-        Ok(())
-    });
-}
-
-#[cfg(target_os = "macos")]
-#[tokio::test]
-#[traced_test]
-async fn handle_response_item_records_tool_result_for_local_shell_call() {
-    let server = start_mock_server().await;
-    let echo = echo_path();
-
-    mount_sse_once(
-        &server,
-        sse(vec![
-            ev_local_shell_call("shell-call", "completed", vec![&echo, "shell"]),
-            ev_completed("done"),
-        ]),
-    )
-    .await;
-
-    mount_sse_once(
-        &server,
-        sse(vec![
-            ev_assistant_message("msg-1", "local shell done"),
-            ev_completed("done"),
-        ]),
-    )
-    .await;
-
-    let TestCodex { codex, .. } = test_codex()
-        .with_config(move |config| {
-            config.features.disable(Feature::GhostCommit);
-        })
-        .build(&server)
-        .await
-        .unwrap();
-
-    codex
-        .submit(Op::UserInput {
-            items: vec![UserInput::Text {
-                text: "hello".into(),
-            }],
-        })
-        .await
-        .unwrap();
-
-    wait_for_event(&codex, |ev| matches!(ev, EventMsg::TokenCount(_))).await;
-
-    logs_assert(|lines: &[&str]| {
-        let line = lines
-            .iter()
-            .find(|line| line.contains("codex.tool_result") && line.contains("call_id=shell-call"))
-            .ok_or_else(|| "missing codex.tool_result event".to_string())?;
-
-        if !line.contains("tool_name=local_shell") {
-            return Err("missing tool_name field".to_string());
-        }
-        if !line.contains(&format!("arguments={echo} shell")) {
-            return Err("missing arguments field".to_string());
-        }
-        let output_idx = line
-            .find("output=")
-            .ok_or_else(|| "missing output field".to_string())?;
-        if line[output_idx + "output=".len()..].is_empty() {
-            return Err("empty output field".to_string());
-        }
-        if !line.contains("success=false") {
-            return Err("missing success field".to_string());
-        }
-
-        Ok(())
-    });
-}
-
 fn tool_decision_assertion<'a>(
     call_id: &'a str,
     expected_decision: &'a str,
@@ -734,8 +593,8 @@ fn tool_decision_assertion<'a>(
             .ok_or_else(|| format!("missing codex.tool_decision event for {call_id}"))?;
 
         let lower = line.to_lowercase();
-        if !lower.contains("tool_name=local_shell") {
-            return Err("missing tool_name for local_shell".to_string());
+        if !lower.contains("tool_name=shell_command") {
+            return Err("missing tool_name for shell_command".to_string());
         }
         if !lower.contains(&format!("decision={expected_decision}")) {
             return Err(format!("unexpected decision for {call_id}"));
@@ -756,7 +615,7 @@ async fn handle_container_exec_autoapprove_from_config_records_tool_decision() {
     mount_sse_once(
         &server,
         sse(vec![
-            ev_local_shell_call("auto_config_call", "completed", vec![&echo, "local shell"]),
+            ev_shell_command_call_from_vec("auto_config_call", vec![&echo, "local shell"]),
             ev_completed("done"),
         ]),
     )
@@ -805,7 +664,7 @@ async fn handle_container_exec_user_approved_records_tool_decision() {
     mount_sse_once(
         &server,
         sse(vec![
-            ev_local_shell_call("user_approved_call", "completed", vec!["/bin/date"]),
+            ev_shell_command_call_from_vec("user_approved_call", vec!["/bin/date"]),
             ev_completed("done"),
         ]),
     )
@@ -864,7 +723,7 @@ async fn handle_container_exec_user_approved_for_session_records_tool_decision()
     mount_sse_once(
         &server,
         sse(vec![
-            ev_local_shell_call("user_approved_session_call", "completed", vec!["/bin/date"]),
+            ev_shell_command_call_from_vec("user_approved_session_call", vec!["/bin/date"]),
             ev_completed("done"),
         ]),
     )
@@ -922,7 +781,7 @@ async fn handle_sandbox_error_user_approves_retry_records_tool_decision() {
     mount_sse_once(
         &server,
         sse(vec![
-            ev_local_shell_call("sandbox_retry_call", "completed", vec!["/bin/date"]),
+            ev_shell_command_call_from_vec("sandbox_retry_call", vec!["/bin/date"]),
             ev_completed("done"),
         ]),
     )
@@ -980,7 +839,7 @@ async fn handle_container_exec_user_denies_records_tool_decision() {
     mount_sse_once(
         &server,
         sse(vec![
-            ev_local_shell_call("user_denied_call", "completed", vec!["/bin/date"]),
+            ev_shell_command_call_from_vec("user_denied_call", vec!["/bin/date"]),
             ev_completed("done"),
         ]),
     )
@@ -1038,7 +897,7 @@ async fn handle_sandbox_error_user_approves_for_session_records_tool_decision() 
     mount_sse_once(
         &server,
         sse(vec![
-            ev_local_shell_call("sandbox_session_call", "completed", vec!["/bin/date"]),
+            ev_shell_command_call_from_vec("sandbox_session_call", vec!["/bin/date"]),
             ev_completed("done"),
         ]),
     )
@@ -1096,7 +955,7 @@ async fn handle_sandbox_error_user_denies_records_tool_decision() {
     mount_sse_once(
         &server,
         sse(vec![
-            ev_local_shell_call("sandbox_deny_call", "completed", vec!["/bin/date"]),
+            ev_shell_command_call_from_vec("sandbox_deny_call", vec!["/bin/date"]),
             ev_completed("done"),
         ]),
     )

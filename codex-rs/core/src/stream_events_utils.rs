@@ -89,36 +89,6 @@ pub(crate) async fn handle_output_item_done(
 
             output.last_agent_message = last_agent_message;
         }
-        // Guardrail: the model issued a LocalShellCall without an id; surface the error back into history.
-        Err(FunctionCallError::MissingLocalShellCallId) => {
-            let msg = "LocalShellCall without call_id or id";
-            ctx.turn_context
-                .client
-                .get_otel_event_manager()
-                .log_tool_failed("local_shell", msg);
-            tracing::error!(msg);
-
-            let response = ResponseInputItem::FunctionCallOutput {
-                call_id: String::new(),
-                output: FunctionCallOutputPayload {
-                    content: msg.to_string(),
-                    ..Default::default()
-                },
-            };
-            ctx.sess
-                .record_conversation_items(&ctx.turn_context, std::slice::from_ref(&item))
-                .await;
-            if let Some(response_item) = response_input_to_response_item(&response) {
-                ctx.sess
-                    .record_conversation_items(
-                        &ctx.turn_context,
-                        std::slice::from_ref(&response_item),
-                    )
-                    .await;
-            }
-
-            output.needs_follow_up = true;
-        }
         // The tool request should be answered directly (or was denied); push that response into the transcript.
         Err(FunctionCallError::RespondToModel(message))
         | Err(FunctionCallError::Denied(message)) => {

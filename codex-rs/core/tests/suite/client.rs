@@ -2,9 +2,6 @@ use codex_core::AuthManager;
 use codex_core::CodexAuth;
 use codex_core::ContentItem;
 use codex_core::ConversationManager;
-use codex_core::LocalShellAction;
-use codex_core::LocalShellExecAction;
-use codex_core::LocalShellStatus;
 use codex_core::ModelClient;
 use codex_core::ModelProviderInfo;
 use codex_core::NewConversation;
@@ -1076,18 +1073,6 @@ async fn azure_responses_request_includes_store_and_reasoning_ids() {
         arguments: "{}".into(),
         call_id: "function-call-id".into(),
     });
-    prompt.input.push(ResponseItem::LocalShellCall {
-        id: Some("local-shell-id".into()),
-        call_id: Some("local-shell-call-id".into()),
-        status: LocalShellStatus::Completed,
-        action: LocalShellAction::Exec(LocalShellExecAction {
-            command: vec!["echo".into(), "hello".into()],
-            timeout_ms: None,
-            working_directory: None,
-            env: None,
-            user: None,
-        }),
-    });
     prompt.input.push(ResponseItem::CustomToolCall {
         id: Some("custom-tool-id".into()),
         status: Some("completed".into()),
@@ -1118,13 +1103,12 @@ async fn azure_responses_request_includes_store_and_reasoning_ids() {
 
     assert_eq!(body["store"], serde_json::Value::Bool(true));
     assert_eq!(body["stream"], serde_json::Value::Bool(true));
-    assert_eq!(body["input"].as_array().map(Vec::len), Some(6));
+    assert_eq!(body["input"].as_array().map(Vec::len), Some(5));
     assert_eq!(body["input"][0]["id"].as_str(), Some("reasoning-id"));
     assert_eq!(body["input"][1]["id"].as_str(), Some("message-id"));
     assert_eq!(body["input"][2]["id"].as_str(), Some("web-search-id"));
     assert_eq!(body["input"][3]["id"].as_str(), Some("function-id"));
-    assert_eq!(body["input"][4]["id"].as_str(), Some("local-shell-id"));
-    assert_eq!(body["input"][5]["id"].as_str(), Some("custom-tool-id"));
+    assert_eq!(body["input"][4]["id"].as_str(), Some("custom-tool-id"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

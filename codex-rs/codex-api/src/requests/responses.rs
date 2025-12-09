@@ -155,7 +155,6 @@ fn attach_item_ids(payload_json: &mut Value, original_items: &[ResponseItem]) {
         | ResponseItem::Message { id: Some(id), .. }
         | ResponseItem::WebSearchCall { id: Some(id), .. }
         | ResponseItem::FunctionCall { id: Some(id), .. }
-        | ResponseItem::LocalShellCall { id: Some(id), .. }
         | ResponseItem::CustomToolCall { id: Some(id), .. } = item
         {
             if id.is_empty() {

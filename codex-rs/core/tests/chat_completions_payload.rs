@@ -2,9 +2,6 @@ use std::sync::Arc;
 
 use codex_app_server_protocol::AuthMode;
 use codex_core::ContentItem;
-use codex_core::LocalShellAction;
-use codex_core::LocalShellExecAction;
-use codex_core::LocalShellStatus;
 use codex_core::ModelClient;
 use codex_core::ModelProviderInfo;
 use codex_core::Prompt;
@@ -160,21 +157,6 @@ fn function_call() -> ResponseItem {
     }
 }
 
-fn local_shell_call() -> ResponseItem {
-    ResponseItem::LocalShellCall {
-        id: Some("id1".to_string()),
-        call_id: None,
-        status: LocalShellStatus::InProgress,
-        action: LocalShellAction::Exec(LocalShellExecAction {
-            command: vec!["echo".to_string()],
-            timeout_ms: Some(1_000),
-            working_directory: None,
-            env: None,
-            user: None,
-        }),
-    }
-}
-
 fn messages_from(body: &Value) -> Vec<Value> {
     match body["messages"].as_array() {
         Some(arr) => arr.clone(),
@@ -238,26 +220,6 @@ async fn attaches_reasoning_to_function_call_anchor() {
     };
     assert_eq!(tool_calls.len(), 1);
     assert_eq!(tool_calls[0]["type"], Value::String("function".into()));
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn attaches_reasoning_to_local_shell_call() {
-    skip_if_no_network!();
-
-    let body = run_request(vec![
-        user_message("u1"),
-        reasoning_item("rShell"),
-        local_shell_call(),
-    ])
-    .await;
-    let messages = messages_from(&body);
-    let assistant = first_assistant(&messages);
-
-    assert_eq!(assistant["reasoning"], Value::String("rShell".into()));
-    assert_eq!(
-        assistant["tool_calls"][0]["type"],
-        Value::String("local_shell_call".into())
-    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
