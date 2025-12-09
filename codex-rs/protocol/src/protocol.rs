@@ -582,6 +582,10 @@ pub enum EventMsg {
     AgentMessageContentDelta(AgentMessageContentDeltaEvent),
     ReasoningContentDelta(ReasoningContentDeltaEvent),
     ReasoningRawContentDelta(ReasoningRawContentDeltaEvent),
+
+    /// Wrapper event for subagent activity. Contains a nested event from a
+    /// delegated task along with the parent tool call context.
+    SubagentEvent(SubagentEventPayload),
 }
 
 /// Codex errors that we expose to clients.
@@ -641,6 +645,19 @@ pub struct ItemCompletedEvent {
     pub thread_id: ConversationId,
     pub turn_id: String,
     pub item: TurnItem,
+}
+
+/// Payload for subagent events that wraps an inner event from a delegated task.
+#[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema)]
+pub struct SubagentEventPayload {
+    /// The tool_call_id of the parent "task" tool invocation.
+    pub parent_call_id: String,
+    /// The subagent type (slug) that produced this event.
+    pub subagent_type: String,
+    /// Description of the delegated task.
+    pub task_description: String,
+    /// The wrapped inner event from the subagent.
+    pub inner: Box<EventMsg>,
 }
 
 pub trait HasLegacyEvent {
