@@ -12,3 +12,4 @@
 # Temp local tracking files
 /diff_*.txt
 /third-party/
+test_file*
