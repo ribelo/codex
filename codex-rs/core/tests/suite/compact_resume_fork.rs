@@ -215,6 +215,11 @@ async fn compact_resume_and_fork_preserve_model_history_view() {
         .as_str()
         .unwrap_or_default()
         .to_string();
+    // Compact requests use a different prompt (without parallel instructions appended).
+    let compact_prompt = requests[1]["instructions"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
     let user_instructions = requests[0]["input"][0]["content"][0]["text"]
         .as_str()
         .unwrap_or_default()
@@ -273,7 +278,7 @@ async fn compact_resume_and_fork_preserve_model_history_view() {
       ],
       "tools": tool_calls,
       "tool_choice": "auto",
-      "parallel_tool_calls": false,
+      "parallel_tool_calls": true,
       "reasoning": {
         "summary": "auto"
       },
@@ -287,7 +292,7 @@ async fn compact_resume_and_fork_preserve_model_history_view() {
     let compact_1 = json!(
     {
       "model": expected_model,
-      "instructions": prompt,
+      "instructions": compact_prompt,
       "input": [
         {
           "type": "message",
@@ -342,7 +347,7 @@ async fn compact_resume_and_fork_preserve_model_history_view() {
       ],
       "tools": [],
       "tool_choice": "auto",
-      "parallel_tool_calls": false,
+      "parallel_tool_calls": true,
       "reasoning": {
         "summary": "auto"
       },
@@ -402,7 +407,7 @@ async fn compact_resume_and_fork_preserve_model_history_view() {
       ],
       "tools": tool_calls,
       "tool_choice": "auto",
-      "parallel_tool_calls": false,
+      "parallel_tool_calls": true,
       "reasoning": {
         "summary": "auto"
       },
@@ -482,7 +487,7 @@ async fn compact_resume_and_fork_preserve_model_history_view() {
       ],
       "tools": tool_calls,
       "tool_choice": "auto",
-      "parallel_tool_calls": false,
+      "parallel_tool_calls": true,
       "reasoning": {
         "summary": "auto"
       },
@@ -562,7 +567,7 @@ async fn compact_resume_and_fork_preserve_model_history_view() {
       ],
       "tools": tool_calls,
       "tool_choice": "auto",
-      "parallel_tool_calls": false,
+      "parallel_tool_calls": true,
       "reasoning": {
         "summary": "auto"
       },
