@@ -27,6 +27,9 @@ fn text_user_input(text: String) -> serde_json::Value {
     })
 }
 
+/// Parallel instructions that are always appended to the base instructions.
+const PARALLEL_INSTRUCTIONS: &str = include_str!("../../templates/parallel/instructions.md");
+
 fn default_env_context_str(cwd: &str, shell: &Shell) -> String {
     let shell_name = shell.name();
     format!(
@@ -114,15 +117,8 @@ async fn prompt_tools_are_consistent_across_requests() -> anyhow::Result<()> {
     ];
     let body0 = req1.single_request().body_json();
 
-    let expected_instructions = if expected_tools_names.contains(&"apply_patch") {
-        base_instructions
-    } else {
-        [
-            base_instructions.clone(),
-            include_str!("../../../apply-patch/apply_patch_tool_instructions.md").to_string(),
-        ]
-        .join("\n")
-    };
+    // Parallel instructions are always appended now.
+    let expected_instructions = format!("{base_instructions}{PARALLEL_INSTRUCTIONS}");
 
     assert_eq!(
         body0["instructions"],

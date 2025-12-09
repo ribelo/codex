@@ -446,7 +446,7 @@ fn build_api_prompt(prompt: &Prompt, instructions: String, tools_json: Vec<Value
         instructions,
         input: prompt.get_formatted_input(),
         tools: tools_json,
-        parallel_tool_calls: prompt.parallel_tool_calls,
+        parallel_tool_calls: true,
         output_schema: prompt.output_schema.clone(),
     }
 }

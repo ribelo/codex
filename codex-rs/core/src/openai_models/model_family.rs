@@ -42,10 +42,6 @@ pub struct ModelFamily {
     // Define if we need a special handling of reasoning summary
     pub reasoning_summary_format: ReasoningSummaryFormat,
 
-    /// Whether this model supports parallel tool calls when using the
-    /// Responses API.
-    pub supports_parallel_tool_calls: bool,
-
     /// Present if the model performs better when `apply_patch` is provided as
     /// a tool call instead of just a bash command
     pub apply_patch_tool_type: Option<ApplyPatchToolType>,
@@ -107,7 +103,6 @@ macro_rules! model_family {
             needs_special_apply_patch_instructions: false,
             supports_reasoning_summaries: false,
             reasoning_summary_format: ReasoningSummaryFormat::None,
-            supports_parallel_tool_calls: false,
             apply_patch_tool_type: None,
             base_instructions: BASE_INSTRUCTIONS.to_string(),
             experimental_supported_tools: Vec::new(),
@@ -169,7 +164,6 @@ pub fn find_family_for_model(slug: &str) -> ModelFamily {
                 "read_file".to_string(),
                 "test_sync_tool".to_string(),
             ],
-            supports_parallel_tool_calls: true,
             shell_type: ConfigShellToolType::ShellCommand,
             support_verbosity: true,
             truncation_policy: TruncationPolicy::Tokens(10_000),
@@ -187,7 +181,6 @@ pub fn find_family_for_model(slug: &str) -> ModelFamily {
                 "read_file".to_string(),
             ],
             shell_type: ConfigShellToolType::ShellCommand,
-            supports_parallel_tool_calls: true,
             support_verbosity: true,
             truncation_policy: TruncationPolicy::Tokens(10_000),
         )
@@ -202,7 +195,6 @@ pub fn find_family_for_model(slug: &str) -> ModelFamily {
             default_reasoning_effort: Some(ReasoningEffort::Medium),
             truncation_policy: TruncationPolicy::Bytes(10_000),
             shell_type: ConfigShellToolType::UnifiedExec,
-            supports_parallel_tool_calls: true,
         )
     // Production models.
     } else if slug.starts_with("gpt-5.1-codex-max") {
@@ -213,7 +205,6 @@ pub fn find_family_for_model(slug: &str) -> ModelFamily {
             base_instructions: GPT_5_1_CODEX_MAX_INSTRUCTIONS.to_string(),
             apply_patch_tool_type: Some(ApplyPatchToolType::Freeform),
             shell_type: ConfigShellToolType::ShellCommand,
-            supports_parallel_tool_calls: true,
             support_verbosity: false,
             truncation_policy: TruncationPolicy::Tokens(10_000),
         )
@@ -225,7 +216,6 @@ pub fn find_family_for_model(slug: &str) -> ModelFamily {
             base_instructions: GPT_5_1_INSTRUCTIONS.to_string(),
             apply_patch_tool_type: Some(ApplyPatchToolType::Freeform),
             shell_type: ConfigShellToolType::ShellCommand,
-            supports_parallel_tool_calls: true,
             support_verbosity: false,
             truncation_policy: TruncationPolicy::Tokens(10_000),
         )
@@ -240,13 +230,11 @@ pub fn find_family_for_model(slug: &str) -> ModelFamily {
             default_reasoning_effort: Some(ReasoningEffort::Medium),
             truncation_policy: TruncationPolicy::Bytes(10_000),
             shell_type: ConfigShellToolType::ShellCommand,
-            supports_parallel_tool_calls: true,
         )
     } else if slug.starts_with("claude") {
         model_family!(
             slug, slug,
             supports_reasoning_summaries: true,
-            supports_parallel_tool_calls: true,
             apply_patch_tool_type: Some(ApplyPatchToolType::Function),
         )
     } else if slug.starts_with("gemini") {
@@ -257,7 +245,6 @@ pub fn find_family_for_model(slug: &str) -> ModelFamily {
                 supports_reasoning_summaries: supports_reasoning,
                 default_reasoning_effort: supports_reasoning.then_some(ReasoningEffort::High),
                 reasoning_summary_format: ReasoningSummaryFormat::None,
-                supports_parallel_tool_calls: true,
                 shell_type: ConfigShellToolType::ShellCommand,
                 base_instructions: GEMINI_3_INSTRUCTIONS.to_string(),
             )
@@ -267,7 +254,6 @@ pub fn find_family_for_model(slug: &str) -> ModelFamily {
                 supports_reasoning_summaries: supports_reasoning,
                 default_reasoning_effort: supports_reasoning.then_some(ReasoningEffort::Medium),
                 reasoning_summary_format: ReasoningSummaryFormat::None,
-                supports_parallel_tool_calls: true,
                 shell_type: ConfigShellToolType::ShellCommand,
             )
         }
@@ -283,7 +269,6 @@ fn derive_default_model_family(model: &str) -> ModelFamily {
         needs_special_apply_patch_instructions: false,
         supports_reasoning_summaries: false,
         reasoning_summary_format: ReasoningSummaryFormat::None,
-        supports_parallel_tool_calls: false,
         apply_patch_tool_type: None,
         base_instructions: BASE_INSTRUCTIONS.to_string(),
         experimental_supported_tools: Vec::new(),

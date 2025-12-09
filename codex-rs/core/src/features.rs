@@ -56,8 +56,6 @@ pub enum Feature {
     RemoteCompaction,
     /// Refresh remote models and emit AppReady once the list is available.
     RemoteModels,
-    /// Allow model to call multiple tools in parallel (only for models supporting it).
-    ParallelToolCalls,
     /// Experimental skills injection (CLI flag-driven).
     Skills,
 }
@@ -338,12 +336,6 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::RemoteModels,
         key: "remote_models",
-        stage: Stage::Experimental,
-        default_enabled: false,
-    },
-    FeatureSpec {
-        id: Feature::ParallelToolCalls,
-        key: "parallel",
         stage: Stage::Experimental,
         default_enabled: false,
     },

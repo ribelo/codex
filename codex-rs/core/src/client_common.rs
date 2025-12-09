@@ -15,6 +15,9 @@ use std::task::Context;
 use std::task::Poll;
 use tokio::sync::mpsc;
 
+/// Parallel tool call instructions that are always appended to base instructions.
+const PARALLEL_INSTRUCTIONS: &str = include_str!("../templates/parallel/instructions.md");
+
 /// Review thread system prompt. Edit `core/src/review_prompt.md` to customize.
 pub const REVIEW_PROMPT: &str = include_str!("../review_prompt.md");
 
@@ -32,9 +35,6 @@ pub struct Prompt {
     /// Tools available to the model, including additional tools sourced from
     /// external MCP servers.
     pub(crate) tools: Vec<ToolSpec>,
-
-    /// Whether parallel tool calls are permitted for this prompt.
-    pub(crate) parallel_tool_calls: bool,
 
     /// Optional override for the built-in BASE_INSTRUCTIONS.
     pub base_instructions_override: Option<String>,
@@ -58,13 +58,19 @@ impl Prompt {
             ToolSpec::Freeform(f) => f.name == "apply_patch",
             _ => false,
         });
-        if self.base_instructions_override.is_none()
+
+        // Build the full instructions by conditionally appending apply_patch instructions
+        // and always appending parallel instructions.
+        let needs_apply_patch_instructions = self.base_instructions_override.is_none()
             && model.needs_special_apply_patch_instructions
-            && !is_apply_patch_tool_present
-        {
-            Cow::Owned(format!("{base}\n{APPLY_PATCH_TOOL_INSTRUCTIONS}"))
+            && !is_apply_patch_tool_present;
+
+        if needs_apply_patch_instructions {
+            Cow::Owned(format!(
+                "{base}\n{APPLY_PATCH_TOOL_INSTRUCTIONS}{PARALLEL_INSTRUCTIONS}"
+            ))
         } else {
-            Cow::Borrowed(base)
+            Cow::Owned(format!("{base}{PARALLEL_INSTRUCTIONS}"))
         }
     }
 
@@ -294,14 +300,20 @@ mod tests {
         ];
         for test_case in test_cases {
             let model_family = find_family_for_model(test_case.slug);
+            // Parallel instructions are always appended.
+            let base_with_parallel = format!(
+                "{}{}",
+                model_family.base_instructions, PARALLEL_INSTRUCTIONS
+            );
             let expected = if test_case.expects_apply_patch_instructions {
                 format!(
-                    "{}\n{}",
-                    model_family.clone().base_instructions,
-                    APPLY_PATCH_TOOL_INSTRUCTIONS
+                    "{}\n{}{}",
+                    model_family.base_instructions,
+                    APPLY_PATCH_TOOL_INSTRUCTIONS,
+                    PARALLEL_INSTRUCTIONS
                 )
             } else {
-                model_family.clone().base_instructions
+                base_with_parallel
             };
 
             let full = prompt.get_full_instructions(&model_family);

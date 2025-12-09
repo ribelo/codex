@@ -121,7 +121,6 @@ pub(crate) async fn assess_command(
             content: vec![ContentItem::InputText { text: user_prompt }],
         }],
         tools: Vec::new(),
-        parallel_tool_calls: false,
         base_instructions_override: Some(system_prompt),
         output_schema: Some(sandbox_assessment_schema()),
     };

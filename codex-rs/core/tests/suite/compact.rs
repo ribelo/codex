@@ -182,9 +182,12 @@ async fn summarize_context_three_requests_and_instructions() {
     // Manual compact should keep the baseline developer instructions.
     let instr1 = body1.get("instructions").and_then(|v| v.as_str()).unwrap();
     let instr2 = body2.get("instructions").and_then(|v| v.as_str()).unwrap();
-    assert_eq!(
-        instr1, instr2,
-        "manual compact should keep the standard developer instructions"
+    // Normal requests (instr1) have parallel instructions appended, while compact
+    // requests (instr2) do not. The compact instructions should be a prefix of the
+    // normal request instructions.
+    assert!(
+        instr1.starts_with(instr2),
+        "compact request instructions should be a prefix of normal request instructions"
     );
 
     // The summarization request should include the injected user input marker.
