@@ -80,7 +80,6 @@ use crate::exec::StreamOutput;
 use crate::exec_policy::ExecPolicyUpdateError;
 use crate::mcp::auth::compute_auth_statuses;
 use crate::mcp_connection_manager::McpConnectionManager;
-use crate::openai_model_info::get_model_info;
 use crate::project_doc::get_user_instructions;
 use crate::protocol::AgentMessageContentDeltaEvent;
 use crate::protocol::AgentReasoningSectionBreakEvent;
@@ -110,6 +109,7 @@ use crate::rollout::RolloutRecorder;
 use crate::rollout::RolloutRecorderParams;
 use crate::rollout::map_session_init_error;
 use crate::shell;
+use crate::shell_snapshot::ShellSnapshot;
 use crate::state::ActiveTurn;
 use crate::state::SessionServices;
 use crate::state::SessionState;
@@ -416,15 +416,11 @@ impl Session {
         otel_event_manager: &OtelEventManager,
         provider: ModelProviderInfo,
         session_configuration: &SessionConfiguration,
-        mut per_turn_config: Config,
+        per_turn_config: Config,
         model_family: ModelFamily,
         conversation_id: ConversationId,
         sub_id: String,
     ) -> TurnContext {
-        if let Some(model_info) = get_model_info(&model_family) {
-            per_turn_config.model_context_window = Some(model_info.context_window);
-        }
-
         let otel_event_manager = otel_event_manager.clone().with_model(
             session_configuration.model.as_str(),
             model_family.slug.as_str(),
@@ -524,7 +520,6 @@ impl Session {
         // - load history metadata
         let rollout_fut = RolloutRecorder::new(&config, rollout_params);
 
-        let default_shell = shell::default_user_shell();
         let history_meta_fut = crate::message_history::history_metadata(&config);
         let auth_statuses_fut = compute_auth_statuses(
             config.mcp_servers.iter(),
@@ -545,7 +540,7 @@ impl Session {
 
         for (alias, feature) in config.features.legacy_feature_usages() {
             let canonical = feature.key();
-            let summary = format!("`{alias}` is deprecated. Use `{canonical}` instead.");
+            let summary = format!("`{alias}` is deprecated. Use `[features].{canonical}` instead.");
             let details = if alias == canonical {
                 None
             } else {
@@ -586,7 +581,14 @@ impl Session {
             config.active_profile.clone(),
         );
 
+        let mut default_shell = shell::default_user_shell();
         // Create the mutable state for the Session.
+        if config.features.enabled(Feature::ShellSnapshot) {
+            default_shell.shell_snapshot =
+                ShellSnapshot::try_new(&config.codex_home, &default_shell)
+                    .await
+                    .map(Arc::new);
+        }
         let state = SessionState::new(session_configuration.clone());
 
         let services = SessionServices {
@@ -595,7 +597,7 @@ impl Session {
             unified_exec_manager: UnifiedExecSessionManager::default(),
             notifier: UserNotifier::new(config.notify.clone()),
             rollout: Mutex::new(Some(rollout_recorder)),
-            user_shell: default_shell,
+            user_shell: Arc::new(default_shell),
             show_raw_agent_reasoning: config.show_raw_agent_reasoning,
             auth_manager: Arc::clone(&auth_manager),
             otel_event_manager,
@@ -814,14 +816,16 @@ impl Session {
     ) -> Option<ResponseItem> {
         let prev = previous?;
 
-        let prev_context = EnvironmentContext::from(prev.as_ref());
-        let next_context = EnvironmentContext::from(next);
+        let shell = self.user_shell();
+        let prev_context = EnvironmentContext::from_turn_context(prev.as_ref(), shell.as_ref());
+        let next_context = EnvironmentContext::from_turn_context(next, shell.as_ref());
         if prev_context.equals_except_shell(&next_context) {
             return None;
         }
         Some(ResponseItem::from(EnvironmentContext::diff(
             prev.as_ref(),
             next,
+            shell.as_ref(),
         )))
     }
 
@@ -1171,6 +1175,7 @@ impl Session {
 
     pub(crate) fn build_initial_context(&self, turn_context: &TurnContext) -> Vec<ResponseItem> {
         let mut items = Vec::<ResponseItem>::with_capacity(3);
+        let shell = self.user_shell();
         if let Some(developer_instructions) = turn_context.developer_instructions.as_deref() {
             items.push(DeveloperInstructions::new(developer_instructions.to_string()).into());
         }
@@ -1187,7 +1192,7 @@ impl Session {
             Some(turn_context.cwd.clone()),
             Some(turn_context.approval_policy),
             Some(turn_context.sandbox_policy.clone()),
-            self.user_shell().clone(),
+            shell.as_ref().clone(),
         )));
         items
     }
@@ -1462,8 +1467,8 @@ impl Session {
         &self.services.notifier
     }
 
-    pub(crate) fn user_shell(&self) -> &shell::Shell {
-        &self.services.user_shell
+    pub(crate) fn user_shell(&self) -> Arc<shell::Shell> {
+        Arc::clone(&self.services.user_shell)
     }
 
     fn show_raw_agent_reasoning(&self) -> bool {
@@ -1971,9 +1976,6 @@ async fn spawn_review_thread(
     }
     per_turn_config.model_reasoning_summary = ReasoningSummaryConfig::Detailed;
     per_turn_config.features = review_features.clone();
-    if let Some(model_info) = get_model_info(&model_family) {
-        per_turn_config.model_context_window = Some(model_info.context_window);
-    }
 
     let otel_event_manager = parent_turn_context
         .client
@@ -2117,7 +2119,8 @@ pub(crate) async fn run_task(
                 } = turn_output;
                 let limit = turn_context
                     .client
-                    .get_auto_compact_token_limit()
+                    .get_model_family()
+                    .auto_compact_token_limit()
                     .unwrap_or(i64::MAX);
                 let total_usage_tokens = sess.get_total_token_usage().await;
                 let token_limit_reached = total_usage_tokens >= limit;
@@ -2899,7 +2902,7 @@ mod tests {
             unified_exec_manager: UnifiedExecSessionManager::default(),
             notifier: UserNotifier::new(None),
             rollout: Mutex::new(None),
-            user_shell: default_user_shell(),
+            user_shell: Arc::new(default_user_shell()),
             show_raw_agent_reasoning: config.show_raw_agent_reasoning,
             auth_manager: auth_manager.clone(),
             otel_event_manager: otel_event_manager.clone(),
@@ -2982,7 +2985,7 @@ mod tests {
             unified_exec_manager: UnifiedExecSessionManager::default(),
             notifier: UserNotifier::new(None),
             rollout: Mutex::new(None),
-            user_shell: default_user_shell(),
+            user_shell: Arc::new(default_user_shell()),
             show_raw_agent_reasoning: config.show_raw_agent_reasoning,
             auth_manager: Arc::clone(&auth_manager),
             otel_event_manager: otel_event_manager.clone(),
