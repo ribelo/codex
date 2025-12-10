@@ -56,23 +56,18 @@ impl ToolHandler for ShellCommandHandler {
         matches!(payload, ToolPayload::Function { .. })
     }
 
-    fn is_mutating(&self, invocation: &ToolInvocation) -> bool {
+    async fn is_mutating(&self, invocation: &ToolInvocation) -> bool {
         let ToolPayload::Function { arguments } = &invocation.payload else {
-            return true; // unknown payloads => assume mutating
+            return true;
         };
 
-        let Ok(params) = serde_json::from_str::<ShellCommandToolCallParams>(arguments) else {
-            return true; // parse failure => assume mutating
-        };
-
-        let command = Self::to_exec_params(
-            params,
-            invocation.session.as_ref(),
-            invocation.turn.as_ref(),
-        )
-        .command;
-
-        !is_known_safe_command(&command)
+        serde_json::from_str::<ShellCommandToolCallParams>(arguments)
+            .map(|params| {
+                let shell = invocation.session.user_shell();
+                let command = shell.derive_exec_args(&params.command, params.login.unwrap_or(true));
+                !is_known_safe_command(&command)
+            })
+            .unwrap_or(true)
     }
 
     async fn handle(&self, invocation: ToolInvocation) -> Result<ToolOutput, FunctionCallError> {
@@ -220,18 +215,21 @@ mod tests {
         let bash_shell = Shell {
             shell_type: ShellType::Bash,
             shell_path: PathBuf::from("/bin/bash"),
+            shell_snapshot: None,
         };
         assert_safe(&bash_shell, "ls -la");
 
         let zsh_shell = Shell {
             shell_type: ShellType::Zsh,
             shell_path: PathBuf::from("/bin/zsh"),
+            shell_snapshot: None,
         };
         assert_safe(&zsh_shell, "ls -la");
 
         let powershell = Shell {
             shell_type: ShellType::PowerShell,
             shell_path: PathBuf::from("pwsh.exe"),
+            shell_snapshot: None,
         };
         assert_safe(&powershell, "ls -Name");
     }

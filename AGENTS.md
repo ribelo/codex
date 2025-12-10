@@ -268,3 +268,19 @@ This repository is a long-lived fork of `openai/codex` with significant custom e
 - Avoid committing directly to the synchronization branch if possible.
 - Use feature branches for new development.
 - If a specific feature needs to be contributed back upstream, cherry-pick those specific commits to a clean branch based on `upstream/main`.
+
+
+## Fork Simplifications
+
+This fork deliberately simplifies complexity from upstream. When merging, be aware of these differences:
+
+### Simplified Features
+- **Parallel instructions**: Always enabled by default (via `PARALLEL_INSTRUCTIONS` constant appended to base instructions). No `Feature::ParallelToolCalls` toggle or `parallel_tool_calls` field in `Prompt` struct needed.
+- **Shell tools**: We use `ShellCommand` as the default/only shell tool. Do not add `ShellHandler`, `ToolPayload::LocalShell`, `ShellToolCallParams`, or `ConfigShellToolType::Local`.
+- **Model info**: `openai_model_info.rs` was removed. Model info (context_window, auto_compact) is handled by `ModelFamily` struct directly.
+
+### Philosophy
+- **Complexity is the enemy**: Prefer simpler code over feature-complete code.
+- **Default-on over toggles**: If a feature should always be on, don't add a toggle for it.
+- **Legacy code removal**: If upstream adds abstractions we don't need, don't merge them.
+- **When in doubt, simplify**: If a feature isn't actively used in our fork, remove it during merge.
