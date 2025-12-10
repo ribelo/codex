@@ -10,6 +10,7 @@ use crate::client_common::tools::ResponsesApiTool;
 use crate::client_common::tools::ToolSpec;
 use crate::codex::Session;
 use crate::codex::TurnContext;
+use crate::features::Feature;
 use crate::function_tool::FunctionCallError;
 use crate::tools::context::SharedTurnDiffTracker;
 use crate::tools::context::ToolInvocation;
@@ -179,17 +180,22 @@ pub(crate) async fn intercept_apply_patch(
     call_id: &str,
     tool_name: &str,
 ) -> Result<Option<ToolOutput>, FunctionCallError> {
+    let warning_prefix = if session.enabled(Feature::ModelWarnings) {
+        Some(format!(
+            "Warning: apply_patch was requested via {tool_name}. Use the apply_patch tool instead of exec_command.\n\n"
+        ))
+    } else {
+        None
+    };
+
     match codex_apply_patch::maybe_parse_apply_patch_verified(command, cwd) {
         codex_apply_patch::MaybeApplyPatchVerified::Body(changes) => {
-            session
-                .record_model_warning(
-                    format!("apply_patch was requested via {tool_name}. Use the apply_patch tool instead of exec_command."),
-                    turn,
-                )
-                .await;
             match apply_patch::apply_patch(session, turn, call_id, changes).await {
                 InternalApplyPatchInvocation::Output(item) => {
-                    let content = item?;
+                    let mut content = item?;
+                    if let Some(prefix) = &warning_prefix {
+                        content = format!("{prefix}{content}");
+                    }
                     Ok(Some(ToolOutput::Function {
                         content,
                         content_items: None,
@@ -226,7 +232,10 @@ pub(crate) async fn intercept_apply_patch(
                         .await;
                     let event_ctx =
                         ToolEventCtx::new(session, turn, call_id, tracker.as_ref().copied());
-                    let content = emitter.finish(event_ctx, out).await?;
+                    let mut content = emitter.finish(event_ctx, out).await?;
+                    if let Some(prefix) = &warning_prefix {
+                        content = format!("{prefix}{content}");
+                    }
                     Ok(Some(ToolOutput::Function {
                         content,
                         content_items: None,
