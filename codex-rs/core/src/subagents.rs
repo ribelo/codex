@@ -8,6 +8,7 @@ use serde::Deserialize;
 use tracing::warn;
 
 use crate::codex::Codex;
+use crate::config::profile::ConfigProfile;
 use crate::protocol::AskForApproval;
 use crate::protocol::SandboxPolicy;
 use tokio_util::sync::CancellationToken;
@@ -16,11 +17,59 @@ use tokio_util::sync::CancellationToken;
 pub struct SubagentMetadata {
     pub name: Option<String>,
     pub description: Option<String>,
-    pub model: Option<String>,
+    pub profile: Option<String>,
     pub sandbox_policy: Option<SubagentSandboxPolicy>,
     pub approval_policy: Option<AskForApproval>,
+    /// Optional list of subagent slugs this subagent is allowed to delegate to.
+    /// - `None`: full access to all subagents (default for root sessions)
+    /// - `Some(vec![])`: no access to any subagents
+    /// - `Some(vec!["agent1", "agent2"])`: access only to listed subagents
+    #[serde(default)]
+    pub allowed_subagents: Option<Vec<String>>,
     #[serde(flatten)]
     pub extra: HashMap<String, serde_yaml::Value>,
+}
+
+impl SubagentMetadata {
+    /// Load the profile configuration from the config file if a profile name is specified.
+    /// Uses async I/O to avoid blocking the executor.
+    pub async fn load_profile(&self, codex_home: &Path) -> Result<Option<ConfigProfile>> {
+        let Some(ref profile_name) = self.profile else {
+            return Ok(None);
+        };
+
+        let config_path = codex_home.join("config.toml");
+        let content = tokio::fs::read_to_string(&config_path)
+            .await
+            .context("Failed to read config.toml for subagent profile lookup")?;
+
+        #[derive(Deserialize)]
+        struct ProfilesOnly {
+            #[serde(default)]
+            profiles: HashMap<String, ConfigProfile>,
+        }
+
+        let parsed: ProfilesOnly =
+            toml::from_str(&content).context("Failed to parse config.toml")?;
+
+        parsed
+            .profiles
+            .get(profile_name)
+            .cloned()
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Profile '{}' not found in config.toml. Available profiles: {}",
+                    profile_name,
+                    parsed
+                        .profiles
+                        .keys()
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            })
+            .map(Some)
+    }
 }
 
 /// Simplified sandbox policy for subagent frontmatter.
@@ -117,9 +166,10 @@ impl SubagentRegistry {
             SubagentMetadata {
                 name: None,
                 description: None,
-                model: None,
+                profile: None,
                 sandbox_policy: None,
                 approval_policy: None,
+                allowed_subagents: None,
                 extra: HashMap::new(),
             }
         };

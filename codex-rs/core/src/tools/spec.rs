@@ -24,6 +24,11 @@ pub(crate) struct ToolsConfig {
     pub web_search_request: bool,
     pub include_view_image_tool: bool,
     pub experimental_supported_tools: Vec<String>,
+    /// Controls which subagents this session can delegate to via the task tool.
+    /// - `None`: full access to all subagents (default for root sessions)
+    /// - `Some(vec![])`: no access to any subagents (task tool not injected)
+    /// - `Some(vec!["agent1", ...])`: access only to listed subagents
+    pub allowed_subagents: Option<Vec<String>>,
 }
 
 pub(crate) struct ToolsConfigParams<'a> {
@@ -31,6 +36,9 @@ pub(crate) struct ToolsConfigParams<'a> {
     pub(crate) features: &'a Features,
     pub(crate) codex_home: &'a std::path::Path,
     pub(crate) experimental_tools_enable: &'a [String],
+    /// Controls which subagents this session can delegate to.
+    /// Passed through to ToolsConfig.allowed_subagents.
+    pub(crate) allowed_subagents: Option<Vec<String>>,
 }
 
 impl ToolsConfig {
@@ -40,6 +48,7 @@ impl ToolsConfig {
             features,
             codex_home,
             experimental_tools_enable,
+            allowed_subagents,
         } = params;
         let include_apply_patch_tool = features.enabled(Feature::ApplyPatchFreeform);
         let include_web_search_request = features.enabled(Feature::WebSearchRequest);
@@ -79,6 +88,7 @@ impl ToolsConfig {
             web_search_request: include_web_search_request,
             include_view_image_tool,
             experimental_supported_tools: experimental,
+            allowed_subagents: allowed_subagents.clone(),
         }
     }
 }
@@ -1044,8 +1054,27 @@ pub(crate) fn build_specs(
         builder.push_spec(ToolSpec::WebSearch {});
     }
 
-    builder.push_spec_with_parallel_support(create_task_tool(&config.codex_home), true);
-    builder.register_handler("task", task_handler);
+    // Conditionally inject task tool based on allowed_subagents
+    match &config.allowed_subagents {
+        // None: full access to all subagents
+        None => {
+            builder
+                .push_spec_with_parallel_support(create_task_tool(&config.codex_home, None), true);
+            builder.register_handler("task", task_handler);
+        }
+        // Some with non-empty list: filtered access
+        Some(allowed) if !allowed.is_empty() => {
+            builder.push_spec_with_parallel_support(
+                create_task_tool(&config.codex_home, Some(allowed)),
+                true,
+            );
+            builder.register_handler("task", task_handler);
+        }
+        // Some with empty list: no access (don't inject task tool)
+        Some(_) => {
+            // Do not inject the task tool
+        }
+    }
 
     if config.include_view_image_tool {
         builder.push_spec_with_parallel_support(create_view_image_tool(), true);
@@ -1179,6 +1208,7 @@ mod tests {
             features: &features,
             codex_home: std::path::Path::new("."),
             experimental_tools_enable: &[],
+            allowed_subagents: None,
         });
         let (tools, _) = build_specs(&config, None).build();
 
@@ -1207,7 +1237,7 @@ mod tests {
             create_list_mcp_resource_templates_tool(),
             create_read_mcp_resource_tool(),
             PLAN_TOOL.clone(),
-            create_task_tool(std::path::Path::new(".")),
+            create_task_tool(std::path::Path::new("."), None),
             create_apply_patch_freeform_tool(),
             ToolSpec::WebSearch {},
             create_view_image_tool(),
@@ -1237,6 +1267,7 @@ mod tests {
             features,
             codex_home: std::path::Path::new("."),
             experimental_tools_enable: &[],
+            allowed_subagents: None,
         });
         let (tools, _) = build_specs(&config, Some(HashMap::new())).build();
         let tool_names = tools.iter().map(|t| t.spec.name()).collect::<Vec<_>>();
@@ -1349,6 +1380,7 @@ mod tests {
             features: &features,
             codex_home: std::path::Path::new("."),
             experimental_tools_enable: &[],
+            allowed_subagents: None,
         });
         let (tools, _) = build_specs(&config, Some(HashMap::new())).build();
 
@@ -1372,6 +1404,7 @@ mod tests {
             features: &features,
             codex_home: std::path::Path::new("."),
             experimental_tools_enable: &[],
+            allowed_subagents: None,
         });
         let (tools, _) = build_specs(&config, None).build();
 
@@ -1393,6 +1426,7 @@ mod tests {
             features: &features,
             codex_home: std::path::Path::new("."),
             experimental_tools_enable: &[],
+            allowed_subagents: None,
         });
         let (tools, _) = build_specs(&config, None).build();
 
@@ -1425,6 +1459,7 @@ mod tests {
             features: &features,
             codex_home: std::path::Path::new("."),
             experimental_tools_enable: &[],
+            allowed_subagents: None,
         });
         let (tools, _) = build_specs(
             &config,
@@ -1520,6 +1555,7 @@ mod tests {
             features: &features,
             codex_home: std::path::Path::new("."),
             experimental_tools_enable: &[],
+            allowed_subagents: None,
         });
 
         // Intentionally construct a map with keys that would sort alphabetically.
@@ -1598,6 +1634,7 @@ mod tests {
             features: &features,
             codex_home: std::path::Path::new("."),
             experimental_tools_enable: &[],
+            allowed_subagents: None,
         });
 
         let (tools, _) = build_specs(
@@ -1656,6 +1693,7 @@ mod tests {
             features: &features,
             codex_home: std::path::Path::new("."),
             experimental_tools_enable: &[],
+            allowed_subagents: None,
         });
 
         let (tools, _) = build_specs(
@@ -1711,6 +1749,7 @@ mod tests {
             features: &features,
             codex_home: std::path::Path::new("."),
             experimental_tools_enable: &[],
+            allowed_subagents: None,
         });
 
         let (tools, _) = build_specs(
@@ -1768,6 +1807,7 @@ mod tests {
             features: &features,
             codex_home: std::path::Path::new("."),
             experimental_tools_enable: &[],
+            allowed_subagents: None,
         });
 
         let (tools, _) = build_specs(
@@ -1851,6 +1891,7 @@ Examples of valid command strings:
             features: &features,
             codex_home: std::path::Path::new("."),
             experimental_tools_enable: &[],
+            allowed_subagents: None,
         });
         let (tools, _) = build_specs(
             &config,
@@ -2021,6 +2062,7 @@ Examples of valid command strings:
             features: &features,
             codex_home: std::path::Path::new("."),
             experimental_tools_enable: &[],
+            allowed_subagents: None,
         });
 
         // Verify read_file is not in the default set
@@ -2036,6 +2078,7 @@ Examples of valid command strings:
             features: &features,
             codex_home: std::path::Path::new("."),
             experimental_tools_enable: &["read_file".to_string()],
+            allowed_subagents: None,
         });
 
         // Verify read_file is now in the set
@@ -2061,6 +2104,7 @@ Examples of valid command strings:
                 "read_file".to_string(),
                 "grep_files".to_string(),
             ],
+            allowed_subagents: None,
         });
 
         // Count occurrences of read_file

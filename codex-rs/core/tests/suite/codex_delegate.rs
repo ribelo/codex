@@ -181,7 +181,7 @@ async fn codex_delegate_forwards_patch_approval_and_proceeds_on_decision() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn codex_delegate_ignores_legacy_deltas() {
+async fn codex_delegate_review_suppresses_reasoning_deltas() {
     skip_if_no_network!();
 
     // Single response with reasoning summary deltas.
@@ -224,9 +224,14 @@ async fn codex_delegate_ignores_legacy_deltas() {
         }
     }
 
-    assert_eq!(reasoning_delta_count, 1, "expected one new reasoning delta");
+    // Review mode intentionally suppresses reasoning deltas to reduce noise.
+    // Only the final structured output is forwarded.
     assert_eq!(
-        legacy_reasoning_delta_count, 1,
-        "expected one legacy reasoning delta"
+        reasoning_delta_count, 0,
+        "review mode should suppress reasoning deltas"
+    );
+    assert_eq!(
+        legacy_reasoning_delta_count, 0,
+        "review mode should suppress legacy reasoning deltas"
     );
 }

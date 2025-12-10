@@ -248,6 +248,12 @@ pub struct Config {
     /// Experimental tools to add to the model's hardcoded set.
     pub experimental_tools_enable: Vec<String>,
 
+    /// Controls which subagents this session can delegate to via the task tool.
+    /// - `None`: full access to all subagents (default for root sessions)
+    /// - `Some(vec![])`: no access to any subagents
+    /// - `Some(vec!["agent1", ...])`: access only to listed subagents
+    pub allowed_subagents: Option<Vec<String>>,
+
     /// When `true`, run a model-based assessment for commands denied by the sandbox.
     pub experimental_sandbox_command_assessment: bool,
 
@@ -1262,6 +1268,8 @@ impl Config {
             include_apply_patch_tool: include_apply_patch_tool_flag,
             tools_web_search_request,
             experimental_tools_enable,
+            // Root sessions have full access to all subagents (None)
+            allowed_subagents: None,
             experimental_sandbox_command_assessment,
             use_experimental_unified_exec_tool,
             use_experimental_use_rmcp_client,
@@ -3014,6 +3022,7 @@ model_verbosity = "high"
                 include_apply_patch_tool: false,
                 tools_web_search_request: false,
                 experimental_tools_enable: vec![],
+                allowed_subagents: None,
                 experimental_sandbox_command_assessment: false,
                 use_experimental_unified_exec_tool: false,
                 use_experimental_use_rmcp_client: false,
@@ -3090,6 +3099,7 @@ model_verbosity = "high"
             include_apply_patch_tool: false,
             tools_web_search_request: false,
             experimental_tools_enable: vec![],
+            allowed_subagents: None,
             experimental_sandbox_command_assessment: false,
             use_experimental_unified_exec_tool: false,
             use_experimental_use_rmcp_client: false,
@@ -3181,6 +3191,7 @@ model_verbosity = "high"
             include_apply_patch_tool: false,
             tools_web_search_request: false,
             experimental_tools_enable: vec![],
+            allowed_subagents: None,
             experimental_sandbox_command_assessment: false,
             use_experimental_unified_exec_tool: false,
             use_experimental_use_rmcp_client: false,
@@ -3258,6 +3269,7 @@ model_verbosity = "high"
             include_apply_patch_tool: false,
             tools_web_search_request: false,
             experimental_tools_enable: vec![],
+            allowed_subagents: None,
             experimental_sandbox_command_assessment: false,
             use_experimental_unified_exec_tool: false,
             use_experimental_use_rmcp_client: false,

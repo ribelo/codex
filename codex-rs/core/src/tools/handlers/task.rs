@@ -13,6 +13,7 @@ use crate::client_common::tools::ResponsesApiTool;
 use crate::client_common::tools::ToolSpec;
 use crate::codex_delegate::run_codex_conversation_interactive;
 use crate::function_tool::FunctionCallError;
+use crate::model_provider_info::built_in_model_providers;
 use crate::subagents::SubagentRegistry;
 use crate::subagents::SubagentSandboxPolicy;
 use crate::subagents::SubagentSession;
@@ -27,9 +28,18 @@ use codex_protocol::protocol::Op;
 use codex_protocol::protocol::SubagentEventPayload;
 use codex_protocol::user_input::UserInput;
 
-pub fn create_task_tool(codex_home: &Path) -> ToolSpec {
+pub fn create_task_tool(codex_home: &Path, allowed_subagents: Option<&[String]>) -> ToolSpec {
     let registry = SubagentRegistry::new(codex_home);
-    let agents_list = registry.list();
+    let agents_list: Vec<_> = match allowed_subagents {
+        // None means full access to all agents
+        None => registry.list(),
+        // Some([...]) means only include agents in the allowed list
+        Some(allowed) => registry
+            .list()
+            .into_iter()
+            .filter(|a| allowed.contains(&a.slug))
+            .collect(),
+    };
 
     let agents_desc = if agents_list.is_empty() {
         "(No subagents found in ~/.codex/agents)".to_string()
@@ -153,6 +163,23 @@ impl ToolHandler for TaskHandler {
             ))
         })?;
 
+        // Enforce allowed_subagents restriction at execution time.
+        // This prevents the model from bypassing restrictions by guessing subagent names.
+        let config = turn.client.config();
+        if let Some(ref allowed) = config.allowed_subagents {
+            if !allowed.contains(&args.subagent_type) {
+                let allowed_str = if allowed.is_empty() {
+                    "(none)".to_string()
+                } else {
+                    allowed.join(", ")
+                };
+                return Err(FunctionCallError::RespondToModel(format!(
+                    "Subagent '{}' is not allowed. Allowed subagents: {}",
+                    args.subagent_type, allowed_str
+                )));
+            }
+        }
+
         let session_id = args
             .session_id
             .unwrap_or_else(|| Uuid::new_v4().to_string());
@@ -174,9 +201,51 @@ impl ToolHandler for TaskHandler {
                 ));
                 sub_config.codex_home = codex_home.clone();
 
-                // Apply model override from frontmatter
-                if let Some(ref model) = subagent_def.metadata.model {
-                    sub_config.model = model.clone();
+                // Apply profile settings from frontmatter.
+                // We re-read config.toml on each invocation rather than caching because:
+                // 1. The config file is small and TOML parsing is fast
+                // 2. This ensures we always use fresh config if user edits it mid-session
+                if let Some(profile) = subagent_def
+                    .metadata
+                    .load_profile(&codex_home)
+                    .await
+                    .map_err(|e| FunctionCallError::Fatal(format!("Failed to load profile: {e}")))?
+                {
+                    // Apply model from profile
+                    if let Some(ref model) = profile.model {
+                        sub_config.model = model.clone();
+                    }
+
+                    // Apply model_provider from profile
+                    if let Some(ref provider_id) = profile.model_provider {
+                        // Build combined providers map
+                        let mut providers = built_in_model_providers();
+                        for (key, provider) in config.model_providers.iter() {
+                            providers
+                                .entry(key.clone())
+                                .or_insert_with(|| provider.clone());
+                        }
+
+                        if let Some(provider_info) = providers.get(provider_id) {
+                            sub_config.model_provider_id = provider_id.clone();
+                            sub_config.model_provider = provider_info.clone();
+                        } else {
+                            return Err(FunctionCallError::Fatal(format!(
+                                "Model provider '{provider_id}' from profile not found"
+                            )));
+                        }
+                    }
+
+                    // Apply reasoning settings from profile
+                    if profile.model_reasoning_effort.is_some() {
+                        sub_config.model_reasoning_effort = profile.model_reasoning_effort;
+                    }
+                    if let Some(summary) = profile.model_reasoning_summary {
+                        sub_config.model_reasoning_summary = summary;
+                    }
+                    if profile.model_verbosity.is_some() {
+                        sub_config.model_verbosity = profile.model_verbosity;
+                    }
                 }
 
                 // Apply sandbox_policy override (only if more restrictive than parent)
@@ -199,6 +268,15 @@ impl ToolHandler for TaskHandler {
                         sub_config.approval_policy = subagent_approval;
                     }
                 }
+
+                // Set allowed_subagents for the subagent session.
+                // Use the subagent metadata if specified, otherwise default to no access.
+                sub_config.allowed_subagents = subagent_def
+                    .metadata
+                    .allowed_subagents
+                    .clone()
+                    .or(Some(vec![]));
+
                 let session_token = CancellationToken::new();
 
                 let codex = run_codex_conversation_interactive(
