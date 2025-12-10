@@ -303,6 +303,7 @@ pub fn find_family_for_model(slug: &str) -> ModelFamily {
             support_verbosity: true,
             truncation_policy: TruncationPolicy::Bytes(10_000),
             context_window: Some(CONTEXT_WINDOW_272K),
+            apply_patch_tool_type: Some(ApplyPatchToolType::Function),
         )
     } else if slug.starts_with("gemini") {
         let supports_reasoning = slug.contains("reasoning") || slug.starts_with("gemini-3");
@@ -323,6 +324,7 @@ pub fn find_family_for_model(slug: &str) -> ModelFamily {
                 default_reasoning_effort: supports_reasoning.then_some(ReasoningEffort::Medium),
                 reasoning_summary_format: ReasoningSummaryFormat::None,
                 shell_type: ConfigShellToolType::ShellCommand,
+                apply_patch_tool_type: Some(ApplyPatchToolType::Function),
             )
         }
     } else {
@@ -339,7 +341,8 @@ fn derive_default_model_family(model: &str) -> ModelFamily {
         auto_compact_token_limit: None,
         supports_reasoning_summaries: false,
         reasoning_summary_format: ReasoningSummaryFormat::None,
-        apply_patch_tool_type: None,
+        // let's add apply patch to every model by default
+        apply_patch_tool_type: Some(ApplyPatchToolType::Function),
         base_instructions: BASE_INSTRUCTIONS.to_string(),
         experimental_supported_tools: Vec::new(),
         effective_context_window_percent: 95,
