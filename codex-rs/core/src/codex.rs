@@ -446,6 +446,11 @@ impl Session {
             experimental_tools_enable: &session_configuration
                 .original_config_do_not_use
                 .experimental_tools_enable,
+            // Pass through allowed_subagents from config (None for root, restricted for subagents)
+            allowed_subagents: session_configuration
+                .original_config_do_not_use
+                .allowed_subagents
+                .clone(),
         });
 
         TurnContext {
@@ -1958,6 +1963,8 @@ async fn spawn_review_thread(
         features: &review_features,
         codex_home: &config.codex_home,
         experimental_tools_enable: &config.experimental_tools_enable,
+        // Review sessions have full access to subagents
+        allowed_subagents: None,
     });
 
     let base_instructions = REVIEW_PROMPT.to_string();
