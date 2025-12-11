@@ -16,6 +16,8 @@ use crate::render::renderable::Renderable;
 use crate::resume_picker::ResumeSelection;
 use crate::skill_error_prompt::SkillErrorPromptOutcome;
 use crate::skill_error_prompt::run_skill_error_prompt;
+use crate::subagent_error_prompt::SubagentErrorPromptOutcome;
+use crate::subagent_error_prompt::run_subagent_error_prompt;
 use crate::tui;
 use crate::tui::TuiEvent;
 use crate::update_action::UpdateAction;
@@ -37,6 +39,7 @@ use codex_core::protocol::SessionSource;
 use codex_core::protocol::TokenUsage;
 use codex_core::skills::load_skills;
 use codex_core::skills::model::SkillMetadata;
+use codex_core::subagents::load_subagents;
 use codex_protocol::ConversationId;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::openai_models::ModelUpgrade;
@@ -301,6 +304,20 @@ impl App {
                     });
                 }
                 SkillErrorPromptOutcome::Continue => {}
+            }
+        }
+
+        let subagent_outcome = load_subagents(&config.codex_home).await;
+        if !subagent_outcome.errors.is_empty() {
+            match run_subagent_error_prompt(tui, &subagent_outcome.errors).await {
+                SubagentErrorPromptOutcome::Exit => {
+                    return Ok(AppExitInfo {
+                        token_usage: TokenUsage::default(),
+                        conversation_id: None,
+                        update_action: None,
+                    });
+                }
+                SubagentErrorPromptOutcome::Continue => {}
             }
         }
 
@@ -1145,7 +1162,10 @@ impl App {
             } => {
                 // Enter alternate screen and set viewport to full size.
                 let _ = tui.enter_alt_screen();
-                self.overlay = Some(Overlay::new_transcript(self.transcript_cells.clone()));
+                // Include both completed transcript cells and active subagent tasks
+                let mut cells = self.transcript_cells.clone();
+                cells.extend(self.chat_widget.active_subagent_cells_as_history());
+                self.overlay = Some(Overlay::new_transcript(cells));
                 tui.frame_requester().schedule_frame();
             }
             // Esc primes/advances backtracking only in normal (not working) mode

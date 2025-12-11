@@ -51,6 +51,7 @@ pub(crate) async fn run_codex_conversation_interactive(
         models_manager,
         initial_history.unwrap_or(InitialHistory::New),
         SessionSource::SubAgent(SubAgentSource::Review),
+        Some(parent_session.services.mcp_connection_manager.clone()),
     )
     .await?;
     let codex = Arc::new(codex);

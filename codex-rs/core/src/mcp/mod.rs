@@ -34,15 +34,19 @@ pub async fn collect_mcp_snapshot(config: &Config) -> McpListToolsResponseEvent 
     drop(rx_event);
     let cancel_token = CancellationToken::new();
 
-    mcp_connection_manager
-        .initialize(
-            config.mcp_servers.clone(),
-            config.mcp_oauth_credentials_store_mode,
-            auth_status_entries.clone(),
-            tx_event,
-            cancel_token.clone(),
-        )
-        .await;
+    mcp_connection_manager.configure(
+        config.mcp_servers.clone(),
+        config.mcp_oauth_credentials_store_mode,
+        auth_status_entries.clone(),
+        tx_event,
+        cancel_token.clone(),
+    );
+
+    for (name, cfg) in &config.mcp_servers {
+        if cfg.enabled {
+            mcp_connection_manager.ensure_started(name).await;
+        }
+    }
 
     let snapshot =
         collect_mcp_snapshot_from_manager(&mcp_connection_manager, auth_status_entries).await;

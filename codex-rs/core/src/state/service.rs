@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use crate::AuthManager;
 use crate::RolloutRecorder;
+use crate::delegation::DelegationRegistry;
 use crate::mcp_connection_manager::McpConnectionManager;
 use crate::openai_models::models_manager::ModelsManager;
 use crate::subagents::SubagentSession;
@@ -27,4 +28,5 @@ pub(crate) struct SessionServices {
     pub(crate) otel_event_manager: OtelEventManager,
     pub(crate) tool_approvals: Mutex<ApprovalStore>,
     pub(crate) subagent_sessions: Mutex<HashMap<String, SubagentSession>>,
+    pub(crate) delegation_registry: DelegationRegistry,
 }

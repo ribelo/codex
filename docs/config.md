@@ -473,6 +473,10 @@ rmcp_client = true
 
 After enabling it, run `codex mcp login <server-name>` when the server supports OAuth.
 
+#### Server lifecycle
+
+Codex initializes MCP servers in parallel and does not block the session startup. You can start working immediately while servers connect in the background. If a server fails to start, it will show an error status in the UI but won't prevent you from using Codex or other tools. Tools from a server are only available once the server is ready.
+
 #### Other configuration options
 
 ```toml

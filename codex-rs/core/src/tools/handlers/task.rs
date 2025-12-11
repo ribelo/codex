@@ -3,10 +3,12 @@ const SANDBOX_AND_APPROVALS_PROMPT: &str = include_str!("../../../sandbox_and_ap
 
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::Result;
 use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
+use tracing::info;
 use uuid::Uuid;
 
 use crate::client_common::tools::ResponsesApiTool;
@@ -26,6 +28,7 @@ use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::SubagentEventPayload;
+use codex_protocol::protocol::TaskStartedEvent;
 use codex_protocol::user_input::UserInput;
 
 pub fn create_task_tool(codex_home: &Path, allowed_subagents: Option<&[String]>) -> ToolSpec {
@@ -121,12 +124,18 @@ fn wrap_subagent_event(
     parent_call_id: &str,
     subagent_type: &str,
     task_description: &str,
+    delegation_id: Option<String>,
+    parent_delegation_id: Option<String>,
+    depth: Option<i32>,
     inner: EventMsg,
 ) -> EventMsg {
     EventMsg::SubagentEvent(SubagentEventPayload {
         parent_call_id: parent_call_id.to_string(),
         subagent_type: subagent_type.to_string(),
         task_description: task_description.to_string(),
+        delegation_id,
+        parent_delegation_id,
+        depth,
         inner: Box::new(inner),
     })
 }
@@ -166,31 +175,46 @@ impl ToolHandler for TaskHandler {
         // Enforce allowed_subagents restriction at execution time.
         // This prevents the model from bypassing restrictions by guessing subagent names.
         let config = turn.client.config();
-        if let Some(ref allowed) = config.allowed_subagents {
-            if !allowed.contains(&args.subagent_type) {
-                let allowed_str = if allowed.is_empty() {
-                    "(none)".to_string()
-                } else {
-                    allowed.join(", ")
-                };
-                return Err(FunctionCallError::RespondToModel(format!(
-                    "Subagent '{}' is not allowed. Allowed subagents: {}",
-                    args.subagent_type, allowed_str
-                )));
-            }
+        if let Some(ref allowed) = config.allowed_subagents
+            && !allowed.contains(&args.subagent_type)
+        {
+            let allowed_str = if allowed.is_empty() {
+                "(none)".to_string()
+            } else {
+                allowed.join(", ")
+            };
+            return Err(FunctionCallError::RespondToModel(format!(
+                "Subagent '{}' is not allowed. Allowed subagents: {}",
+                args.subagent_type, allowed_str
+            )));
         }
 
         let session_id = args
             .session_id
             .unwrap_or_else(|| Uuid::new_v4().to_string());
 
+        // Create or retrieve delegation context
+        let delegation_context = {
+            let registry = &invocation.session.services.delegation_registry;
+            registry.enter(invocation.call_id.clone()).await
+        };
+        let delegation_id = Some(delegation_context.delegation_id.clone());
+        let parent_delegation_id = delegation_context.parent_delegation_id.clone();
+        let depth = Some(delegation_context.depth);
+
         let subagent_session_ref: Arc<crate::codex::Codex> = {
             let services = &invocation.session.services;
             let mut sessions = services.subagent_sessions.lock().await;
 
             if let Some(session) = sessions.get(&session_id) {
+                info!(
+                    subagent = %args.subagent_type,
+                    session_id = %session_id,
+                    "Reusing existing subagent session"
+                );
                 session.codex.clone()
             } else {
+                let spawn_started = Instant::now();
                 let config = turn.client.config();
                 let mut sub_config = (*config).clone();
                 sub_config.base_instructions = Some(format!(
@@ -209,7 +233,12 @@ impl ToolHandler for TaskHandler {
                     .metadata
                     .load_profile(&codex_home)
                     .await
-                    .map_err(|e| FunctionCallError::Fatal(format!("Failed to load profile: {e}")))?
+                    .map_err(|e| {
+                        FunctionCallError::RespondToModel(format!(
+                            "Subagent configuration error for '{}': {e}",
+                            args.subagent_type
+                        ))
+                    })?
                 {
                     // Apply model from profile
                     if let Some(ref model) = profile.model {
@@ -299,6 +328,12 @@ impl ToolHandler for TaskHandler {
                 };
 
                 sessions.insert(session_id.clone(), session);
+                info!(
+                    subagent = %args.subagent_type,
+                    session_id = %session_id,
+                    elapsed_ms = spawn_started.elapsed().as_millis(),
+                    "Spawned subagent session"
+                );
                 codex_arc
             }
         };
@@ -306,6 +341,25 @@ impl ToolHandler for TaskHandler {
         let input = vec![UserInput::Text {
             text: args.prompt.clone(),
         }];
+
+        // Send initial TaskStarted event so the TUI can create the cell immediately.
+        // This ensures the parent cell exists before any nested subagent events arrive.
+        let task_started = wrap_subagent_event(
+            &invocation.call_id,
+            &args.subagent_type,
+            &args.description,
+            delegation_id.clone(),
+            parent_delegation_id.clone(),
+            depth,
+            EventMsg::TaskStarted(TaskStartedEvent {
+                model_context_window: None,
+            }),
+        );
+        invocation
+            .session
+            .send_event(invocation.turn.as_ref(), task_started)
+            .await;
+
         subagent_session_ref
             .submit(Op::UserInput { items: input })
             .await
@@ -321,6 +375,22 @@ impl ToolHandler for TaskHandler {
                 .map_err(|e| FunctionCallError::Fatal(format!("Subagent event error: {e}")))?;
 
             match event.msg {
+                EventMsg::SubagentEvent(mut nested) => {
+                    // Nested subagent invocation inside this delegated task.
+                    // Bump depth relative to the current delegation so the TUI
+                    // can render a visually nested tree.
+                    let parent_depth = depth.unwrap_or(0);
+                    let new_depth = parent_depth.saturating_add(1);
+                    nested.depth = Some(new_depth);
+                    if nested.parent_delegation_id.is_none() {
+                        nested.parent_delegation_id = delegation_id.clone();
+                    }
+
+                    invocation
+                        .session
+                        .send_event(invocation.turn.as_ref(), EventMsg::SubagentEvent(nested))
+                        .await;
+                }
                 EventMsg::TaskComplete(tc) => {
                     if let Some(ref msg) = tc.last_agent_message {
                         final_output = msg.clone();
@@ -330,12 +400,19 @@ impl ToolHandler for TaskHandler {
                         &invocation.call_id,
                         &args.subagent_type,
                         &args.description,
+                        delegation_id.clone(),
+                        parent_delegation_id.clone(),
+                        depth,
                         EventMsg::TaskComplete(tc),
                     );
                     invocation
                         .session
                         .send_event(invocation.turn.as_ref(), wrapped)
                         .await;
+                    // Exit delegation context
+                    {
+                        invocation.session.services.delegation_registry.exit().await;
+                    }
                     break;
                 }
                 EventMsg::TurnAborted(ta) => {
@@ -345,12 +422,19 @@ impl ToolHandler for TaskHandler {
                         &invocation.call_id,
                         &args.subagent_type,
                         &args.description,
+                        delegation_id.clone(),
+                        parent_delegation_id.clone(),
+                        depth,
                         EventMsg::TurnAborted(ta),
                     );
                     invocation
                         .session
                         .send_event(invocation.turn.as_ref(), wrapped)
                         .await;
+                    // Exit delegation context
+                    {
+                        invocation.session.services.delegation_registry.exit().await;
+                    }
                     return Err(FunctionCallError::RespondToModel(reason_str));
                 }
                 EventMsg::ExecCommandBegin(_)
@@ -366,6 +450,9 @@ impl ToolHandler for TaskHandler {
                         &invocation.call_id,
                         &args.subagent_type,
                         &args.description,
+                        delegation_id.clone(),
+                        parent_delegation_id.clone(),
+                        depth,
                         event.msg,
                     );
                     invocation
@@ -377,9 +464,15 @@ impl ToolHandler for TaskHandler {
             }
         }
 
+        // Build a structured response that includes the session_id for follow-up calls
+        let response = serde_json::json!({
+            "result": final_output,
+            "session_id": session_id,
+        });
+
         Ok(ToolOutput::Function {
             success: Some(true),
-            content: final_output,
+            content: response.to_string(),
             content_items: None,
         })
     }

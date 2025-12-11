@@ -656,6 +656,15 @@ pub struct SubagentEventPayload {
     pub subagent_type: String,
     /// Description of the delegated task.
     pub task_description: String,
+    /// Unique identifier for this delegation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delegation_id: Option<String>,
+    /// Parent delegation ID if this is a nested delegation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_delegation_id: Option<String>,
+    /// Nesting depth (0 = top-level, 1 = first nested, etc.)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub depth: Option<i32>,
     /// The wrapped inner event from the subagent.
     pub inner: Box<EventMsg>,
 }
