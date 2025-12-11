@@ -15,6 +15,7 @@ use codex_protocol::openai_models::ConfigShellToolType;
 const BASE_INSTRUCTIONS: &str = include_str!("../../prompt.md");
 
 const GPT_5_1_INSTRUCTIONS: &str = include_str!("../../gpt_5_1_prompt.md");
+const GPT_5_2_INSTRUCTIONS: &str = include_str!("../../gpt_5_2_prompt.md");
 const GPT_5_1_CODEX_MAX_INSTRUCTIONS: &str = include_str!("../../gpt-5.1-codex-max_prompt.md");
 const GEMINI_3_INSTRUCTIONS: &str = include_str!("../../gemini-3-prompt.md");
 pub(crate) const CONTEXT_WINDOW_272K: i64 = 272_000;
@@ -119,6 +120,9 @@ impl ModelFamily {
     const fn default_auto_compact_limit(context_window: i64) -> i64 {
         (context_window * 9) / 10
     }
+    pub fn get_model_slug(&self) -> &str {
+        &self.slug
+    }
 }
 
 macro_rules! model_family {
@@ -155,10 +159,9 @@ macro_rules! model_family {
     }};
 }
 
-// todo(aibrahim): remove this function
-/// Returns a `ModelFamily` for the given model slug, or `None` if the slug
-/// does not match any known model family.
-pub fn find_family_for_model(slug: &str) -> ModelFamily {
+/// Internal offline helper for `ModelsManager` that returns a `ModelFamily` for the given
+/// model slug.
+pub(in crate::openai_models) fn find_family_for_model(slug: &str) -> ModelFamily {
     if slug.starts_with("o3") {
         model_family!(
             slug, "o3",
@@ -279,6 +282,18 @@ pub fn find_family_for_model(slug: &str) -> ModelFamily {
             support_verbosity: false,
             truncation_policy: TruncationPolicy::Tokens(10_000),
             mcp_truncation_policy: TruncationPolicy::Tokens(10_000),
+        )
+    } else if slug.starts_with("gpt-5.2") {
+        model_family!(
+            slug, slug,
+            supports_reasoning_summaries: true,
+            apply_patch_tool_type: Some(ApplyPatchToolType::Freeform),
+            support_verbosity: true,
+            default_verbosity: Some(Verbosity::Low),
+            base_instructions: GPT_5_2_INSTRUCTIONS.to_string(),
+            default_reasoning_effort: Some(ReasoningEffort::Medium),
+            truncation_policy: TruncationPolicy::Bytes(10_000),
+            shell_type: ConfigShellToolType::ShellCommand,
             context_window: Some(CONTEXT_WINDOW_272K),
         )
     } else if slug.starts_with("gpt-5.1") {
@@ -333,6 +348,7 @@ pub fn find_family_for_model(slug: &str) -> ModelFamily {
 }
 
 fn derive_default_model_family(model: &str) -> ModelFamily {
+    tracing::warn!("Unknown model {model} is used. This will degrade the performance of Codex.");
     ModelFamily {
         slug: model.to_string(),
         family: model.to_string(),

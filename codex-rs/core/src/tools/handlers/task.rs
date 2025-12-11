@@ -242,7 +242,7 @@ impl ToolHandler for TaskHandler {
                 {
                     // Apply model from profile
                     if let Some(ref model) = profile.model {
-                        sub_config.model = model.clone();
+                        sub_config.model = Some(model.clone());
                     }
 
                     // Apply model_provider from profile

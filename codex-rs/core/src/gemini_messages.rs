@@ -29,7 +29,6 @@ use crate::client_common::ResponseEvent;
 use crate::client_common::ResponseStream;
 use crate::client_common::tools::ToolSpec;
 use crate::config::Config;
-use crate::default_client::CodexHttpClient;
 use crate::error::CodexErr;
 use crate::error::ConnectionFailedError;
 use crate::error::Result;
@@ -45,6 +44,7 @@ use crate::protocol::TokenUsage;
 use crate::truncate::approx_token_count;
 use crate::util::backoff;
 use crate::util::try_parse_error_message;
+use codex_client::CodexHttpClient;
 use uuid::Uuid;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -355,7 +355,7 @@ pub(crate) fn build_gemini_payload(
     config: &Config,
     model_family: &ModelFamily,
 ) -> Result<(GeminiRequest, String)> {
-    let normalized_model = normalize_model_name(&config.model);
+    let normalized_model = normalize_model_name(model_family.get_model_slug());
     let full_instructions = prompt.get_full_instructions(model_family);
     let (contents, system_instruction) = build_gemini_messages(prompt, full_instructions.as_ref())?;
     let tools = build_gemini_tools(&prompt.tools)?;

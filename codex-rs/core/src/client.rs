@@ -216,7 +216,7 @@ impl ModelClient {
 
             let stream_result = client
                 .stream_prompt(
-                    &self.config.model,
+                    &self.get_model(),
                     &api_prompt,
                     Some(conversation_id.clone()),
                     Some(session_source.clone()),
@@ -256,7 +256,11 @@ impl ModelClient {
         let reasoning = if model_family.supports_reasoning_summaries {
             Some(Reasoning {
                 effort: self.effort.or(model_family.default_reasoning_effort),
-                summary: Some(self.summary),
+                summary: if self.summary == ReasoningSummaryConfig::None {
+                    None
+                } else {
+                    Some(self.summary)
+                },
             })
         } else {
             None
@@ -310,7 +314,7 @@ impl ModelClient {
             };
 
             let stream_result = client
-                .stream_prompt(&self.config.model, &api_prompt, options)
+                .stream_prompt(&self.get_model(), &api_prompt, options)
                 .await;
 
             match stream_result {
@@ -342,7 +346,7 @@ impl ModelClient {
 
     /// Returns the currently configured model slug.
     pub fn get_model(&self) -> String {
-        self.config.model.clone()
+        self.get_model_family().get_model_slug().to_string()
     }
 
     /// Returns the currently configured model family.
@@ -387,7 +391,7 @@ impl ModelClient {
             .get_full_instructions(&self.get_model_family())
             .into_owned();
         let payload = ApiCompactionInput {
-            model: &self.config.model,
+            model: &self.get_model(),
             input: &prompt.input,
             instructions: &instructions,
         };

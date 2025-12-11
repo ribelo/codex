@@ -29,7 +29,6 @@ use crate::client_common::ResponseEvent;
 use crate::client_common::ResponseStream;
 use crate::client_common::tools::ToolSpec;
 use crate::config::Config;
-use crate::default_client::CodexHttpClient;
 use crate::error::CodexErr;
 use crate::error::ConnectionFailedError;
 use crate::error::Result;
@@ -40,6 +39,7 @@ use crate::openai_models::model_family::ModelFamily;
 use crate::protocol::TokenUsage;
 use crate::truncate::approx_token_count;
 use crate::util::backoff;
+use codex_client::CodexHttpClient;
 
 #[derive(Serialize)]
 struct AnthropicRequest {
@@ -167,7 +167,7 @@ pub(crate) async fn stream_anthropic_messages(
     });
 
     let payload = AnthropicRequest {
-        model: config.model.clone(),
+        model: model_family.get_model_slug().to_string(),
         system: Some(system_prompt),
         messages,
         tools: if tools.is_empty() { None } else { Some(tools) },
