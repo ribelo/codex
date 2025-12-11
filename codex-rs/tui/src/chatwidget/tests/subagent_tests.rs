@@ -24,6 +24,7 @@ fn make_chatwidget_manual() -> (ChatWidget, tokio::sync::mpsc::UnboundedReceiver
     let (op_tx, _op_rx) = unbounded_channel::<Op>();
     // Use same test_config helper as parent tests.
     let cfg = test_config();
+    let resolved_model = ModelsManager::get_model_offline(cfg.model.as_deref());
 
     let bottom = BottomPane::new(BottomPaneParams {
         app_event_tx: app_event_tx.clone(),
@@ -42,10 +43,10 @@ fn make_chatwidget_manual() -> (ChatWidget, tokio::sync::mpsc::UnboundedReceiver
         bottom_pane: bottom,
         active_cell: None,
         config: cfg.clone(),
-        model_family: ModelsManager::construct_model_family_offline(&cfg.model, &cfg),
+        model_family: ModelsManager::construct_model_family_offline(&resolved_model, &cfg),
         auth_manager: auth_manager.clone(),
         models_manager: Arc::new(ModelsManager::new(auth_manager)),
-        session_header: SessionHeader::new(cfg.model),
+        session_header: SessionHeader::new(resolved_model.clone()),
         initial_user_message: None,
         token_info: None,
         rate_limit_snapshot: None,

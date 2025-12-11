@@ -26,7 +26,6 @@ pub use crate::auth::storage::AuthDotJson;
 use crate::auth::storage::AuthStorageBackend;
 use crate::auth::storage::create_auth_storage;
 use crate::config::Config;
-use crate::default_client::CodexHttpClient;
 use crate::error::RefreshTokenFailedError;
 use crate::error::RefreshTokenFailedReason;
 use crate::gemini::GEMINI_CLIENT_ID;
@@ -45,9 +44,9 @@ use crate::token_data::PlanType as InternalPlanType;
 use crate::token_data::TokenData;
 use crate::token_data::parse_id_token;
 use crate::util::try_parse_error_message;
+use codex_client::CodexHttpClient;
 use codex_protocol::account::PlanType as AccountPlanType;
 use once_cell::sync::Lazy;
-use serde_json::Map;
 use serde_json::Value;
 use tempfile::TempDir;
 use thiserror::Error;
@@ -1071,7 +1070,7 @@ fn select_gemini_tier(payload: &LoadCodeAssistPayload) -> Option<String> {
 }
 
 fn build_gemini_metadata(project_id: Option<&str>) -> Value {
-    let mut metadata = Map::new();
+    let mut metadata = serde_json::Map::new();
     metadata.insert(
         "ideType".to_string(),
         Value::String(GEMINI_METADATA_IDE_TYPE.to_string()),

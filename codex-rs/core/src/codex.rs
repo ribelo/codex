@@ -95,9 +95,11 @@ use crate::protocol::RateLimitSnapshot;
 use crate::protocol::ReasoningContentDeltaEvent;
 use crate::protocol::ReasoningRawContentDeltaEvent;
 use crate::protocol::ReviewDecision;
-use crate::protocol::SandboxCommandAssessment;
 use crate::protocol::SandboxPolicy;
 use crate::protocol::SessionConfiguredEvent;
+use crate::protocol::SkillErrorInfo;
+use crate::protocol::SkillInfo;
+use crate::protocol::SkillLoadOutcomeInfo;
 use crate::protocol::StreamErrorEvent;
 use crate::protocol::Submission;
 use crate::protocol::TokenCountEvent;
@@ -110,6 +112,10 @@ use crate::rollout::RolloutRecorderParams;
 use crate::rollout::map_session_init_error;
 use crate::shell;
 use crate::shell_snapshot::ShellSnapshot;
+use crate::skills::SkillInjections;
+use crate::skills::SkillLoadOutcome;
+use crate::skills::build_skill_injections;
+use crate::skills::load_skills;
 use crate::state::ActiveTurn;
 use crate::state::SessionServices;
 use crate::state::SessionState;
@@ -175,7 +181,31 @@ impl Codex {
         let (tx_sub, rx_sub) = async_channel::bounded(SUBMISSION_CHANNEL_CAPACITY);
         let (tx_event, rx_event) = async_channel::unbounded();
 
-        let user_instructions = get_user_instructions(&config).await;
+        let loaded_skills = if config.features.enabled(Feature::Skills) {
+            Some(load_skills(&config))
+        } else {
+            None
+        };
+
+        if let Some(outcome) = &loaded_skills {
+            for err in &outcome.errors {
+                error!(
+                    "failed to load skill {}: {}",
+                    err.path.display(),
+                    err.message
+                );
+            }
+        }
+
+        let skills_outcome = loaded_skills.clone();
+
+        let user_instructions = get_user_instructions(
+            &config,
+            skills_outcome
+                .as_ref()
+                .map(|outcome| outcome.skills.as_slice()),
+        )
+        .await;
 
         let exec_policy = load_exec_policy_for_features(&config.features, &config.codex_home)
             .await
@@ -183,10 +213,15 @@ impl Codex {
         let exec_policy = Arc::new(RwLock::new(exec_policy));
 
         let config = Arc::new(config);
-
+        if config.features.enabled(Feature::RemoteModels)
+            && let Err(err) = models_manager.refresh_available_models(&config).await
+        {
+            error!("failed to refresh available models: {err:?}");
+        }
+        let model = models_manager.get_model(&config.model, &config).await;
         let session_configuration = SessionConfiguration {
             provider: config.model_provider.clone(),
-            model: config.model.clone(),
+            model: model.clone(),
             model_reasoning_effort: config.model_reasoning_effort,
             model_reasoning_summary: config.model_reasoning_summary,
             developer_instructions: config.developer_instructions.clone(),
@@ -203,6 +238,7 @@ impl Codex {
 
         // Generate a unique ID for the lifetime of this Codex session.
         let session_source_clone = session_configuration.session_source.clone();
+
         let session = Session::new(
             session_configuration,
             config.clone(),
@@ -211,6 +247,7 @@ impl Codex {
             tx_event.clone(),
             conversation_history,
             session_source_clone,
+            skills_outcome.clone(),
             mcp_connection_manager,
         )
         .await
@@ -402,10 +439,11 @@ pub(crate) struct SessionSettingsUpdate {
 }
 
 impl Session {
+    /// Don't expand the number of mutated arguments on config. We are in the process of getting rid of it.
     fn build_per_turn_config(session_configuration: &SessionConfiguration) -> Config {
+        // todo(aibrahim): store this state somewhere else so we don't need to mut config
         let config = session_configuration.original_config_do_not_use.clone();
         let mut per_turn_config = (*config).clone();
-        per_turn_config.model = session_configuration.model.clone();
         per_turn_config.model_reasoning_effort = session_configuration.model_reasoning_effort;
         per_turn_config.model_reasoning_summary = session_configuration.model_reasoning_summary;
         per_turn_config.features = config.features.clone();
@@ -425,7 +463,7 @@ impl Session {
     ) -> TurnContext {
         let otel_event_manager = otel_event_manager.clone().with_model(
             session_configuration.model.as_str(),
-            model_family.slug.as_str(),
+            model_family.get_model_slug(),
         );
 
         let per_turn_config = Arc::new(per_turn_config);
@@ -482,6 +520,7 @@ impl Session {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn new(
         session_configuration: SessionConfiguration,
         config: Arc<Config>,
@@ -490,6 +529,7 @@ impl Session {
         tx_event: Sender<Event>,
         initial_history: InitialHistory,
         session_source: SessionSource,
+        skills: Option<SkillLoadOutcome>,
         mcp_connection_manager: Option<Arc<RwLock<McpConnectionManager>>>,
     ) -> anyhow::Result<Arc<Self>> {
         debug!(
@@ -562,14 +602,11 @@ impl Session {
             });
         }
 
-        let model_family = models_manager
-            .construct_model_family(&config.model, &config)
-            .await;
         // todo(aibrahim): why are we passing model here while it can change?
         let otel_event_manager = OtelEventManager::new(
             conversation_id,
-            config.model.as_str(),
-            model_family.slug.as_str(),
+            session_configuration.model.as_str(),
+            session_configuration.model.as_str(),
             auth_manager.auth().and_then(|a| a.get_account_id()),
             auth_manager.auth().and_then(|a| a.get_account_email()),
             auth_manager.auth().map(|a| a.mode),
@@ -616,6 +653,7 @@ impl Session {
             tool_approvals: Mutex::new(ApprovalStore::default()),
             subagent_sessions: Mutex::new(std::collections::HashMap::new()),
             delegation_registry: crate::delegation::DelegationRegistry::new(),
+            skills: skills.clone(),
         };
 
         let sess = Arc::new(Session {
@@ -631,6 +669,7 @@ impl Session {
         // Dispatch the SessionConfiguredEvent first and then report any errors.
         // If resuming, include converted initial messages in the payload so UIs can render them immediately.
         let initial_messages = initial_history.get_event_msgs();
+        let skill_load_outcome = skill_load_outcome_for_client(skills.as_ref());
 
         let events = std::iter::once(Event {
             id: INITIAL_SUBMIT_ID.to_owned(),
@@ -645,6 +684,7 @@ impl Session {
                 history_log_id,
                 history_entry_count,
                 initial_messages,
+                skill_load_outcome,
                 rollout_path,
             }),
         })
@@ -820,7 +860,7 @@ impl Session {
         let model_family = self
             .services
             .models_manager
-            .construct_model_family(&per_turn_config.model, &per_turn_config)
+            .construct_model_family(session_configuration.model.as_str(), &per_turn_config)
             .await;
         let mut turn_context: TurnContext = Self::make_turn_context(
             Some(Arc::clone(&self.services.auth_manager)),
@@ -914,34 +954,6 @@ impl Session {
         .await;
     }
 
-    pub(crate) async fn assess_sandbox_command(
-        &self,
-        turn_context: &TurnContext,
-        call_id: &str,
-        command: &[String],
-        failure_message: Option<&str>,
-    ) -> Option<SandboxCommandAssessment> {
-        let config = turn_context.client.config();
-        let provider = turn_context.client.provider().clone();
-        let auth_manager = Arc::clone(&self.services.auth_manager);
-        let otel = self.services.otel_event_manager.clone();
-        crate::sandboxing::assessment::assess_command(
-            config,
-            provider,
-            auth_manager,
-            &otel,
-            self.conversation_id,
-            self.services.models_manager.clone(),
-            turn_context.client.get_session_source(),
-            call_id,
-            command,
-            &turn_context.sandbox_policy,
-            &turn_context.cwd,
-            failure_message,
-        )
-        .await
-    }
-
     /// Adds an execpolicy amendment to both the in-memory and on-disk policies so future
     /// commands can use the newly approved prefix.
     pub(crate) async fn persist_execpolicy_amendment(
@@ -989,7 +1001,6 @@ impl Session {
         command: Vec<String>,
         cwd: PathBuf,
         reason: Option<String>,
-        risk: Option<SandboxCommandAssessment>,
         proposed_execpolicy_amendment: Option<ExecPolicyAmendment>,
     ) -> ReviewDecision {
         let sub_id = turn_context.sub_id.clone();
@@ -1017,7 +1028,6 @@ impl Session {
             command,
             cwd,
             reason,
-            risk,
             proposed_execpolicy_amendment,
             parsed_cmd,
         });
@@ -1514,16 +1524,6 @@ async fn submission_loop(sess: Arc<Session>, config: Arc<Config>, rx_sub: Receiv
     let mut previous_context: Option<Arc<TurnContext>> =
         Some(sess.new_turn(SessionSettingsUpdate::default()).await);
 
-    if config.features.enabled(Feature::RemoteModels)
-        && let Err(err) = sess
-            .services
-            .models_manager
-            .refresh_available_models(&config.model_provider)
-            .await
-    {
-        error!("failed to refresh available models: {err}");
-    }
-
     // To break out of this loop, send Op::Shutdown.
     while let Ok(sub) = rx_sub.recv().await {
         debug!(?sub, "Submission");
@@ -1999,7 +1999,7 @@ async fn spawn_review_thread(
 
     // Build per‑turn client with the requested model/family.
     let mut per_turn_config = (*config).clone();
-    per_turn_config.model = model.clone();
+    per_turn_config.model = Some(model.clone());
     if config.model_provider_id == "antigravity" {
         per_turn_config.model_reasoning_effort = config.model_reasoning_effort;
     } else {
@@ -2012,7 +2012,7 @@ async fn spawn_review_thread(
         .client
         .get_otel_event_manager()
         .with_model(
-            per_turn_config.model.as_str(),
+            config.review_model.as_str(),
             review_model_family.slug.as_str(),
         );
 
@@ -2068,6 +2068,30 @@ async fn spawn_review_thread(
         .await;
 }
 
+fn skill_load_outcome_for_client(
+    outcome: Option<&SkillLoadOutcome>,
+) -> Option<SkillLoadOutcomeInfo> {
+    outcome.map(|outcome| SkillLoadOutcomeInfo {
+        skills: outcome
+            .skills
+            .iter()
+            .map(|skill| SkillInfo {
+                name: skill.name.clone(),
+                description: skill.description.clone(),
+                path: skill.path.clone(),
+            })
+            .collect(),
+        errors: outcome
+            .errors
+            .iter()
+            .map(|err| SkillErrorInfo {
+                path: err.path.clone(),
+                message: err.message.clone(),
+            })
+            .collect(),
+    })
+}
+
 /// Takes a user message as input and runs a loop where, at each turn, the model
 /// replies with either:
 ///
@@ -2096,10 +2120,25 @@ pub(crate) async fn run_task(
     });
     sess.send_event(&turn_context, event).await;
 
+    let SkillInjections {
+        items: skill_items,
+        warnings: skill_warnings,
+    } = build_skill_injections(&input, sess.services.skills.as_ref()).await;
+
+    for message in skill_warnings {
+        sess.send_event(&turn_context, EventMsg::Warning(WarningEvent { message }))
+            .await;
+    }
+
     let initial_input_for_turn: ResponseInputItem = ResponseInputItem::from(input);
     let response_item: ResponseItem = initial_input_for_turn.clone().into();
     sess.record_response_item_and_emit_turn_item(turn_context.as_ref(), response_item)
         .await;
+
+    if !skill_items.is_empty() {
+        sess.record_conversation_items(&turn_context, &skill_items)
+            .await;
+    }
 
     sess.maybe_start_ghost_snapshot(Arc::clone(&turn_context), cancellation_token.child_token())
         .await;
@@ -2559,6 +2598,7 @@ mod tests {
     use crate::tools::ToolRouter;
     use crate::tools::context::ToolInvocation;
 
+    use crate::tools::context::ToolOutput;
     use crate::tools::context::ToolPayload;
     use crate::tools::handlers::ShellCommandHandler;
     use crate::tools::handlers::UnifiedExecHandler;
@@ -2631,9 +2671,10 @@ mod tests {
         )
         .expect("load default test config");
         let config = Arc::new(config);
+        let model = ModelsManager::get_model_offline(config.model.as_deref());
         let session_configuration = SessionConfiguration {
             provider: config.model_provider.clone(),
-            model: config.model.clone(),
+            model,
             model_reasoning_effort: config.model_reasoning_effort,
             model_reasoning_summary: config.model_reasoning_summary,
             developer_instructions: config.developer_instructions.clone(),
@@ -2702,9 +2743,10 @@ mod tests {
         )
         .expect("load default test config");
         let config = Arc::new(config);
+        let model = ModelsManager::get_model_offline(config.model.as_deref());
         let session_configuration = SessionConfiguration {
             provider: config.model_provider.clone(),
-            model: config.model.clone(),
+            model,
             model_reasoning_effort: config.model_reasoning_effort,
             model_reasoning_summary: config.model_reasoning_summary,
             developer_instructions: config.developer_instructions.clone(),
@@ -2879,7 +2921,7 @@ mod tests {
     ) -> OtelEventManager {
         OtelEventManager::new(
             conversation_id,
-            config.model.as_str(),
+            ModelsManager::get_model_offline(config.model.as_deref()).as_str(),
             model_family.slug.as_str(),
             None,
             Some("test@test.com".to_string()),
@@ -2903,9 +2945,10 @@ mod tests {
         let auth_manager =
             AuthManager::from_auth_for_testing(CodexAuth::from_api_key("Test API Key"));
         let models_manager = Arc::new(ModelsManager::new(auth_manager.clone()));
+        let model = ModelsManager::get_model_offline(config.model.as_deref());
         let session_configuration = SessionConfiguration {
             provider: config.model_provider.clone(),
-            model: config.model.clone(),
+            model,
             model_reasoning_effort: config.model_reasoning_effort,
             model_reasoning_summary: config.model_reasoning_summary,
             developer_instructions: config.developer_instructions.clone(),
@@ -2920,8 +2963,10 @@ mod tests {
             session_source: SessionSource::Exec,
         };
         let per_turn_config = Session::build_per_turn_config(&session_configuration);
-        let model_family =
-            ModelsManager::construct_model_family_offline(&per_turn_config.model, &per_turn_config);
+        let model_family = ModelsManager::construct_model_family_offline(
+            session_configuration.model.as_str(),
+            &per_turn_config,
+        );
         let otel_event_manager =
             otel_event_manager(conversation_id, config.as_ref(), &model_family);
 
@@ -2941,6 +2986,7 @@ mod tests {
             tool_approvals: Mutex::new(ApprovalStore::default()),
             subagent_sessions: Mutex::new(std::collections::HashMap::new()),
             delegation_registry: crate::delegation::DelegationRegistry::new(),
+            skills: None,
         };
 
         let turn_context = Session::make_turn_context(
@@ -2987,9 +3033,10 @@ mod tests {
         let auth_manager =
             AuthManager::from_auth_for_testing(CodexAuth::from_api_key("Test API Key"));
         let models_manager = Arc::new(ModelsManager::new(auth_manager.clone()));
+        let model = ModelsManager::get_model_offline(config.model.as_deref());
         let session_configuration = SessionConfiguration {
             provider: config.model_provider.clone(),
-            model: config.model.clone(),
+            model,
             model_reasoning_effort: config.model_reasoning_effort,
             model_reasoning_summary: config.model_reasoning_summary,
             developer_instructions: config.developer_instructions.clone(),
@@ -3004,8 +3051,10 @@ mod tests {
             session_source: SessionSource::Exec,
         };
         let per_turn_config = Session::build_per_turn_config(&session_configuration);
-        let model_family =
-            ModelsManager::construct_model_family_offline(&per_turn_config.model, &per_turn_config);
+        let model_family = ModelsManager::construct_model_family_offline(
+            session_configuration.model.as_str(),
+            &per_turn_config,
+        );
         let otel_event_manager =
             otel_event_manager(conversation_id, config.as_ref(), &model_family);
 
@@ -3025,6 +3074,7 @@ mod tests {
             tool_approvals: Mutex::new(ApprovalStore::default()),
             subagent_sessions: Mutex::new(std::collections::HashMap::new()),
             delegation_registry: crate::delegation::DelegationRegistry::new(),
+            skills: None,
         };
 
         let turn_context = Arc::new(Session::make_turn_context(
@@ -3378,16 +3428,20 @@ mod tests {
     #[tokio::test]
     async fn rejects_escalated_permissions_when_policy_not_on_request() {
         use crate::protocol::AskForApproval;
+        use crate::protocol::SandboxPolicy;
+        use crate::sandboxing::SandboxPermissions;
         use crate::turn_diff_tracker::TurnDiffTracker;
 
         let (session, mut turn_context_raw) = make_session_and_context();
         // Ensure policy is NOT OnRequest so the early rejection path triggers
         turn_context_raw.approval_policy = AskForApproval::OnFailure;
         let session = Arc::new(session);
-        let turn_context = Arc::new(turn_context_raw);
+        let mut turn_context = Arc::new(turn_context_raw);
 
         let timeout_ms = 1000;
         let command = "echo hi";
+        let sandbox_permissions = SandboxPermissions::RequireEscalated;
+        let justification = Some("test".to_string());
 
         let turn_diff_tracker = Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new()));
 
@@ -3407,8 +3461,8 @@ mod tests {
                         "command": command,
                         "workdir": Some(turn_context.cwd.to_string_lossy().to_string()),
                         "timeout_ms": timeout_ms,
-                        "with_escalated_permissions": true,
-                        "justification": "test",
+                        "sandbox_permissions": sandbox_permissions,
+                        "justification": justification.clone(),
                     })
                     .to_string(),
                 },
@@ -3425,11 +3479,46 @@ mod tests {
         );
 
         pretty_assertions::assert_eq!(output, expected);
+
+        // Now retry the same command WITHOUT escalated permissions; should succeed.
+        // Force DangerFullAccess to avoid platform sandbox dependencies in tests.
+        Arc::get_mut(&mut turn_context)
+            .expect("unique turn context Arc")
+            .sandbox_policy = SandboxPolicy::DangerFullAccess;
+
+        let resp2 = handler
+            .handle(ToolInvocation {
+                session: Arc::clone(&session),
+                turn: Arc::clone(&turn_context),
+                tracker: Arc::clone(&turn_diff_tracker),
+                call_id: "test-call-2".to_string(),
+                tool_name: tool_name.to_string(),
+                payload: ToolPayload::Function {
+                    arguments: serde_json::json!({
+                        "command": command,
+                        "workdir": Some(turn_context.cwd.to_string_lossy().to_string()),
+                        "timeout_ms": timeout_ms,
+                        "sandbox_permissions": SandboxPermissions::UseDefault,
+                        "justification": justification.clone(),
+                    })
+                    .to_string(),
+                },
+            })
+            .await;
+
+        let output = match resp2.expect("expected Ok result") {
+            ToolOutput::Function { content, .. } => content,
+            _ => panic!("unexpected tool output"),
+        };
+        assert!(output.contains("Exit code: 0"));
+        assert!(output.contains("Output:"));
+        assert!(output.contains("hi"));
     }
 
     #[tokio::test]
     async fn unified_exec_rejects_escalated_permissions_when_policy_not_on_request() {
         use crate::protocol::AskForApproval;
+        use crate::sandboxing::SandboxPermissions;
         use crate::turn_diff_tracker::TurnDiffTracker;
 
         let (session, mut turn_context_raw) = make_session_and_context();
@@ -3449,7 +3538,7 @@ mod tests {
                 payload: ToolPayload::Function {
                     arguments: serde_json::json!({
                         "cmd": "echo hi",
-                        "with_escalated_permissions": true,
+                        "sandbox_permissions": SandboxPermissions::RequireEscalated,
                         "justification": "need unsandboxed execution",
                     })
                     .to_string(),

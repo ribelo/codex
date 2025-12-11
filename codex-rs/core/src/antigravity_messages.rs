@@ -15,7 +15,6 @@ use crate::client_common::Prompt;
 use crate::client_common::ResponseEvent;
 use crate::client_common::ResponseStream;
 use crate::config::Config;
-use crate::default_client::CodexHttpClient;
 use crate::error::CodexErr;
 use crate::error::ConnectionFailedError;
 use crate::error::Result;
@@ -28,6 +27,7 @@ use crate::model_provider_info::GeminiProvider;
 use crate::openai_models::model_family::ModelFamily;
 use crate::util::backoff;
 use crate::util::try_parse_error_message;
+use codex_client::CodexHttpClient;
 use rand::Rng;
 
 const ANTIGRAVITY_AUTH_HINT: &str =

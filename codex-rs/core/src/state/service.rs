@@ -6,6 +6,7 @@ use crate::RolloutRecorder;
 use crate::delegation::DelegationRegistry;
 use crate::mcp_connection_manager::McpConnectionManager;
 use crate::openai_models::models_manager::ModelsManager;
+use crate::skills::SkillLoadOutcome;
 use crate::subagents::SubagentSession;
 use crate::tools::sandboxing::ApprovalStore;
 use crate::unified_exec::UnifiedExecSessionManager;
@@ -29,4 +30,5 @@ pub(crate) struct SessionServices {
     pub(crate) tool_approvals: Mutex<ApprovalStore>,
     pub(crate) subagent_sessions: Mutex<HashMap<String, SubagentSession>>,
     pub(crate) delegation_registry: DelegationRegistry,
+    pub(crate) skills: Option<SkillLoadOutcome>,
 }

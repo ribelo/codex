@@ -44,9 +44,11 @@ use codex_core::protocol::PatchApplyBeginEvent;
 use codex_core::protocol::RateLimitSnapshot;
 use codex_core::protocol::ReviewRequest;
 use codex_core::protocol::ReviewTarget;
+use codex_core::protocol::SkillLoadOutcomeInfo;
 use codex_core::protocol::StreamErrorEvent;
 use codex_core::protocol::SubagentEventPayload;
 use codex_core::protocol::TaskCompleteEvent;
+use codex_core::protocol::TerminalInteractionEvent;
 use codex_core::protocol::TokenUsage;
 use codex_core::protocol::TokenUsageInfo;
 use codex_core::protocol::TurnAbortReason;
@@ -202,8 +204,9 @@ impl RateLimitWarningState {
                 let limit_label = secondary_window_minutes
                     .map(get_limits_duration)
                     .unwrap_or_else(|| "weekly".to_string());
+                let remaining_percent = 100.0 - threshold;
                 warnings.push(format!(
-                    "Heads up, you've used over {threshold:.0}% of your {limit_label} limit. Run /status for a breakdown."
+                    "Heads up, you have less than {remaining_percent:.0}% of your {limit_label} limit left. Run /status for a breakdown."
                 ));
             }
         }
@@ -220,8 +223,9 @@ impl RateLimitWarningState {
                 let limit_label = primary_window_minutes
                     .map(get_limits_duration)
                     .unwrap_or_else(|| "5h".to_string());
+                let remaining_percent = 100.0 - threshold;
                 warnings.push(format!(
-                    "Heads up, you've used over {threshold:.0}% of your {limit_label} limit. Run /status for a breakdown."
+                    "Heads up, you have less than {remaining_percent:.0}% of your {limit_label} limit left. Run /status for a breakdown."
                 ));
             }
         }
@@ -263,7 +267,6 @@ pub(crate) struct ChatWidgetInit {
     pub(crate) auth_manager: Arc<AuthManager>,
     pub(crate) models_manager: Arc<ModelsManager>,
     pub(crate) feedback: codex_feedback::CodexFeedback,
-    pub(crate) skills: Option<Vec<SkillMetadata>>,
     pub(crate) is_first_run: bool,
     pub(crate) available_profiles: Vec<String>,
     pub(crate) model_family: ModelFamily,
@@ -416,13 +419,14 @@ impl ChatWidget {
     fn on_session_configured(&mut self, event: codex_core::protocol::SessionConfiguredEvent) {
         self.bottom_pane
             .set_history_metadata(event.history_log_id, event.history_entry_count);
+        self.set_skills_from_outcome(event.skill_load_outcome.as_ref());
         self.conversation_id = Some(event.session_id);
         self.current_rollout_path = Some(event.rollout_path.clone());
         let initial_messages = event.initial_messages.clone();
         let model_for_header = event.model.clone();
         self.session_header.set_model(&model_for_header);
         // Set model/effort/policy on bottom_pane for footer display
-        self.bottom_pane.set_model(Some(model_for_header));
+        self.bottom_pane.set_model(Some(model_for_header.clone()));
         self.bottom_pane
             .set_model_provider(Some(event.model_provider_id.clone()));
         self.bottom_pane.set_reasoning_effort(
@@ -435,6 +439,7 @@ impl ChatWidget {
             .set_sandbox_policy(self.config.sandbox_policy.clone());
         self.add_to_history(history_cell::new_session_info(
             &self.config,
+            &model_for_header,
             event,
             self.show_welcome_banner,
         ));
@@ -449,6 +454,11 @@ impl ChatWidget {
         if !self.suppress_session_configured_redraw {
             self.request_redraw();
         }
+    }
+
+    fn set_skills_from_outcome(&mut self, outcome: Option<&SkillLoadOutcomeInfo>) {
+        let skills = outcome.map(skills_from_outcome);
+        self.bottom_pane.set_skills(skills);
     }
 
     pub(crate) fn open_feedback_note(
@@ -698,7 +708,7 @@ impl ChatWidget {
 
             if high_usage
                 && !self.rate_limit_switch_prompt_hidden()
-                && self.config.model != NUDGE_MODEL_SLUG
+                && self.model_family.get_model_slug() != NUDGE_MODEL_SLUG
                 && !matches!(
                     self.rate_limit_switch_prompt,
                     RateLimitSwitchPromptState::Shown
@@ -907,6 +917,10 @@ impl ChatWidget {
         _ev: codex_core::protocol::ExecCommandOutputDeltaEvent,
     ) {
         // TODO: Handle streaming exec output if/when implemented
+    }
+
+    fn on_terminal_interaction(&mut self, _ev: TerminalInteractionEvent) {
+        // TODO: Handle once design is ready
     }
 
     fn on_patch_apply_begin(&mut self, event: PatchApplyBeginEvent) {
@@ -1150,11 +1164,7 @@ impl ChatWidget {
         }
         let (command, parsed, source) = match running {
             Some(rc) => (rc.command, rc.parsed_cmd, rc.source),
-            None => (
-                vec![ev.call_id.clone()],
-                Vec::new(),
-                ExecCommandSource::Agent,
-            ),
+            None => (ev.command.clone(), ev.parsed_cmd.clone(), ev.source),
         };
         let is_unified_exec_interaction =
             matches!(source, ExecCommandSource::UnifiedExecInteraction);
@@ -1171,7 +1181,7 @@ impl ChatWidget {
                 command,
                 parsed,
                 source,
-                None,
+                ev.interaction_input.clone(),
                 self.config.animations,
             )));
         }
@@ -1222,7 +1232,6 @@ impl ChatWidget {
             id,
             command: ev.command,
             reason: ev.reason,
-            risk: ev.risk,
             proposed_execpolicy_amendment: ev.proposed_execpolicy_amendment,
         };
         self.bottom_pane
@@ -1390,11 +1399,13 @@ impl ChatWidget {
             auth_manager,
             models_manager,
             feedback,
-            skills,
             is_first_run,
             available_profiles,
             model_family,
         } = common;
+        let model_slug = model_family.get_model_slug().to_string();
+        let mut config = config;
+        config.model = Some(model_slug.clone());
         let mut rng = rand::rng();
         let placeholder = EXAMPLE_PROMPTS[rng.random_range(0..EXAMPLE_PROMPTS.len())].to_string();
         let codex_op_tx = spawn_agent(config.clone(), app_event_tx.clone(), conversation_manager);
@@ -1411,14 +1422,14 @@ impl ChatWidget {
                 placeholder_text: placeholder,
                 disable_paste_burst: config.disable_paste_burst,
                 animations_enabled: config.animations,
-                skills,
+                skills: None,
             }),
             active_cell: None,
-            config: config.clone(),
+            config,
             model_family,
             auth_manager,
             models_manager,
-            session_header: SessionHeader::new(config.model),
+            session_header: SessionHeader::new(model_slug),
             initial_user_message: create_initial_user_message(
                 initial_prompt.unwrap_or_default(),
                 initial_images,
@@ -1480,11 +1491,11 @@ impl ChatWidget {
             auth_manager,
             models_manager,
             feedback,
-            skills,
             is_first_run: _,
             available_profiles,
             model_family,
         } = common;
+        let model_slug = model_family.get_model_slug().to_string();
         let mut rng = rand::rng();
         let placeholder = EXAMPLE_PROMPTS[rng.random_range(0..EXAMPLE_PROMPTS.len())].to_string();
 
@@ -1503,16 +1514,16 @@ impl ChatWidget {
                 placeholder_text: placeholder,
                 disable_paste_burst: config.disable_paste_burst,
                 animations_enabled: config.animations,
-                skills,
+                skills: None,
             }),
             active_cell: None,
             subagent_states: HashMap::new(),
             active_subagent_cells: HashMap::new(),
-            config: config.clone(),
+            config,
             model_family,
             auth_manager,
             models_manager,
-            session_header: SessionHeader::new(config.model),
+            session_header: SessionHeader::new(model_slug),
             initial_user_message: create_initial_user_message(
                 initial_prompt.unwrap_or_default(),
                 initial_images,
@@ -1879,6 +1890,16 @@ impl ChatWidget {
             items.push(UserInput::LocalImage { path });
         }
 
+        if let Some(skills) = self.bottom_pane.skills() {
+            let skill_mentions = find_skill_mentions(&text, skills);
+            for skill in skill_mentions {
+                items.push(UserInput::Skill {
+                    name: skill.name.clone(),
+                    path: skill.path.clone(),
+                });
+            }
+        }
+
         self.codex_op_tx
             .send(Op::UserInput { items })
             .unwrap_or_else(|e| {
@@ -1935,6 +1956,7 @@ impl ChatWidget {
         match msg {
             EventMsg::AgentMessageDelta(_)
             | EventMsg::AgentReasoningDelta(_)
+            | EventMsg::TerminalInteraction(_)
             | EventMsg::ExecCommandOutputDelta(_) => {}
             _ => {
                 tracing::trace!("handle_codex_event: {:?}", msg);
@@ -1992,6 +2014,7 @@ impl ChatWidget {
                 self.on_elicitation_request(ev);
             }
             EventMsg::ExecCommandBegin(ev) => self.on_exec_command_begin(ev),
+            EventMsg::TerminalInteraction(delta) => self.on_terminal_interaction(delta),
             EventMsg::ExecCommandOutputDelta(delta) => self.on_exec_command_output_delta(delta),
             EventMsg::PatchApplyBegin(ev) => self.on_patch_apply_begin(ev),
             EventMsg::PatchApplyEnd(ev) => self.on_patch_apply_end(ev),
@@ -2387,6 +2410,7 @@ impl ChatWidget {
             self.rate_limit_snapshot.as_ref(),
             self.plan_type,
             Local::now(),
+            self.model_family.get_model_slug(),
         ));
     }
     fn stop_rate_limit_poller(&mut self) {
@@ -2529,7 +2553,7 @@ impl ChatWidget {
     /// Open a popup to choose a quick auto model. Selecting "All models"
     /// opens the full picker with every available preset.
     pub(crate) fn open_model_popup(&mut self) {
-        let current_model = self.config.model.clone();
+        let current_model = self.model_family.get_model_slug().to_string();
         let presets: Vec<ModelPreset> =
             // todo(aibrahim): make this async function
             match self.models_manager.try_list_models() {
@@ -2572,9 +2596,10 @@ impl ChatWidget {
                     Some(preset.default_reasoning_effort),
                 );
                 SelectionItem {
-                    name: preset.display_name,
+                    name: preset.display_name.clone(),
                     description,
                     is_current: model == current_model,
+                    is_default: preset.is_default,
                     actions,
                     dismiss_on_select: true,
                     ..Default::default()
@@ -2636,7 +2661,7 @@ impl ChatWidget {
             return;
         }
 
-        let current_model = self.config.model.clone();
+        let current_model = self.model_family.get_model_slug().to_string();
         let mut items: Vec<SelectionItem> = Vec::new();
         for preset in presets.into_iter() {
             let description =
@@ -2651,9 +2676,10 @@ impl ChatWidget {
                 });
             })];
             items.push(SelectionItem {
-                name: preset.display_name.to_string(),
+                name: preset.display_name.clone(),
                 description,
                 is_current,
+                is_default: preset.is_default,
                 actions,
                 dismiss_on_select: single_supported_effort,
                 ..Default::default()
@@ -2712,7 +2738,6 @@ impl ChatWidget {
             ..Default::default()
         });
     }
-
     fn model_selection_actions(
         model_for_action: String,
         effort_for_action: Option<ReasoningEffortConfig>,
@@ -2806,7 +2831,7 @@ impl ChatWidget {
             .or(Some(default_effort));
 
         let model_slug = preset.model.to_string();
-        let is_current_model = self.config.model == preset.model;
+        let is_current_model = self.model_family.get_model_slug() == preset.model;
         let highlight_choice = if is_current_model {
             self.config.model_reasoning_effort
         } else {
@@ -3366,8 +3391,9 @@ impl ChatWidget {
     /// Set the model in the widget's config copy.
     pub(crate) fn set_model(&mut self, model: &str, model_family: ModelFamily) {
         self.session_header.set_model(model);
-        self.config.model = model.to_string();
-        self.bottom_pane.set_model(Some(model.to_string()));
+        let model = model.to_string();
+        self.config.model = Some(model.clone());
+        self.bottom_pane.set_model(Some(model));
         self.model_family = model_family;
     }
 
@@ -3880,6 +3906,34 @@ pub(crate) fn show_review_commit_picker_with_entries(
         search_placeholder: Some("Type to search commits".to_string()),
         ..Default::default()
     });
+}
+
+fn skills_from_outcome(outcome: &SkillLoadOutcomeInfo) -> Vec<SkillMetadata> {
+    outcome
+        .skills
+        .iter()
+        .map(|skill| SkillMetadata {
+            name: skill.name.clone(),
+            description: skill.description.clone(),
+            path: skill.path.clone(),
+        })
+        .collect()
+}
+
+fn find_skill_mentions(text: &str, skills: &[SkillMetadata]) -> Vec<SkillMetadata> {
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut matches: Vec<SkillMetadata> = Vec::new();
+    for skill in skills {
+        if seen.contains(&skill.name) {
+            continue;
+        }
+        let needle = format!("${}", skill.name);
+        if text.contains(&needle) {
+            seen.insert(skill.name.clone());
+            matches.push(skill.clone());
+        }
+    }
+    matches
 }
 
 #[cfg(test)]
