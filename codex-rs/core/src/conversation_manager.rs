@@ -24,6 +24,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+use crate::mcp_connection_manager::McpConnectionManager;
+
 /// Represents a newly created Codex conversation, including the first event
 /// (which is [`EventMsg::SessionConfigured`]).
 pub struct NewConversation {
@@ -39,6 +41,7 @@ pub struct ConversationManager {
     auth_manager: Arc<AuthManager>,
     models_manager: Arc<ModelsManager>,
     session_source: SessionSource,
+    mcp_connection_manager: Arc<RwLock<McpConnectionManager>>,
 }
 
 impl ConversationManager {
@@ -48,6 +51,7 @@ impl ConversationManager {
             auth_manager: auth_manager.clone(),
             session_source,
             models_manager: Arc::new(ModelsManager::new(auth_manager)),
+            mcp_connection_manager: Arc::new(RwLock::new(McpConnectionManager::default())),
         }
     }
 
@@ -89,6 +93,7 @@ impl ConversationManager {
             models_manager,
             InitialHistory::New,
             self.session_source.clone(),
+            Some(self.mcp_connection_manager.clone()),
         )
         .await?;
         self.finalize_spawn(codex, conversation_id).await
@@ -166,6 +171,7 @@ impl ConversationManager {
             self.models_manager.clone(),
             initial_history,
             self.session_source.clone(),
+            Some(self.mcp_connection_manager.clone()),
         )
         .await?;
         self.finalize_spawn(codex, conversation_id).await
@@ -207,6 +213,7 @@ impl ConversationManager {
             self.models_manager.clone(),
             history,
             self.session_source.clone(),
+            Some(self.mcp_connection_manager.clone()),
         )
         .await?;
 

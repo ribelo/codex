@@ -1,4 +1,5 @@
 use super::*;
+mod subagent_tests;
 use crate::app_event::AppEvent;
 use crate::app_event_sender::AppEventSender;
 use crate::test_backend::VT100Backend;

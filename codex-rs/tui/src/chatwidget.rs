@@ -791,6 +791,16 @@ impl ChatWidget {
                     format!("Booting MCP server: {first}")
                 };
                 self.set_status_header(header);
+            } else if self.current_status_header.starts_with("Starting MCP")
+                || self.current_status_header.starts_with("Booting MCP")
+            {
+                self.set_status_header(String::new());
+                if self.running_commands.is_empty()
+                    && self.stream_controller.is_none()
+                    && self.reasoning_stream_controller.is_none()
+                {
+                    self.bottom_pane.set_task_running(false);
+                }
             }
         }
         self.request_redraw();
@@ -2086,14 +2096,19 @@ impl ChatWidget {
             parent_call_id,
             subagent_type,
             task_description,
+            delegation_id,
+            parent_delegation_id,
+            depth,
             inner,
         } = payload;
 
         // Get or create the shared state for this subagent task
+        let mut is_new = false;
         let state = self
             .subagent_states
             .entry(parent_call_id.clone())
             .or_insert_with(|| {
+                is_new = true;
                 Arc::new(std::sync::Mutex::new(history_cell::SubagentState {
                     activities: Vec::new(),
                     status: history_cell::SubagentTaskStatus::Running,
@@ -2102,16 +2117,61 @@ impl ChatWidget {
             .clone();
 
         // Create a new cell if we don't have one for this call_id yet
-        if !self.active_subagent_cells.contains_key(&parent_call_id) {
+        if is_new {
             let cell = history_cell::new_subagent_task_cell(
                 parent_call_id.clone(),
                 subagent_type,
                 task_description,
+                delegation_id.clone(),
+                parent_delegation_id.clone(),
+                depth.unwrap_or(0),
                 state.clone(),
                 self.config.animations,
             );
-            self.active_subagent_cells
-                .insert(parent_call_id.clone(), cell);
+
+            let mut added_to_parent = false;
+            let mut cell_opt = Some(cell);
+
+            if let Some(pid) = &parent_delegation_id {
+                for root in self.active_subagent_cells.values_mut() {
+                    if let Some(parent) = root.find_child_mut(pid)
+                        && let Some(c) = cell_opt.take()
+                    {
+                        parent.add_child(c);
+                        added_to_parent = true;
+                        break;
+                    }
+                }
+            }
+
+            if !added_to_parent && let Some(c) = cell_opt.take() {
+                self.active_subagent_cells.insert(parent_call_id.clone(), c);
+
+                // Check if there are any orphan cells that should be children of this new cell.
+                // This handles the case where child events arrive before their parent.
+                if let Some(new_cell_delegation_id) = &delegation_id {
+                    let orphan_keys: Vec<String> = self
+                        .active_subagent_cells
+                        .iter()
+                        .filter(|(key, cell)| {
+                            *key != &parent_call_id
+                                && cell.parent_delegation_id()
+                                    == Some(new_cell_delegation_id.as_str())
+                        })
+                        .map(|(key, _)| key.clone())
+                        .collect();
+
+                    for orphan_key in orphan_keys {
+                        if let Some(orphan) = self.active_subagent_cells.remove(&orphan_key) {
+                            if let Some(new_parent) =
+                                self.active_subagent_cells.get_mut(&parent_call_id)
+                            {
+                                new_parent.add_child(orphan);
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         // Update the shared state with the inner event
@@ -3581,6 +3641,20 @@ impl ChatWidget {
         self.current_rollout_path.clone()
     }
 
+    /// Returns the active subagent cells as HistoryCell trait objects.
+    /// Used to include running subagent tasks in the transcript overlay.
+    pub(crate) fn active_subagent_cells_as_history(&self) -> Vec<Arc<dyn HistoryCell>> {
+        let mut sorted: Vec<_> = self.active_subagent_cells.values().collect();
+        sorted.sort_by_key(|cell| cell.start_time());
+        sorted
+            .into_iter()
+            .map(|cell| {
+                // Clone the cell and wrap in Arc
+                Arc::new(cell.clone()) as Arc<dyn HistoryCell>
+            })
+            .collect()
+    }
+
     /// Return a reference to the widget's current config (includes any
     /// runtime overrides applied via TUI, e.g., model or approval policy).
     pub(crate) fn config_ref(&self) -> &Config {
@@ -3596,7 +3670,10 @@ impl ChatWidget {
 
         // Render each active subagent cell (these are dynamically updated)
         // Use flex=0 so each cell takes only as much space as it needs
-        for cell in self.active_subagent_cells.values() {
+        let mut sorted_cells: Vec<_> = self.active_subagent_cells.values().collect();
+        sorted_cells.sort_by_key(|cell| cell.start_time());
+
+        for cell in sorted_cells {
             let lines = cell.display_lines(u16::MAX);
             if !lines.is_empty() {
                 let history_cell: Box<dyn HistoryCell> = Box::new(PlainHistoryCell::new(lines));

@@ -1131,7 +1131,7 @@ pub(crate) struct SubagentState {
 
 /// History cell for displaying a subagent task container.
 /// Groups all events from a delegated task under a single collapsible UI element.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct SubagentTaskCell {
     /// The tool_call_id of the parent "task" tool invocation.
     parent_call_id: String,
@@ -1139,19 +1139,32 @@ pub(crate) struct SubagentTaskCell {
     subagent_type: String,
     /// Description of the task being delegated.
     task_description: String,
+    /// Unique identifier for this delegation.
+    delegation_id: Option<String>,
+    /// Parent delegation ID if this is a nested delegation.
+    #[allow(dead_code)]
+    parent_delegation_id: Option<String>,
+    /// Nesting depth (0 = top-level, 1 = first nested, etc.)
+    depth: i32,
     /// Shared state so updates are reflected even if the cell is in history.
     state: Arc<Mutex<SubagentState>>,
     /// When the task started.
     start_time: Instant,
     /// Whether animations are enabled.
     animations_enabled: bool,
+    /// Child tasks spawned by this task.
+    children: Vec<SubagentTaskCell>,
 }
 
 impl SubagentTaskCell {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         parent_call_id: String,
         subagent_type: String,
         task_description: String,
+        delegation_id: Option<String>,
+        parent_delegation_id: Option<String>,
+        depth: i32,
         state: Arc<Mutex<SubagentState>>,
         animations_enabled: bool,
     ) -> Self {
@@ -1159,15 +1172,55 @@ impl SubagentTaskCell {
             parent_call_id,
             subagent_type,
             task_description,
+            delegation_id,
+            parent_delegation_id,
+            depth,
             state,
             start_time: Instant::now(),
             animations_enabled,
+            children: Vec::new(),
         }
+    }
+
+    pub(crate) fn add_child(&mut self, child: SubagentTaskCell) {
+        self.children.push(child);
+    }
+
+    pub(crate) fn find_child_mut(&mut self, delegation_id: &str) -> Option<&mut SubagentTaskCell> {
+        if let Some(id) = &self.delegation_id
+            && id == delegation_id
+        {
+            return Some(self);
+        }
+        for child in &mut self.children {
+            if let Some(found) = child.find_child_mut(delegation_id) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    pub(crate) fn start_time(&self) -> Instant {
+        self.start_time
+    }
+
+    #[cfg(test)]
+    pub(crate) fn children(&self) -> &[SubagentTaskCell] {
+        &self.children
     }
 
     #[allow(dead_code)]
     pub(crate) fn parent_call_id(&self) -> &str {
         &self.parent_call_id
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn delegation_id(&self) -> Option<&str> {
+        self.delegation_id.as_deref()
+    }
+
+    pub(crate) fn parent_delegation_id(&self) -> Option<&str> {
+        self.parent_delegation_id.as_deref()
     }
 
     #[allow(dead_code)]
@@ -1202,6 +1255,13 @@ impl HistoryCell for SubagentTaskCell {
     fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
         let mut lines: Vec<Line<'static>> = Vec::new();
 
+        // Calculate indentation based on depth
+        let indent_size = (self.depth * 2) as usize;
+        let base_indent = " ".repeat(indent_size);
+
+        // Tree connector: use └ for nested items, otherwise empty
+        let tree_connector = if self.depth > 0 { "└ " } else { "" };
+
         // Lock the state to read status and activities
         let (status, activities) = if let Ok(state) = self.state.lock() {
             (state.status, state.activities.clone())
@@ -1221,6 +1281,8 @@ impl HistoryCell for SubagentTaskCell {
         };
 
         let header = Line::from(vec![
+            base_indent.clone().into(),
+            tree_connector.dim(),
             bullet,
             " ".into(),
             header_action.bold(),
@@ -1229,13 +1291,16 @@ impl HistoryCell for SubagentTaskCell {
         ]);
         lines.push(header);
 
-        let wrap_width = (width as usize).saturating_sub(4).max(1);
+        // Adjust wrap width to account for indentation
+        let wrap_width = (width as usize).saturating_sub(4 + indent_size).max(1);
+
         let desc_wrapped = textwrap::wrap(&self.task_description, wrap_width);
         for (idx, segment) in desc_wrapped.iter().enumerate() {
+            let nested_indent = format!("{base_indent}  ");
             let prefix: Span<'static> = if idx == 0 {
-                "  └ ".dim()
+                format!("{nested_indent}└ ").dim()
             } else {
-                "    ".into()
+                format!("{nested_indent}  ").into()
             };
             lines.push(Line::from(vec![prefix, segment.to_string().dim()]));
         }
@@ -1249,9 +1314,11 @@ impl HistoryCell for SubagentTaskCell {
                 &activities
             };
 
+            let activity_indent = format!("{base_indent}    ");
+
             if skip_count > 0 {
                 lines.push(Line::from(vec![
-                    "    ".into(),
+                    activity_indent.clone().into(),
                     format!("... +{skip_count} more").dim().italic(),
                 ]));
             }
@@ -1263,7 +1330,7 @@ impl HistoryCell for SubagentTaskCell {
                     None => "·".dim(),
                 };
                 let activity_line = Line::from(vec![
-                    "    ".into(),
+                    activity_indent.clone().into(),
                     status_indicator,
                     " ".into(),
                     truncate_text(&activity.summary, wrap_width.saturating_sub(6)).dim(),
@@ -1272,14 +1339,22 @@ impl HistoryCell for SubagentTaskCell {
             }
         }
 
+        for child in &self.children {
+            lines.extend(child.display_lines(width));
+        }
+
         lines
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn new_subagent_task_cell(
     parent_call_id: String,
     subagent_type: String,
     task_description: String,
+    delegation_id: Option<String>,
+    parent_delegation_id: Option<String>,
+    depth: i32,
     state: Arc<Mutex<SubagentState>>,
     animations_enabled: bool,
 ) -> SubagentTaskCell {
@@ -1287,6 +1362,9 @@ pub(crate) fn new_subagent_task_cell(
         parent_call_id,
         subagent_type,
         task_description,
+        delegation_id,
+        parent_delegation_id,
+        depth,
         state,
         animations_enabled,
     )
@@ -2718,5 +2796,90 @@ mod tests {
                 "Use flag `bar` instead.".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn subagent_task_cell_root_level_rendering() {
+        let state = Arc::new(Mutex::new(SubagentState {
+            activities: vec![],
+            status: SubagentTaskStatus::Completed,
+        }));
+
+        let cell = new_subagent_task_cell(
+            "call-1".to_string(),
+            "explorer".to_string(),
+            "Find all test files".to_string(),
+            Some("delegation-1".to_string()),
+            None,
+            0,
+            state,
+            false,
+        );
+
+        let lines = cell.display_lines(80);
+        let rendered = render_lines(&lines);
+
+        insta::assert_snapshot!(rendered.join("\n"), @r###"
+        • Delegated to @explorer
+          └ Find all test files
+        "###);
+    }
+
+    #[test]
+    fn subagent_task_cell_nested_level_rendering() {
+        let state = Arc::new(Mutex::new(SubagentState {
+            activities: vec![],
+            status: SubagentTaskStatus::Completed,
+        }));
+
+        let cell = new_subagent_task_cell(
+            "call-2".to_string(),
+            "explorer".to_string(),
+            "Search for API endpoints".to_string(),
+            Some("delegation-2".to_string()),
+            Some("delegation-1".to_string()),
+            1,
+            state,
+            false,
+        );
+
+        let lines = cell.display_lines(80);
+        let rendered = render_lines(&lines);
+
+        insta::assert_snapshot!(rendered.join("\n"), @r"
+        └ • Delegated to @explorer
+          └ Search for API endpoints
+        ");
+    }
+
+    #[test]
+    fn subagent_task_cell_deeply_nested_rendering() {
+        let state = Arc::new(Mutex::new(SubagentState {
+            activities: vec![SubagentActivityItem {
+                summary: "Run ls -la".to_string(),
+                success: Some(true),
+            }],
+            status: SubagentTaskStatus::Completed,
+        }));
+
+        let cell = new_subagent_task_cell(
+            "call-3".to_string(),
+            "explorer".to_string(),
+            "List directory contents".to_string(),
+            Some("delegation-3".to_string()),
+            Some("delegation-2".to_string()),
+            2,
+            state,
+            false,
+        );
+
+        let lines = cell.display_lines(80);
+        let rendered = render_lines(&lines);
+
+        insta::assert_snapshot!(rendered.join("\n"), @r"
+        └ • Delegated to @explorer
+          └ List directory contents
+            ✓ Run ls -la
+        ");
     }
 }

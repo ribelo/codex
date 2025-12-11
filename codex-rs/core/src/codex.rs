@@ -170,6 +170,7 @@ impl Codex {
         models_manager: Arc<ModelsManager>,
         conversation_history: InitialHistory,
         session_source: SessionSource,
+        mcp_connection_manager: Option<Arc<RwLock<McpConnectionManager>>>,
     ) -> CodexResult<CodexSpawnOk> {
         let (tx_sub, rx_sub) = async_channel::bounded(SUBMISSION_CHANNEL_CAPACITY);
         let (tx_event, rx_event) = async_channel::unbounded();
@@ -210,6 +211,7 @@ impl Codex {
             tx_event.clone(),
             conversation_history,
             session_source_clone,
+            mcp_connection_manager,
         )
         .await
         .map_err(|e| {
@@ -488,6 +490,7 @@ impl Session {
         tx_event: Sender<Event>,
         initial_history: InitialHistory,
         session_source: SessionSource,
+        mcp_connection_manager: Option<Arc<RwLock<McpConnectionManager>>>,
     ) -> anyhow::Result<Arc<Self>> {
         debug!(
             "Configuring session: model={}; provider={:?}",
@@ -596,8 +599,11 @@ impl Session {
         }
         let state = SessionState::new(session_configuration.clone());
 
+        let mcp_connection_manager = mcp_connection_manager
+            .unwrap_or_else(|| Arc::new(RwLock::new(McpConnectionManager::default())));
+
         let services = SessionServices {
-            mcp_connection_manager: Arc::new(RwLock::new(McpConnectionManager::default())),
+            mcp_connection_manager,
             mcp_startup_cancellation_token: CancellationToken::new(),
             unified_exec_manager: UnifiedExecSessionManager::default(),
             notifier: UserNotifier::new(config.notify.clone()),
@@ -609,6 +615,7 @@ impl Session {
             models_manager: Arc::clone(&models_manager),
             tool_approvals: Mutex::new(ApprovalStore::default()),
             subagent_sessions: Mutex::new(std::collections::HashMap::new()),
+            delegation_registry: crate::delegation::DelegationRegistry::new(),
         };
 
         let sess = Arc::new(Session {
@@ -645,18 +652,35 @@ impl Session {
         for event in events {
             sess.send_event_raw(event).await;
         }
-        sess.services
-            .mcp_connection_manager
-            .write()
-            .await
-            .initialize(
-                config.mcp_servers.clone(),
-                config.mcp_oauth_credentials_store_mode,
-                auth_statuses.clone(),
-                tx_event.clone(),
-                sess.services.mcp_startup_cancellation_token.clone(),
-            )
-            .await;
+        // Initialize MCP connections.
+        //
+        // For main sessions we block on initialization so MCP tools are ready
+        // before the first turn. For subagent sessions we kick off
+        // initialization in the background to avoid adding latency to task
+        // delegation; most subagents do not depend on MCP.
+        match session_configuration.session_source {
+            SessionSource::SubAgent(_) => {
+                // Subagents share the connection manager from the parent session.
+                // We assume it's already configured/started by the parent.
+            }
+            _ => {
+                let mut manager = sess.services.mcp_connection_manager.write().await;
+                manager.configure(
+                    config.mcp_servers.clone(),
+                    config.mcp_oauth_credentials_store_mode,
+                    auth_statuses.clone(),
+                    tx_event.clone(),
+                    sess.services.mcp_startup_cancellation_token.clone(),
+                );
+
+                // Trigger startup for enabled servers
+                for (name, cfg) in &config.mcp_servers {
+                    if cfg.enabled {
+                        manager.ensure_started(name).await;
+                    }
+                }
+            }
+        }
 
         let sandbox_state = SandboxState {
             sandbox_policy: session_configuration.sandbox_policy.clone(),
@@ -2916,6 +2940,7 @@ mod tests {
             models_manager,
             tool_approvals: Mutex::new(ApprovalStore::default()),
             subagent_sessions: Mutex::new(std::collections::HashMap::new()),
+            delegation_registry: crate::delegation::DelegationRegistry::new(),
         };
 
         let turn_context = Session::make_turn_context(
@@ -2999,6 +3024,7 @@ mod tests {
             models_manager,
             tool_approvals: Mutex::new(ApprovalStore::default()),
             subagent_sessions: Mutex::new(std::collections::HashMap::new()),
+            delegation_registry: crate::delegation::DelegationRegistry::new(),
         };
 
         let turn_context = Arc::new(Session::make_turn_context(
