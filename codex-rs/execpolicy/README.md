@@ -6,7 +6,6 @@
 - Tokens are matched in order; any `pattern` element may be a list to denote alternatives. `decision` defaults to `allow`; valid values: `allow`, `prompt`, `forbidden`.
 - `match` / `not_match` supply example invocations that are validated at load time (think of them as unit tests); examples can be token arrays or strings (strings are tokenized with `shlex`).
 - The CLI always prints the JSON serialization of the evaluation result.
-- The legacy rule matcher lives in `codex-execpolicy-legacy`.
 
 ## Policy shapes
 - Prefix rules use Starlark syntax:

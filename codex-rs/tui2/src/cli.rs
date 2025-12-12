@@ -36,16 +36,6 @@ pub struct Cli {
     #[arg(long, short = 'm')]
     pub model: Option<String>,
 
-    /// Convenience flag to select the local open source model provider. Equivalent to -c
-    /// model_provider=oss; verifies a local LM Studio or Ollama server is running.
-    #[arg(long = "oss", default_value_t = false)]
-    pub oss: bool,
-
-    /// Specify which local provider to use (lmstudio or ollama).
-    /// If not specified with --oss, will use config default or show selection.
-    #[arg(long = "local-provider")]
-    pub oss_provider: Option<String>,
-
     /// Configuration profile from config.toml to specify default options.
     #[arg(long = "profile", short = 'p')]
     pub config_profile: Option<String>,
@@ -99,8 +89,6 @@ impl From<codex_tui::Cli> for Cli {
             resume_session_id: cli.resume_session_id,
             resume_show_all: cli.resume_show_all,
             model: cli.model,
-            oss: cli.oss,
-            oss_provider: cli.oss_provider,
             config_profile: cli.config_profile,
             sandbox_mode: cli.sandbox_mode,
             approval_policy: cli.approval_policy,

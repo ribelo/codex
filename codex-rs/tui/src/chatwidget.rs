@@ -2185,12 +2185,11 @@ impl ChatWidget {
                         .collect();
 
                     for orphan_key in orphan_keys {
-                        if let Some(orphan) = self.active_subagent_cells.remove(&orphan_key) {
-                            if let Some(new_parent) =
+                        if let Some(orphan) = self.active_subagent_cells.remove(&orphan_key)
+                            && let Some(new_parent) =
                                 self.active_subagent_cells.get_mut(&parent_call_id)
-                            {
-                                new_parent.add_child(orphan);
-                            }
+                        {
+                            new_parent.add_child(orphan);
                         }
                     }
                 }

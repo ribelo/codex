@@ -119,6 +119,7 @@ impl KeyboardHandler for AuthModeWidget {
                         AuthMode::ApiKey => {
                             self.disallow_api_login();
                         }
+                        AuthMode::Gemini | AuthMode::Antigravity => {}
                     },
                     SignInState::ChatGptSuccessMessage => {
                         *self.sign_in_state.write().unwrap() = SignInState::ChatGptSuccess;

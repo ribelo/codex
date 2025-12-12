@@ -688,30 +688,14 @@ impl ModelProviderInfo {
     }
 }
 
-pub const DEFAULT_LMSTUDIO_PORT: u16 = 1234;
-pub const DEFAULT_OLLAMA_PORT: u16 = 11434;
-
-pub const LMSTUDIO_OSS_PROVIDER_ID: &str = "lmstudio";
-pub const OLLAMA_OSS_PROVIDER_ID: &str = "ollama";
-
 /// Built-in default provider list.
 pub fn built_in_model_providers() -> HashMap<String, ModelProviderInfo> {
     use ModelProviderInfo as P;
 
-    // We do not want to be in the business of adjucating which third-party
-    // providers are bundled with Codex CLI, so we only include the OpenAI and
-    // open source ("oss") providers by default. Users are encouraged to add to
-    // `model_providers` in config.toml to add their own providers.
+    // Built-in providers: OpenAI plus major third-party APIs. Users can add
+    // additional providers via `model_providers` in config.toml.
     [
         ("openai", P::create_openai_provider()),
-        (
-            OLLAMA_OSS_PROVIDER_ID,
-            create_oss_provider(DEFAULT_OLLAMA_PORT, WireApi::Chat),
-        ),
-        (
-            LMSTUDIO_OSS_PROVIDER_ID,
-            create_oss_provider(DEFAULT_LMSTUDIO_PORT, WireApi::Responses),
-        ),
         (
             "anthropic",
             P {
@@ -766,64 +750,20 @@ pub fn built_in_model_providers() -> HashMap<String, ModelProviderInfo> {
     .collect()
 }
 
-pub fn create_oss_provider(default_provider_port: u16, wire_api: WireApi) -> ModelProviderInfo {
-    // These CODEX_OSS_ environment variables are experimental: we may
-    // switch to reading values from config.toml instead.
-    let codex_oss_base_url = match std::env::var("CODEX_OSS_BASE_URL")
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-    {
-        Some(url) => url,
-        None => format!(
-            "http://localhost:{port}/v1",
-            port = std::env::var("CODEX_OSS_PORT")
-                .ok()
-                .filter(|v| !v.trim().is_empty())
-                .and_then(|v| v.parse::<u16>().ok())
-                .unwrap_or(default_provider_port)
-        ),
-    };
-    create_oss_provider_with_base_url(&codex_oss_base_url, wire_api)
-}
-
-pub fn create_oss_provider_with_base_url(base_url: &str, wire_api: WireApi) -> ModelProviderInfo {
-    ModelProviderInfo {
-        name: "gpt-oss".into(),
-        base_url: Some(base_url.into()),
-        env_key: None,
-        env_key_instructions: None,
-        experimental_bearer_token: None,
-        wire_api,
-        provider_kind: ProviderKind::OpenAi,
-        query_params: None,
-        http_headers: None,
-        env_http_headers: None,
-        request_max_retries: None,
-        stream_max_retries: None,
-        stream_idle_timeout_ms: None,
-        requires_openai_auth: false,
-        api_key_env_var: None,
-        version: None,
-        beta: None,
-        project_id: None,
-        use_bearer_auth: false,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
 
     #[test]
-    fn test_deserialize_ollama_model_provider_toml() {
-        let azure_provider_toml = r#"
-name = "Ollama"
-base_url = "http://localhost:11434/v1"
+    fn test_deserialize_custom_model_provider_toml() {
+        let custom_provider_toml = r#"
+name = "CustomProvider"
+base_url = "http://localhost:8080/v1"
         "#;
         let expected_provider = ModelProviderInfo {
-            name: "Ollama".into(),
-            base_url: Some("http://localhost:11434/v1".into()),
+            name: "CustomProvider".into(),
+            base_url: Some("http://localhost:8080/v1".into()),
             env_key: None,
             env_key_instructions: None,
             experimental_bearer_token: None,
@@ -843,7 +783,7 @@ base_url = "http://localhost:11434/v1"
             use_bearer_auth: false,
         };
 
-        let provider: ModelProviderInfo = toml::from_str(azure_provider_toml).unwrap();
+        let provider: ModelProviderInfo = toml::from_str(custom_provider_toml).unwrap();
         assert_eq!(expected_provider, provider);
     }
 

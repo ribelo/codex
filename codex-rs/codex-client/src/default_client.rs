@@ -38,8 +38,27 @@ impl CodexHttpClient {
     where
         U: IntoUrl,
     {
-        let url_str = url.as_str().to_string();
-        CodexRequestBuilder::new(self.inner.request(method.clone(), url), method, url_str)
+        // Convert to Url first to get the string representation, then pass to reqwest
+        let url_result = url.into_url();
+        match url_result {
+            Ok(parsed_url) => {
+                let url_str = parsed_url.to_string();
+                CodexRequestBuilder::new(
+                    self.inner.request(method.clone(), parsed_url),
+                    method,
+                    url_str,
+                )
+            }
+            Err(_) => {
+                // If URL parsing fails, create a builder that will fail on send
+                // We use an empty string as placeholder since the actual request will fail
+                CodexRequestBuilder::new(
+                    self.inner.request(method.clone(), "invalid://url"),
+                    method,
+                    String::new(),
+                )
+            }
+        }
     }
 }
 
