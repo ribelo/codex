@@ -14,6 +14,7 @@ use serde::Serialize;
 use serde_json::Value as JsonValue;
 use serde_json::json;
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
@@ -630,7 +631,7 @@ fn create_list_dir_tool() -> ToolSpec {
     })
 }
 
-fn create_list_mcp_resources_tool() -> ToolSpec {
+fn create_list_mcp_resources_tool(server_names: &[String]) -> ToolSpec {
     let mut properties = BTreeMap::new();
     properties.insert(
         "server".to_string(),
@@ -651,9 +652,19 @@ fn create_list_mcp_resources_tool() -> ToolSpec {
         },
     );
 
+    let description = if server_names.is_empty() {
+        "Lists resources provided by MCP servers. No MCP servers are currently available."
+            .to_string()
+    } else {
+        format!(
+            "Lists resources provided by MCP servers. Available servers: {:?}. Resources allow servers to share data that provides context to language models.",
+            server_names
+        )
+    };
+
     ToolSpec::Function(ResponsesApiTool {
         name: "list_mcp_resources".to_string(),
-        description: "Lists resources provided by MCP servers. Resources allow servers to share data that provides context to language models, such as files, database schemas, or application-specific information. Prefer resources over web search when possible.".to_string(),
+        description,
         strict: false,
         parameters: JsonSchema::Object {
             properties,
@@ -663,7 +674,7 @@ fn create_list_mcp_resources_tool() -> ToolSpec {
     })
 }
 
-fn create_list_mcp_resource_templates_tool() -> ToolSpec {
+fn create_list_mcp_resource_templates_tool(server_names: &[String]) -> ToolSpec {
     let mut properties = BTreeMap::new();
     properties.insert(
         "server".to_string(),
@@ -686,7 +697,14 @@ fn create_list_mcp_resource_templates_tool() -> ToolSpec {
 
     ToolSpec::Function(ResponsesApiTool {
         name: "list_mcp_resource_templates".to_string(),
-        description: "Lists resource templates provided by MCP servers. Parameterized resource templates allow servers to share data that takes parameters and provides context to language models, such as files, database schemas, or application-specific information. Prefer resource templates over web search when possible.".to_string(),
+        description: if server_names.is_empty() {
+            "Lists resource templates provided by MCP servers. No MCP servers are currently available.".to_string()
+        } else {
+            format!(
+                "Lists resource templates provided by MCP servers. Available servers: {:?}. Parameterized resource templates allow servers to share data that takes parameters and provides context to language models.",
+                server_names
+            )
+        },
         strict: false,
         parameters: JsonSchema::Object {
             properties,
@@ -696,7 +714,7 @@ fn create_list_mcp_resource_templates_tool() -> ToolSpec {
     })
 }
 
-fn create_read_mcp_resource_tool() -> ToolSpec {
+fn create_read_mcp_resource_tool(server_names: &[String]) -> ToolSpec {
     let mut properties = BTreeMap::new();
     properties.insert(
         "server".to_string(),
@@ -719,9 +737,14 @@ fn create_read_mcp_resource_tool() -> ToolSpec {
 
     ToolSpec::Function(ResponsesApiTool {
         name: "read_mcp_resource".to_string(),
-        description:
-            "Read a specific resource from an MCP server given the server name and resource URI."
-                .to_string(),
+        description: if server_names.is_empty() {
+            "Read a specific resource from an MCP server. No MCP servers are currently available. For local file access, use shell_command.".to_string()
+        } else {
+            format!(
+                "Read a specific resource from an MCP server given the server name and resource URI. Available servers: {:?}. For local file access, use shell_command instead.",
+                server_names
+            )
+        },
         strict: false,
         parameters: JsonSchema::Object {
             properties,
@@ -956,6 +979,22 @@ pub(crate) fn build_specs(
 
     let mut builder = ToolRegistryBuilder::new();
 
+    // Extract unique MCP server names from qualified tool names (format: mcp__servername__toolname)
+    let mcp_server_names: Vec<String> = mcp_tools
+        .as_ref()
+        .map(|tools| {
+            tools
+                .keys()
+                .filter_map(|k| {
+                    let parts: Vec<&str> = k.split(crate::mcp::MCP_TOOL_NAME_DELIMITER).collect();
+                    parts.get(1).map(|s| s.to_string())
+                })
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect()
+        })
+        .unwrap_or_default();
+
     let unified_exec_handler = Arc::new(UnifiedExecHandler);
     let plan_handler = Arc::new(PlanHandler);
     let apply_patch_handler = Arc::new(ApplyPatchHandler);
@@ -992,9 +1031,13 @@ pub(crate) fn build_specs(
         }
     }
 
-    builder.push_spec_with_parallel_support(create_list_mcp_resources_tool(), true);
-    builder.push_spec_with_parallel_support(create_list_mcp_resource_templates_tool(), true);
-    builder.push_spec_with_parallel_support(create_read_mcp_resource_tool(), true);
+    builder
+        .push_spec_with_parallel_support(create_list_mcp_resources_tool(&mcp_server_names), true);
+    builder.push_spec_with_parallel_support(
+        create_list_mcp_resource_templates_tool(&mcp_server_names),
+        true,
+    );
+    builder.push_spec_with_parallel_support(create_read_mcp_resource_tool(&mcp_server_names), true);
     builder.register_handler("list_mcp_resources", mcp_resource_handler.clone());
     builder.register_handler("list_mcp_resource_templates", mcp_resource_handler.clone());
     builder.register_handler("read_mcp_resource", mcp_resource_handler);
@@ -1236,9 +1279,9 @@ mod tests {
         for spec in [
             create_exec_command_tool(),
             create_write_stdin_tool(),
-            create_list_mcp_resources_tool(),
-            create_list_mcp_resource_templates_tool(),
-            create_read_mcp_resource_tool(),
+            create_list_mcp_resources_tool(&[]),
+            create_list_mcp_resource_templates_tool(&[]),
+            create_read_mcp_resource_tool(&[]),
             PLAN_TOOL.clone(),
             create_task_tool(std::path::Path::new("."), None),
             create_apply_patch_freeform_tool(),

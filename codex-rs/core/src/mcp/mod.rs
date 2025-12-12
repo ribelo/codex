@@ -11,7 +11,7 @@ use crate::mcp::auth::compute_auth_statuses;
 use crate::mcp_connection_manager::McpConnectionManager;
 
 const MCP_TOOL_NAME_PREFIX: &str = "mcp";
-const MCP_TOOL_NAME_DELIMITER: &str = "__";
+pub(crate) const MCP_TOOL_NAME_DELIMITER: &str = "__";
 
 pub async fn collect_mcp_snapshot(config: &Config) -> McpListToolsResponseEvent {
     if config.mcp_servers.is_empty() {

@@ -61,13 +61,13 @@ use tracing::warn;
 use crate::codex::INITIAL_SUBMIT_ID;
 use crate::config::types::McpServerConfig;
 use crate::config::types::McpServerTransportConfig;
+use crate::mcp::MCP_TOOL_NAME_DELIMITER;
 
 /// Delimiter used to separate the server name from the tool name in a fully
 /// qualified tool name.
 ///
 /// OpenAI requires tool names to conform to `^[a-zA-Z0-9_-]+$`, so we must
 /// choose a delimiter from this character set.
-const MCP_TOOL_NAME_DELIMITER: &str = "__";
 const MAX_TOOL_NAME_LENGTH: usize = 64;
 
 /// Default timeout for initializing MCP server & initially listing tools.
