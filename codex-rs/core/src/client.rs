@@ -21,6 +21,7 @@ use codex_app_server_protocol::AuthMode;
 use codex_otel::otel_event_manager::OtelEventManager;
 use codex_protocol::ConversationId;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
+use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use codex_protocol::protocol::SessionSource;
@@ -196,9 +197,15 @@ impl ModelClient {
 
         let auth_manager = self.auth_manager.clone();
         let model_family = self.get_model_family();
-        let instructions = prompt.get_full_instructions(&model_family).into_owned();
+        let (instructions, input) = build_openai_instructions_and_input(prompt, &model_family);
         let tools_json = create_tools_json_for_chat_completions_api(&prompt.tools)?;
-        let api_prompt = build_api_prompt(prompt, instructions, tools_json);
+        let api_prompt = ApiPrompt {
+            instructions,
+            input,
+            tools: tools_json,
+            parallel_tool_calls: true,
+            output_schema: prompt.output_schema.clone(),
+        };
         let conversation_id = self.conversation_id.to_string();
         let session_source = self.session_source.clone();
 
@@ -250,7 +257,7 @@ impl ModelClient {
 
         let auth_manager = self.auth_manager.clone();
         let model_family = self.get_model_family();
-        let instructions = prompt.get_full_instructions(&model_family).into_owned();
+        let (instructions, input) = build_openai_instructions_and_input(prompt, &model_family);
         let tools_json: Vec<Value> = create_tools_json_for_responses_api(&prompt.tools)?;
 
         let reasoning = if model_family.supports_reasoning_summaries {
@@ -287,7 +294,13 @@ impl ModelClient {
         };
 
         let text = create_text_param_for_request(verbosity, &prompt.output_schema);
-        let api_prompt = build_api_prompt(prompt, instructions.clone(), tools_json);
+        let api_prompt = ApiPrompt {
+            instructions: instructions.clone(),
+            input,
+            tools: tools_json,
+            parallel_tool_calls: true,
+            output_schema: prompt.output_schema.clone(),
+        };
         let conversation_id = self.conversation_id.to_string();
         let session_source = self.session_source.clone();
 
@@ -435,15 +448,59 @@ impl ModelClient {
     }
 }
 
-/// Adapts the core `Prompt` type into the `codex-api` payload shape.
-fn build_api_prompt(prompt: &Prompt, instructions: String, tools_json: Vec<Value>) -> ApiPrompt {
-    ApiPrompt {
-        instructions,
-        input: prompt.get_formatted_input(),
-        tools: tools_json,
-        parallel_tool_calls: true,
-        output_schema: prompt.output_schema.clone(),
+/// OpenAI models only accept a single system prompt. Fold any `developer` role
+/// messages into the instructions string and strip `developer`/`system` items
+/// from the input history.
+fn build_openai_instructions_and_input(
+    prompt: &Prompt,
+    model_family: &ModelFamily,
+) -> (String, Vec<ResponseItem>) {
+    let mut instructions = prompt.get_full_instructions(model_family).into_owned();
+    let mut input = prompt.get_formatted_input();
+    let mut developer_messages: Vec<String> = Vec::new();
+
+    input.retain(|item| {
+        if let ResponseItem::Message { role, content, .. } = item {
+            if role == "developer" {
+                if let Some(text) = content_items_to_text(content)
+                    && !text.trim().is_empty()
+                {
+                    developer_messages.push(text);
+                }
+                return false;
+            }
+            if role == "system" {
+                return false;
+            }
+        }
+        true
+    });
+
+    if !developer_messages.is_empty() {
+        let extra = developer_messages.join("\n\n");
+        if !extra.trim().is_empty() {
+            instructions = format!("{instructions}\n\n{extra}");
+        }
     }
+
+    (instructions, input)
+}
+
+fn content_items_to_text(items: &[ContentItem]) -> Option<String> {
+    let mut out = String::new();
+    for item in items {
+        match item {
+            ContentItem::InputText { text } | ContentItem::OutputText { text, .. } => {
+                if !out.is_empty() {
+                    out.push('\n');
+                }
+                out.push_str(text);
+            }
+            ContentItem::InputImage { .. } => {}
+        }
+    }
+
+    (!out.trim().is_empty()).then_some(out)
 }
 
 fn map_response_stream<S>(api_stream: S, otel_event_manager: OtelEventManager) -> ResponseStream
