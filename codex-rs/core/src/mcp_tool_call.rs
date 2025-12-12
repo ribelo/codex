@@ -8,6 +8,7 @@ use crate::protocol::EventMsg;
 use crate::protocol::McpInvocation;
 use crate::protocol::McpToolCallBeginEvent;
 use crate::protocol::McpToolCallEndEvent;
+use crate::truncate::TruncationBias;
 use crate::truncate::TruncationPolicy;
 use crate::truncate::truncate_text;
 use codex_protocol::models::FunctionCallOutputPayload;
@@ -96,17 +97,18 @@ async fn notify_mcp_tool_call_event(sess: &Session, turn_context: &TurnContext, 
 /// Truncate the text content in a CallToolResult using the MCP truncation policy.
 fn truncate_call_tool_result(result: CallToolResult, turn_context: &TurnContext) -> CallToolResult {
     let policy = turn_context.mcp_truncation_policy;
+    let bias = turn_context.mcp_truncation_bias;
     let truncated_content = result
         .content
         .into_iter()
         .map(|item| match item {
             ContentBlock::TextContent(tc) => ContentBlock::TextContent(TextContent {
-                text: truncate_text(&tc.text, policy),
+                text: truncate_text(&tc.text, policy, bias),
                 annotations: tc.annotations,
                 r#type: tc.r#type,
             }),
             ContentBlock::EmbeddedResource(er) => {
-                ContentBlock::EmbeddedResource(truncate_embedded_resource(er, policy))
+                ContentBlock::EmbeddedResource(truncate_embedded_resource(er, policy, bias))
             }
             other => other,
         })
@@ -125,11 +127,15 @@ fn truncate_call_tool_result(result: CallToolResult, turn_context: &TurnContext)
 }
 
 /// Truncate text content within an EmbeddedResource.
-fn truncate_embedded_resource(er: EmbeddedResource, policy: TruncationPolicy) -> EmbeddedResource {
+fn truncate_embedded_resource(
+    er: EmbeddedResource,
+    policy: TruncationPolicy,
+    bias: TruncationBias,
+) -> EmbeddedResource {
     let truncated_resource = match er.resource {
         EmbeddedResourceResource::TextResourceContents(trc) => {
             EmbeddedResourceResource::TextResourceContents(TextResourceContents {
-                text: truncate_text(&trc.text, policy),
+                text: truncate_text(&trc.text, policy, bias),
                 mime_type: trc.mime_type,
                 uri: trc.uri,
             })

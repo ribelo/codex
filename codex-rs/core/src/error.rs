@@ -1,6 +1,7 @@
 use crate::exec::ExecToolCallOutput;
 use crate::token_data::KnownPlan;
 use crate::token_data::PlanType;
+use crate::truncate::TruncationBias;
 use crate::truncate::TruncationPolicy;
 use crate::truncate::truncate_text;
 use chrono::DateTime;
@@ -528,6 +529,7 @@ pub fn get_error_message_ui(e: &CodexErr) -> String {
     truncate_text(
         &message,
         TruncationPolicy::Bytes(ERROR_MESSAGE_UI_MAX_BYTES),
+        TruncationBias::Balanced,
     )
 }
 

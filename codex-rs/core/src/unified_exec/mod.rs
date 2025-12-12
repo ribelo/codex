@@ -104,6 +104,7 @@ pub(crate) struct WriteStdinRequest<'a> {
     pub input: &'a str,
     pub yield_time_ms: u64,
     pub max_output_tokens: Option<usize>,
+    pub call_id: &'a str,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -240,6 +241,7 @@ mod tests {
                 input,
                 yield_time_ms,
                 max_output_tokens: None,
+                call_id: "test-call",
             })
             .await
     }

@@ -59,23 +59,25 @@ impl Prompt {
             _ => false,
         });
 
-        // Build the full instructions by conditionally appending apply_patch instructions
-        // and always appending parallel instructions.
-        // When base_instructions_override is set (e.g., for review tasks), don't append
-        // parallel instructions as the override is a complete, self-contained prompt
-        // that may not be compatible with the parallel instructions format.
+        // Build the full instructions by conditionally appending apply_patch and parallel
+        // instructions. Don't append extra instructions when:
+        // - base_instructions_override is set (e.g., for review tasks)
+        // - model.allows_instruction_modifications is false (e.g., gpt-5.2 requires exact prompts)
         let has_override = self.base_instructions_override.is_some();
         let needs_apply_patch_instructions = self.base_instructions_override.is_none()
             && model.needs_special_apply_patch_instructions
             && !is_apply_patch_tool_present;
+        let can_modify = model.allows_instruction_modifications;
 
-        if needs_apply_patch_instructions {
+        if needs_apply_patch_instructions && can_modify {
             Cow::Owned(format!(
                 "{base}\n{APPLY_PATCH_TOOL_INSTRUCTIONS}{PARALLEL_INSTRUCTIONS}"
             ))
-        } else if has_override {
-            // When using an instruction override (e.g., REVIEW_PROMPT), use it as-is
-            // without appending parallel instructions.
+        } else if needs_apply_patch_instructions && !can_modify {
+            // Model needs apply_patch instructions but doesn't allow parallel additions
+            Cow::Owned(format!("{base}\n{APPLY_PATCH_TOOL_INSTRUCTIONS}"))
+        } else if has_override || !can_modify {
+            // Use instructions as-is without appending parallel instructions
             Cow::Borrowed(base)
         } else {
             Cow::Owned(format!("{base}{PARALLEL_INSTRUCTIONS}"))

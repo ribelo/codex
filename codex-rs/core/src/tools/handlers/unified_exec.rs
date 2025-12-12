@@ -223,6 +223,7 @@ impl ToolHandler for UnifiedExecHandler {
                         input: &args.chars,
                         yield_time_ms: args.yield_time_ms,
                         max_output_tokens: args.max_output_tokens,
+                        call_id: &call_id,
                     })
                     .await
                     .map_err(|err| {

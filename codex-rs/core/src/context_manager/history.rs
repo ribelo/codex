@@ -1,5 +1,6 @@
 use crate::codex::TurnContext;
 use crate::context_manager::normalize;
+use crate::truncate::TruncationBias;
 use crate::truncate::TruncationPolicy;
 use crate::truncate::approx_token_count;
 use crate::truncate::approx_tokens_from_byte_count;
@@ -47,8 +48,12 @@ impl ContextManager {
     }
 
     /// `items` is ordered from oldest to newest.
-    pub(crate) fn record_items<I>(&mut self, items: I, policy: TruncationPolicy)
-    where
+    pub(crate) fn record_items<I>(
+        &mut self,
+        items: I,
+        policy: TruncationPolicy,
+        bias: TruncationBias,
+    ) where
         I: IntoIterator,
         I::Item: std::ops::Deref<Target = ResponseItem>,
     {
@@ -59,7 +64,7 @@ impl ContextManager {
                 continue;
             }
 
-            let processed = self.process_item(item_ref, policy);
+            let processed = self.process_item(item_ref, policy, bias);
             self.items.push(processed);
         }
     }
@@ -224,16 +229,25 @@ impl ContextManager {
         items.retain(|item| !matches!(item, ResponseItem::GhostSnapshot { .. }));
     }
 
-    fn process_item(&self, item: &ResponseItem, policy: TruncationPolicy) -> ResponseItem {
+    fn process_item(
+        &self,
+        item: &ResponseItem,
+        policy: TruncationPolicy,
+        bias: TruncationBias,
+    ) -> ResponseItem {
         let policy_with_serialization_budget = policy.mul(1.2);
         match item {
             ResponseItem::FunctionCallOutput { call_id, output } => {
-                let truncated =
-                    truncate_text(output.content.as_str(), policy_with_serialization_budget);
+                let truncated = truncate_text(
+                    output.content.as_str(),
+                    policy_with_serialization_budget,
+                    bias,
+                );
                 let truncated_items = output.content_items.as_ref().map(|items| {
                     truncate_function_output_items_with_policy(
                         items,
                         policy_with_serialization_budget,
+                        bias,
                     )
                 });
                 ResponseItem::FunctionCallOutput {
@@ -246,7 +260,7 @@ impl ContextManager {
                 }
             }
             ResponseItem::CustomToolCallOutput { call_id, output } => {
-                let truncated = truncate_text(output, policy_with_serialization_budget);
+                let truncated = truncate_text(output, policy_with_serialization_budget, bias);
                 ResponseItem::CustomToolCallOutput {
                     call_id: call_id.clone(),
                     output: truncated,

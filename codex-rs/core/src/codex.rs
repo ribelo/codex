@@ -22,6 +22,7 @@ use crate::stream_events_utils::HandleOutputCtx;
 use crate::stream_events_utils::handle_non_tool_response_item;
 use crate::stream_events_utils::handle_output_item_done;
 use crate::terminal;
+use crate::truncate::TruncationBias;
 use crate::truncate::TruncationPolicy;
 use crate::user_notification::UserNotifier;
 use crate::util::error_or_panic;
@@ -339,7 +340,9 @@ pub(crate) struct TurnContext {
     pub(crate) tool_call_gate: Arc<ReadinessFlag>,
     pub(crate) exec_policy: Arc<RwLock<ExecPolicy>>,
     pub(crate) truncation_policy: TruncationPolicy,
+    pub(crate) truncation_bias: TruncationBias,
     pub(crate) mcp_truncation_policy: TruncationPolicy,
+    pub(crate) mcp_truncation_bias: TruncationBias,
 }
 
 impl TurnContext {
@@ -513,10 +516,12 @@ impl Session {
                 per_turn_config.as_ref(),
                 model_family.truncation_policy,
             ),
+            truncation_bias: model_family.truncation_bias,
             mcp_truncation_policy: TruncationPolicy::new(
                 per_turn_config.as_ref(),
                 model_family.mcp_truncation_policy,
             ),
+            mcp_truncation_bias: model_family.mcp_truncation_bias,
         }
     }
 
@@ -1131,6 +1136,7 @@ impl Session {
                     history.record_items(
                         std::iter::once(response_item),
                         turn_context.truncation_policy,
+                        turn_context.truncation_bias,
                     );
                 }
                 RolloutItem::Compacted(compacted) => {
@@ -1161,7 +1167,11 @@ impl Session {
         turn_context: &TurnContext,
     ) {
         let mut state = self.state.lock().await;
-        state.record_items(items.iter(), turn_context.truncation_policy);
+        state.record_items(
+            items.iter(),
+            turn_context.truncation_policy,
+            turn_context.truncation_bias,
+        );
     }
 
     pub(crate) async fn record_model_warning(&self, message: impl Into<String>, ctx: &TurnContext) {
@@ -2046,10 +2056,12 @@ async fn spawn_review_thread(
         tool_call_gate: Arc::new(ReadinessFlag::new()),
         exec_policy: parent_turn_context.exec_policy.clone(),
         truncation_policy: TruncationPolicy::new(&per_turn_config, model_family.truncation_policy),
+        truncation_bias: model_family.truncation_bias,
         mcp_truncation_policy: TruncationPolicy::new(
             &per_turn_config,
             model_family.mcp_truncation_policy,
         ),
+        mcp_truncation_bias: model_family.mcp_truncation_bias,
     };
 
     // Seed the child task with the review prompt as the initial user message.
@@ -2843,7 +2855,13 @@ mod tests {
         };
         let (_, turn_context) = make_session_and_context();
 
-        let out = format_exec_output_str(&exec, turn_context.truncation_policy);
+        let out = format_exec_output_str(
+            &exec,
+            turn_context.truncation_policy,
+            turn_context.truncation_bias,
+            &turn_context.tools_config.codex_home,
+            "test-call",
+        );
 
         assert_eq!(
             out,
@@ -3329,7 +3347,11 @@ mod tests {
         for item in &initial_context {
             rollout_items.push(RolloutItem::ResponseItem(item.clone()));
         }
-        live_history.record_items(initial_context.iter(), turn_context.truncation_policy);
+        live_history.record_items(
+            initial_context.iter(),
+            turn_context.truncation_policy,
+            turn_context.truncation_bias,
+        );
 
         let user1 = ResponseItem::Message {
             id: None,
@@ -3338,7 +3360,11 @@ mod tests {
                 text: "first user".to_string(),
             }],
         };
-        live_history.record_items(std::iter::once(&user1), turn_context.truncation_policy);
+        live_history.record_items(
+            std::iter::once(&user1),
+            turn_context.truncation_policy,
+            turn_context.truncation_bias,
+        );
         rollout_items.push(RolloutItem::ResponseItem(user1.clone()));
 
         let assistant1 = ResponseItem::Message {
@@ -3349,7 +3375,11 @@ mod tests {
                 signature: None,
             }],
         };
-        live_history.record_items(std::iter::once(&assistant1), turn_context.truncation_policy);
+        live_history.record_items(
+            std::iter::once(&assistant1),
+            turn_context.truncation_policy,
+            turn_context.truncation_bias,
+        );
         rollout_items.push(RolloutItem::ResponseItem(assistant1.clone()));
 
         let summary1 = "summary one";
@@ -3373,7 +3403,11 @@ mod tests {
                 text: "second user".to_string(),
             }],
         };
-        live_history.record_items(std::iter::once(&user2), turn_context.truncation_policy);
+        live_history.record_items(
+            std::iter::once(&user2),
+            turn_context.truncation_policy,
+            turn_context.truncation_bias,
+        );
         rollout_items.push(RolloutItem::ResponseItem(user2.clone()));
 
         let assistant2 = ResponseItem::Message {
@@ -3384,7 +3418,11 @@ mod tests {
                 signature: None,
             }],
         };
-        live_history.record_items(std::iter::once(&assistant2), turn_context.truncation_policy);
+        live_history.record_items(
+            std::iter::once(&assistant2),
+            turn_context.truncation_policy,
+            turn_context.truncation_bias,
+        );
         rollout_items.push(RolloutItem::ResponseItem(assistant2.clone()));
 
         let summary2 = "summary two";
@@ -3408,7 +3446,11 @@ mod tests {
                 text: "third user".to_string(),
             }],
         };
-        live_history.record_items(std::iter::once(&user3), turn_context.truncation_policy);
+        live_history.record_items(
+            std::iter::once(&user3),
+            turn_context.truncation_policy,
+            turn_context.truncation_bias,
+        );
         rollout_items.push(RolloutItem::ResponseItem(user3.clone()));
 
         let assistant3 = ResponseItem::Message {
@@ -3419,7 +3461,11 @@ mod tests {
                 signature: None,
             }],
         };
-        live_history.record_items(std::iter::once(&assistant3), turn_context.truncation_policy);
+        live_history.record_items(
+            std::iter::once(&assistant3),
+            turn_context.truncation_policy,
+            turn_context.truncation_bias,
+        );
         rollout_items.push(RolloutItem::ResponseItem(assistant3.clone()));
 
         (rollout_items, live_history.get_history())
