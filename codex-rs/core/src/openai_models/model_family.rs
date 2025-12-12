@@ -15,6 +15,7 @@ use codex_protocol::openai_models::ConfigShellToolType;
 const BASE_INSTRUCTIONS: &str = include_str!("../../prompt.md");
 
 const GPT_5_1_INSTRUCTIONS: &str = include_str!("../../gpt_5_1_prompt.md");
+const GPT_5_2_INSTRUCTIONS: &str = include_str!("../../gpt_5_2_prompt.md");
 const GPT_5_1_CODEX_MAX_INSTRUCTIONS: &str = include_str!("../../gpt-5.1-codex-max_prompt.md");
 const GEMINI_3_INSTRUCTIONS: &str = include_str!("../../gemini-3-prompt.md");
 pub(crate) const CONTEXT_WINDOW_272K: i64 = 272_000;
@@ -285,14 +286,13 @@ pub(in crate::openai_models) fn find_family_for_model(slug: &str) -> ModelFamily
     } else if slug.starts_with("gpt-5.2") {
         model_family!(
             slug, slug,
-            // Public gpt-5.2 endpoint currently rejects requests when we enable
-            // reasoning summaries or text verbosity controls, so keep these off.
-            supports_reasoning_summaries: false,
-            apply_patch_tool_type: Some(ApplyPatchToolType::Function),
-            support_verbosity: false,
-            base_instructions: BASE_INSTRUCTIONS.to_string(),
-            truncation_policy: TruncationPolicy::Bytes(DEFAULT_TOOL_OUTPUT_BYTES),
-            mcp_truncation_policy: TruncationPolicy::Bytes(DEFAULT_MCP_TOOL_OUTPUT_BYTES),
+            supports_reasoning_summaries: true,
+            apply_patch_tool_type: Some(ApplyPatchToolType::Freeform),
+            support_verbosity: true,
+            default_verbosity: Some(Verbosity::Low),
+            base_instructions: GPT_5_2_INSTRUCTIONS.to_string(),
+            default_reasoning_effort: Some(ReasoningEffort::Medium),
+            truncation_policy: TruncationPolicy::Bytes(10_000),
             shell_type: ConfigShellToolType::ShellCommand,
             context_window: Some(CONTEXT_WINDOW_272K),
         )
