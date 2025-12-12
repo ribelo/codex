@@ -16,6 +16,7 @@ use crate::protocol::EventMsg;
 use crate::protocol::TaskStartedEvent;
 use crate::protocol::TurnContextItem;
 use crate::protocol::WarningEvent;
+use crate::truncate::TruncationBias;
 use crate::truncate::TruncationPolicy;
 use crate::truncate::approx_token_count;
 use crate::truncate::truncate_text;
@@ -80,6 +81,7 @@ async fn run_compact_task_inner(
     history.record_items(
         &[initial_input_for_turn.into()],
         turn_context.truncation_policy,
+        turn_context.truncation_bias,
     );
 
     let mut truncated_count = 0usize;
@@ -260,7 +262,11 @@ fn build_compacted_history_with_limit(
                 selected_messages.push(message.clone());
                 remaining = remaining.saturating_sub(tokens);
             } else {
-                let truncated = truncate_text(message, TruncationPolicy::Tokens(remaining));
+                let truncated = truncate_text(
+                    message,
+                    TruncationPolicy::Tokens(remaining),
+                    TruncationBias::Balanced,
+                );
                 selected_messages.push(truncated);
                 break;
             }

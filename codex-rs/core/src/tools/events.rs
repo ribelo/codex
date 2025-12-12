@@ -268,12 +268,18 @@ impl ToolEmitter {
             Self::Shell { freeform: true, .. } => super::format_exec_output_for_model_freeform(
                 output,
                 ctx.turn.truncation_policy,
+                ctx.turn.truncation_bias,
                 hint,
+                &ctx.turn.tools_config.codex_home,
+                ctx.call_id,
             ),
             _ => super::format_exec_output_for_model_structured(
                 output,
                 ctx.turn.truncation_policy,
+                ctx.turn.truncation_bias,
                 hint,
+                &ctx.turn.tools_config.codex_home,
+                ctx.call_id,
             ),
         }
     }
@@ -405,7 +411,13 @@ async fn emit_exec_stage(
                 aggregated_output: output.aggregated_output.text.clone(),
                 exit_code: output.exit_code,
                 duration: output.duration,
-                formatted_output: format_exec_output_str(&output, ctx.turn.truncation_policy),
+                formatted_output: format_exec_output_str(
+                    &output,
+                    ctx.turn.truncation_policy,
+                    ctx.turn.truncation_bias,
+                    &ctx.turn.tools_config.codex_home,
+                    ctx.call_id,
+                ),
             };
             emit_exec_end(ctx, exec_input, exec_result).await;
         }

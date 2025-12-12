@@ -132,6 +132,7 @@ impl SessionTask for UserShellCommandTask {
                     &raw_command,
                     &exec_output,
                     &turn_context,
+                    &call_id,
                 )];
                 session
                     .record_conversation_items(turn_context.as_ref(), &output_items)
@@ -140,7 +141,7 @@ impl SessionTask for UserShellCommandTask {
                     .send_event(
                         turn_context.as_ref(),
                         EventMsg::ExecCommandEnd(ExecCommandEndEvent {
-                            call_id,
+                            call_id: call_id.clone(),
                             process_id: None,
                             turn_id: turn_context.sub_id.clone(),
                             command: command.clone(),
@@ -179,6 +180,9 @@ impl SessionTask for UserShellCommandTask {
                             formatted_output: format_exec_output_str(
                                 &output,
                                 turn_context.truncation_policy,
+                                turn_context.truncation_bias,
+                                &turn_context.tools_config.codex_home,
+                                &call_id,
                             ),
                         }),
                     )
@@ -188,6 +192,7 @@ impl SessionTask for UserShellCommandTask {
                     &raw_command,
                     &output,
                     &turn_context,
+                    &call_id,
                 )];
                 session
                     .record_conversation_items(turn_context.as_ref(), &output_items)
@@ -208,7 +213,7 @@ impl SessionTask for UserShellCommandTask {
                     .send_event(
                         turn_context.as_ref(),
                         EventMsg::ExecCommandEnd(ExecCommandEndEvent {
-                            call_id,
+                            call_id: call_id.clone(),
                             process_id: None,
                             turn_id: turn_context.sub_id.clone(),
                             command,
@@ -224,6 +229,9 @@ impl SessionTask for UserShellCommandTask {
                             formatted_output: format_exec_output_str(
                                 &exec_output,
                                 turn_context.truncation_policy,
+                                turn_context.truncation_bias,
+                                &turn_context.tools_config.codex_home,
+                                &call_id,
                             ),
                         }),
                     )
@@ -232,6 +240,7 @@ impl SessionTask for UserShellCommandTask {
                     &raw_command,
                     &exec_output,
                     &turn_context,
+                    &call_id,
                 )];
                 session
                     .record_conversation_items(turn_context.as_ref(), &output_items)

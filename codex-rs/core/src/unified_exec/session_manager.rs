@@ -23,9 +23,11 @@ use crate::tools::orchestrator::ToolOrchestrator;
 use crate::tools::runtimes::unified_exec::UnifiedExecRequest as UnifiedExecToolRequest;
 use crate::tools::runtimes::unified_exec::UnifiedExecRuntime;
 use crate::tools::sandboxing::ToolCtx;
+use crate::truncate::TruncationBias;
 use crate::truncate::TruncationPolicy;
 use crate::truncate::approx_token_count;
 use crate::truncate::formatted_truncate_text;
+use crate::truncate::truncate_with_file_fallback;
 
 use super::CommandTranscript;
 use super::ExecCommandRequest;
@@ -166,7 +168,22 @@ impl UnifiedExecSessionManager {
         let wall_time = Instant::now().saturating_duration_since(start);
 
         let text = String::from_utf8_lossy(&collected).to_string();
-        let output = formatted_truncate_text(&text, TruncationPolicy::Tokens(max_tokens));
+        let output = truncate_with_file_fallback(
+            &text,
+            TruncationPolicy::Tokens(max_tokens),
+            context.turn.truncation_bias,
+            &context.turn.tools_config.codex_home,
+            &context.call_id,
+        )
+        .map(|r| r.content)
+        .unwrap_or_else(|e| {
+            tracing::warn!("Failed to write truncated output to file: {}", e);
+            formatted_truncate_text(
+                &text,
+                TruncationPolicy::Tokens(max_tokens),
+                context.turn.truncation_bias,
+            )
+        });
         let exit_code = session.exit_code();
         let has_exited = session.has_exited() || exit_code.is_some();
         let chunk_id = generate_chunk_id();
@@ -270,7 +287,22 @@ impl UnifiedExecSessionManager {
         let wall_time = Instant::now().saturating_duration_since(start);
 
         let text = String::from_utf8_lossy(&collected).to_string();
-        let output = formatted_truncate_text(&text, TruncationPolicy::Tokens(max_tokens));
+        let output = truncate_with_file_fallback(
+            &text,
+            TruncationPolicy::Tokens(max_tokens),
+            turn_ref.truncation_bias,
+            &turn_ref.tools_config.codex_home,
+            request.call_id,
+        )
+        .map(|r| r.content)
+        .unwrap_or_else(|e| {
+            tracing::warn!("Failed to write truncated output to file: {}", e);
+            formatted_truncate_text(
+                &text,
+                TruncationPolicy::Tokens(max_tokens),
+                turn_ref.truncation_bias,
+            )
+        });
         let original_token_count = approx_token_count(&text);
         let chunk_id = generate_chunk_id();
 
@@ -454,6 +486,7 @@ impl UnifiedExecSessionManager {
     pub(crate) async fn open_session_with_exec_env(
         &self,
         env: &ExecEnv,
+        truncation_bias: TruncationBias,
     ) -> Result<UnifiedExecSession, UnifiedExecError> {
         let (program, args) = env
             .command
@@ -469,7 +502,7 @@ impl UnifiedExecSessionManager {
         )
         .await
         .map_err(|err| UnifiedExecError::create_session(err.to_string()))?;
-        UnifiedExecSession::from_spawned(spawned, env.sandbox).await
+        UnifiedExecSession::from_spawned(spawned, env.sandbox, truncation_bias).await
     }
 
     pub(super) async fn open_session_with_sandbox(

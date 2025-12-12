@@ -2067,8 +2067,11 @@ PY
     let large_output = outputs.get(call_id).expect("missing large output summary");
 
     let output_text = large_output.output.replace("\r\n", "\n");
-    let truncated_pattern = r"(?s)^Total output lines: \d+\n\n(token token \n){5,}.*…\d+ tokens truncated….*(token token \n){5,}$";
-    assert_regex_match(truncated_pattern, &output_text);
+    let hint_pattern = r"\n\nOutput was truncated \(\d+ bytes -> \d+ bytes\)\.\nFull output saved to: .+\nTo read full output, use read_file tool with offset and limit parameters\.";
+    let truncated_pattern = format!(
+        r"(?s)^Total output lines: \d+\n\n(token token \n){{5,}}.*…\d+ tokens truncated….*(token token \n){{5,}}{hint_pattern}$"
+    );
+    assert_regex_match(&truncated_pattern, &output_text);
 
     let original_tokens = large_output
         .original_token_count

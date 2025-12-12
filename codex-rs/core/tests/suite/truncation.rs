@@ -229,14 +229,17 @@ async fn tool_call_output_exceeds_limit_truncated_chars_limit() -> Result<()> {
         "expected truncated shell output to be plain text"
     );
 
-    let truncated_pattern = r#"(?s)^Exit code: 0\nWall time: [0-9]+(?:\.[0-9]+)? seconds\nTotal output lines: 100000\nOutput:\n.*?…\d+ chars truncated….*$"#;
+    let hint_pattern = r"\n\nOutput was truncated \(\d+ bytes -> \d+ bytes\)\.\nFull output saved to: .+\nTo read full output, use read_file tool with offset and limit parameters\.";
+    let truncated_pattern = format!(
+        r#"(?s)^Exit code: 0\nWall time: [0-9]+(?:\.[0-9]+)? seconds\nTotal output lines: 100000\nOutput:\n.*?…\d+ chars truncated….*{hint_pattern}$"#
+    );
 
-    assert_regex_match(truncated_pattern, &output);
+    assert_regex_match(&truncated_pattern, &output);
 
     let len = output.len();
     assert!(
-        (49_900..=50_100).contains(&len),
-        "expected ~50k chars after truncation, got {len}"
+        (49_900..=50_500).contains(&len),
+        "expected ~50k chars after truncation (including file fallback hint), got {len}"
     );
 
     Ok(())
@@ -301,7 +304,9 @@ async fn tool_call_output_exceeds_limit_truncated_for_model() -> Result<()> {
         serde_json::from_str::<Value>(&output).is_err(),
         "expected truncated shell output to be plain text"
     );
-    let truncated_pattern = r#"(?s)^Exit code: 0
+    let hint_pattern = r"\n\nOutput was truncated \(\d+ bytes -> \d+ bytes\)\.\nFull output saved to: .+\nTo read full output, use read_file tool with offset and limit parameters\.";
+    let truncated_pattern = format!(
+        r#"(?s)^Exit code: 0
 Wall time: [0-9]+(?:\.[0-9]+)? seconds
 Total output lines: 100000
 Output:
@@ -314,8 +319,9 @@ Output:
 .*…137224 tokens truncated.*
 99999
 100000
-$"#;
-    assert_regex_match(truncated_pattern, &output);
+{hint_pattern}$"#
+    );
+    assert_regex_match(&truncated_pattern, &output);
 
     Ok(())
 }
@@ -614,9 +620,12 @@ async fn token_policy_marker_reports_tokens() -> Result<()> {
         .function_call_output_text(call_id)
         .context("shell output present")?;
 
-    let pattern = r"(?s)^Exit code: 0\nWall time: [0-9]+(?:\.[0-9]+)? seconds\nTotal output lines: 150\nOutput:\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\n16\n17\n18\n19.*tokens truncated.*129\n130\n131\n132\n133\n134\n135\n136\n137\n138\n139\n140\n141\n142\n143\n144\n145\n146\n147\n148\n149\n150\n$";
+    let hint_pattern = r"\n\nOutput was truncated \(\d+ bytes -> \d+ bytes\)\.\nFull output saved to: .+\nTo read full output, use read_file tool with offset and limit parameters\.";
+    let pattern = format!(
+        r"(?s)^Exit code: 0\nWall time: [0-9]+(?:\.[0-9]+)? seconds\nTotal output lines: 150\nOutput:\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\n16\n17\n18\n19.*tokens truncated.*129\n130\n131\n132\n133\n134\n135\n136\n137\n138\n139\n140\n141\n142\n143\n144\n145\n146\n147\n148\n149\n150\n{hint_pattern}$"
+    );
 
-    assert_regex_match(pattern, &output);
+    assert_regex_match(&pattern, &output);
 
     Ok(())
 }
@@ -665,9 +674,12 @@ async fn byte_policy_marker_reports_bytes() -> Result<()> {
         .function_call_output_text(call_id)
         .context("shell output present")?;
 
-    let pattern = r"(?s)^Exit code: 0\nWall time: [0-9]+(?:\.[0-9]+)? seconds\nTotal output lines: 150\nOutput:\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\n16\n17\n18\n19.*chars truncated.*129\n130\n131\n132\n133\n134\n135\n136\n137\n138\n139\n140\n141\n142\n143\n144\n145\n146\n147\n148\n149\n150\n$";
+    let hint_pattern = r"\n\nOutput was truncated \(\d+ bytes -> \d+ bytes\)\.\nFull output saved to: .+\nTo read full output, use read_file tool with offset and limit parameters\.";
+    let pattern = format!(
+        r"(?s)^Exit code: 0\nWall time: [0-9]+(?:\.[0-9]+)? seconds\nTotal output lines: 150\nOutput:\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\n16\n17\n18\n19.*chars truncated.*129\n130\n131\n132\n133\n134\n135\n136\n137\n138\n139\n140\n141\n142\n143\n144\n145\n146\n147\n148\n149\n150\n{hint_pattern}$"
+    );
 
-    assert_regex_match(pattern, &output);
+    assert_regex_match(&pattern, &output);
 
     Ok(())
 }

@@ -14,6 +14,7 @@ use crate::exec::ExecToolCallOutput;
 use crate::exec::SandboxType;
 use crate::exec::StreamOutput;
 use crate::exec::is_likely_sandbox_denied;
+use crate::truncate::TruncationBias;
 use crate::truncate::TruncationPolicy;
 use crate::truncate::formatted_truncate_text;
 use codex_utils_pty::ExecCommandSession;
@@ -82,6 +83,7 @@ pub(crate) struct UnifiedExecSession {
     output_drained: Arc<Notify>,
     output_task: JoinHandle<()>,
     sandbox_type: SandboxType,
+    truncation_bias: TruncationBias,
 }
 
 impl UnifiedExecSession {
@@ -89,6 +91,7 @@ impl UnifiedExecSession {
         session: ExecCommandSession,
         initial_output_rx: tokio::sync::broadcast::Receiver<Vec<u8>>,
         sandbox_type: SandboxType,
+        truncation_bias: TruncationBias,
     ) -> Self {
         let output_buffer = Arc::new(Mutex::new(OutputBufferState::default()));
         let output_notify = Arc::new(Notify::new());
@@ -120,6 +123,7 @@ impl UnifiedExecSession {
             output_drained,
             output_task,
             sandbox_type,
+            truncation_bias,
         }
     }
 
@@ -206,6 +210,7 @@ impl UnifiedExecSession {
             let snippet = formatted_truncate_text(
                 text,
                 TruncationPolicy::Tokens(UNIFIED_EXEC_OUTPUT_MAX_TOKENS),
+                self.truncation_bias,
             );
             let message = if snippet.is_empty() {
                 format!("Session exited with code {exit_code}")
@@ -220,13 +225,14 @@ impl UnifiedExecSession {
     pub(super) async fn from_spawned(
         spawned: SpawnedPty,
         sandbox_type: SandboxType,
+        truncation_bias: TruncationBias,
     ) -> Result<Self, UnifiedExecError> {
         let SpawnedPty {
             session,
             output_rx,
             mut exit_rx,
         } = spawned;
-        let managed = Self::new(session, output_rx, sandbox_type);
+        let managed = Self::new(session, output_rx, sandbox_type, truncation_bias);
 
         let exit_ready = matches!(exit_rx.try_recv(), Ok(_) | Err(TryRecvError::Closed));
 

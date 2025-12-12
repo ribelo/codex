@@ -264,8 +264,9 @@ async fn user_shell_command_output_is_truncated_in_history() -> anyhow::Result<(
         format!("Total output lines: 400\n\n{head}70…273 tokens truncated…351\n{tail}");
     let escaped_command = escape(&command);
     let escaped_truncated_body = escape(&truncated_body);
+    let hint_pattern = r"\n\nOutput was truncated \(\d+ bytes -> \d+ bytes\)\.\nFull output saved to: .+\nTo read full output, use read_file tool with offset and limit parameters\.";
     let expected_pattern = format!(
-        r"(?m)\A<user_shell_command>\n<command>\n{escaped_command}\n</command>\n<result>\nExit code: 0\nDuration: [0-9]+(?:\.[0-9]+)? seconds\nOutput:\n{escaped_truncated_body}\n</result>\n</user_shell_command>\z"
+        r"(?m)\A<user_shell_command>\n<command>\n{escaped_command}\n</command>\n<result>\nExit code: 0\nDuration: [0-9]+(?:\.[0-9]+)? seconds\nOutput:\n{escaped_truncated_body}{hint_pattern}\n</result>\n</user_shell_command>\z"
     );
     assert_regex_match(&expected_pattern, &command_message);
 

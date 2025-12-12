@@ -7,6 +7,7 @@ use crate::config::types::ReasoningSummaryFormat;
 use crate::tools::handlers::apply_patch::ApplyPatchToolType;
 use crate::truncate::DEFAULT_MCP_TOOL_OUTPUT_BYTES;
 use crate::truncate::DEFAULT_TOOL_OUTPUT_BYTES;
+use crate::truncate::TruncationBias;
 use crate::truncate::TruncationPolicy;
 use codex_protocol::openai_models::ConfigShellToolType;
 
@@ -80,9 +81,20 @@ pub struct ModelFamily {
     /// Truncation policy for shell/exec tool output.
     pub truncation_policy: TruncationPolicy,
 
+    /// Truncation bias for shell/exec tool output.
+    pub truncation_bias: TruncationBias,
+
     /// Truncation policy for MCP tool output. MCP tools may return larger outputs
     /// (e.g., file contents, API responses) so they have a separate, higher limit.
     pub mcp_truncation_policy: TruncationPolicy,
+
+    /// Truncation bias for MCP tool output.
+    pub mcp_truncation_bias: TruncationBias,
+
+    /// Whether additional instructions (like PARALLEL_INSTRUCTIONS) can be
+    /// appended to this model's base_instructions. Some models (e.g., gpt-5.2)
+    /// require their prompts to be sent exactly as-is without modifications.
+    pub allows_instruction_modifications: bool,
 }
 
 impl ModelFamily {
@@ -148,7 +160,10 @@ macro_rules! model_family {
             default_verbosity: None,
             default_reasoning_effort: None,
             truncation_policy: TruncationPolicy::Bytes(DEFAULT_TOOL_OUTPUT_BYTES),
+            truncation_bias: TruncationBias::Balanced,
             mcp_truncation_policy: TruncationPolicy::Bytes(DEFAULT_MCP_TOOL_OUTPUT_BYTES),
+            mcp_truncation_bias: TruncationBias::Balanced,
+            allows_instruction_modifications: true,
         };
 
         // apply overrides
@@ -295,6 +310,7 @@ pub(in crate::openai_models) fn find_family_for_model(slug: &str) -> ModelFamily
             truncation_policy: TruncationPolicy::Bytes(10_000),
             shell_type: ConfigShellToolType::ShellCommand,
             context_window: Some(CONTEXT_WINDOW_272K),
+            allows_instruction_modifications: false,
         )
     } else if slug.starts_with("gpt-5.1") {
         model_family!(
@@ -317,6 +333,8 @@ pub(in crate::openai_models) fn find_family_for_model(slug: &str) -> ModelFamily
             shell_type: ConfigShellToolType::Default,
             support_verbosity: true,
             truncation_policy: TruncationPolicy::Bytes(10_000),
+            truncation_bias: TruncationBias::TailHeavy,
+            mcp_truncation_bias: TruncationBias::TailHeavy,
             context_window: Some(CONTEXT_WINDOW_272K),
             apply_patch_tool_type: Some(ApplyPatchToolType::Function),
         )
@@ -331,6 +349,8 @@ pub(in crate::openai_models) fn find_family_for_model(slug: &str) -> ModelFamily
                 shell_type: ConfigShellToolType::ShellCommand,
                 base_instructions: GEMINI_3_INSTRUCTIONS.to_string(),
                 apply_patch_tool_type: Some(ApplyPatchToolType::Function),
+                truncation_bias: TruncationBias::TailHeavy,
+                mcp_truncation_bias: TruncationBias::TailHeavy,
             )
         } else {
             model_family!(
@@ -340,6 +360,8 @@ pub(in crate::openai_models) fn find_family_for_model(slug: &str) -> ModelFamily
                 reasoning_summary_format: ReasoningSummaryFormat::None,
                 shell_type: ConfigShellToolType::ShellCommand,
                 apply_patch_tool_type: Some(ApplyPatchToolType::Function),
+                truncation_bias: TruncationBias::TailHeavy,
+                mcp_truncation_bias: TruncationBias::TailHeavy,
             )
         }
     } else {
@@ -367,7 +389,10 @@ fn derive_default_model_family(model: &str) -> ModelFamily {
         default_verbosity: None,
         default_reasoning_effort: None,
         truncation_policy: TruncationPolicy::Bytes(DEFAULT_TOOL_OUTPUT_BYTES),
+        truncation_bias: TruncationBias::Balanced,
         mcp_truncation_policy: TruncationPolicy::Bytes(DEFAULT_MCP_TOOL_OUTPUT_BYTES),
+        mcp_truncation_bias: TruncationBias::Balanced,
+        allows_instruction_modifications: true,
     }
 }
 

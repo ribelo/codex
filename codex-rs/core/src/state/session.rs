@@ -7,6 +7,7 @@ use crate::context_manager::ContextManager;
 use crate::protocol::RateLimitSnapshot;
 use crate::protocol::TokenUsage;
 use crate::protocol::TokenUsageInfo;
+use crate::truncate::TruncationBias;
 use crate::truncate::TruncationPolicy;
 
 /// Persistent, session-scoped state previously stored directly on `Session`.
@@ -28,12 +29,16 @@ impl SessionState {
     }
 
     // History helpers
-    pub(crate) fn record_items<I>(&mut self, items: I, policy: TruncationPolicy)
-    where
+    pub(crate) fn record_items<I>(
+        &mut self,
+        items: I,
+        policy: TruncationPolicy,
+        bias: TruncationBias,
+    ) where
         I: IntoIterator,
         I::Item: std::ops::Deref<Target = ResponseItem>,
     {
-        self.history.record_items(items, policy);
+        self.history.record_items(items, policy, bias);
     }
 
     pub(crate) fn clone_history(&self) -> ContextManager {

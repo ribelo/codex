@@ -397,7 +397,9 @@ async fn shell_output_reserializes_truncated_content(output_type: ShellModelOutp
         "expected truncated shell output to be plain text",
     );
     // The truncation notice varies based on token/char counting - use flexible pattern
-    let truncated_pattern = r#"(?s)^Exit code: 0
+    let hint_pattern = r"\n\nOutput was truncated \(\d+ bytes -> \d+ bytes\)\.\nFull output saved to: .+\nTo read full output, use read_file tool with offset and limit parameters\.";
+    let truncated_pattern = format!(
+        r#"(?s)^Exit code: 0
 Wall time: [0-9]+(?:\.[0-9]+)? seconds
 Total output lines: 400
 Output:
@@ -413,8 +415,9 @@ Output:
 398
 399
 400
-$"#;
-    assert_regex_match(truncated_pattern, output);
+{hint_pattern}$"#
+    );
+    assert_regex_match(&truncated_pattern, output);
 
     Ok(())
 }

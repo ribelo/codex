@@ -25,6 +25,7 @@ fn format_user_shell_command_body(
     command: &str,
     exec_output: &ExecToolCallOutput,
     turn_context: &TurnContext,
+    call_id: &str,
 ) -> String {
     let mut sections = Vec::new();
     sections.push("<command>".to_string());
@@ -37,6 +38,9 @@ fn format_user_shell_command_body(
     sections.push(format_exec_output_str(
         exec_output,
         turn_context.truncation_policy,
+        turn_context.truncation_bias,
+        &turn_context.tools_config.codex_home,
+        call_id,
     ));
     sections.push("</result>".to_string());
     sections.join("\n")
@@ -46,8 +50,9 @@ pub fn format_user_shell_command_record(
     command: &str,
     exec_output: &ExecToolCallOutput,
     turn_context: &TurnContext,
+    call_id: &str,
 ) -> String {
-    let body = format_user_shell_command_body(command, exec_output, turn_context);
+    let body = format_user_shell_command_body(command, exec_output, turn_context, call_id);
     format!("{USER_SHELL_COMMAND_OPEN}\n{body}\n{USER_SHELL_COMMAND_CLOSE}")
 }
 
@@ -55,12 +60,13 @@ pub fn user_shell_command_record_item(
     command: &str,
     exec_output: &ExecToolCallOutput,
     turn_context: &TurnContext,
+    call_id: &str,
 ) -> ResponseItem {
     ResponseItem::Message {
         id: None,
         role: "user".to_string(),
         content: vec![ContentItem::InputText {
-            text: format_user_shell_command_record(command, exec_output, turn_context),
+            text: format_user_shell_command_record(command, exec_output, turn_context, call_id),
         }],
     }
 }
@@ -91,7 +97,8 @@ mod tests {
             timed_out: false,
         };
         let (_, turn_context) = make_session_and_context();
-        let item = user_shell_command_record_item("echo hi", &exec_output, &turn_context);
+        let item =
+            user_shell_command_record_item("echo hi", &exec_output, &turn_context, "test-call");
         let ResponseItem::Message { content, .. } = item else {
             panic!("expected message");
         };
@@ -115,7 +122,8 @@ mod tests {
             timed_out: false,
         };
         let (_, turn_context) = make_session_and_context();
-        let record = format_user_shell_command_record("false", &exec_output, &turn_context);
+        let record =
+            format_user_shell_command_record("false", &exec_output, &turn_context, "test-call");
         assert_eq!(
             record,
             "<user_shell_command>\n<command>\nfalse\n</command>\n<result>\nExit code: 42\nDuration: 0.1200 seconds\nOutput:\ncombined output wins\n</result>\n</user_shell_command>"

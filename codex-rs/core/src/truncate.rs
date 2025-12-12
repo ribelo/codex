@@ -4,6 +4,9 @@
 
 use crate::config::Config;
 use codex_protocol::models::FunctionCallOutputContentItem;
+use std::fs;
+use std::path::Path;
+use std::path::PathBuf;
 
 const APPROX_BYTES_PER_TOKEN: usize = 4;
 
@@ -14,6 +17,74 @@ pub const DEFAULT_TOOL_OUTPUT_BYTES: usize = 50_000;
 /// Default byte limit for MCP tool output truncation.
 /// Matches Claude Code's 25k token limit (~100KB at 4 bytes/token).
 pub const DEFAULT_MCP_TOOL_OUTPUT_BYTES: usize = 100_000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TruncationBias {
+    Balanced,  // 50/50 split - current behavior, required for OpenAI
+    TailHeavy, // 20/80 split - better for error messages, stack traces
+}
+
+impl TruncationBias {
+    pub fn head_ratio(&self) -> f64 {
+        match self {
+            TruncationBias::Balanced => 0.5,
+            TruncationBias::TailHeavy => 0.2,
+        }
+    }
+
+    pub fn tail_ratio(&self) -> f64 {
+        1.0 - self.head_ratio()
+    }
+}
+
+pub struct TruncationResult {
+    pub content: String,
+    pub saved_file: Option<PathBuf>,
+    /// Original size in bytes before truncation. Currently unused but available for future use.
+    #[allow(dead_code)]
+    original_size: usize,
+}
+
+pub fn truncate_with_file_fallback(
+    content: &str,
+    policy: TruncationPolicy,
+    bias: TruncationBias,
+    temp_dir: &Path,
+    call_id: &str,
+) -> std::io::Result<TruncationResult> {
+    let original_size = content.len();
+    let truncated_raw = truncate_text(content, policy, bias);
+
+    if truncated_raw.len() < original_size {
+        if !temp_dir.exists() {
+            fs::create_dir_all(temp_dir)?;
+        }
+        let file_path = temp_dir.join(format!("{}.output", call_id));
+        // Atomic write via temp file could be better but simple write is okay for now as per constraints
+        fs::write(&file_path, content)?;
+
+        let hint = format!(
+            "\n\nOutput was truncated ({} bytes -> {} bytes).\nFull output saved to: {}\nTo read full output, use read_file tool with offset and limit parameters.",
+            original_size,
+            truncated_raw.len(),
+            file_path.display()
+        );
+
+        let content = format!("{truncated_raw}{hint}");
+
+        Ok(TruncationResult {
+            content,
+            saved_file: Some(file_path),
+            original_size,
+        })
+    } else {
+        Ok(TruncationResult {
+            content: content.to_string(),
+            saved_file: None,
+            original_size,
+        })
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TruncationPolicy {
@@ -82,20 +153,28 @@ impl TruncationPolicy {
     }
 }
 
-pub(crate) fn formatted_truncate_text(content: &str, policy: TruncationPolicy) -> String {
+pub(crate) fn formatted_truncate_text(
+    content: &str,
+    policy: TruncationPolicy,
+    bias: TruncationBias,
+) -> String {
     if content.len() <= policy.byte_budget() {
         return content.to_string();
     }
     let total_lines = content.lines().count();
-    let result = truncate_text(content, policy);
+    let result = truncate_text(content, policy, bias);
     format!("Total output lines: {total_lines}\n\n{result}")
 }
 
-pub(crate) fn truncate_text(content: &str, policy: TruncationPolicy) -> String {
+pub(crate) fn truncate_text(
+    content: &str,
+    policy: TruncationPolicy,
+    bias: TruncationBias,
+) -> String {
     match policy {
-        TruncationPolicy::Bytes(_) => truncate_with_byte_estimate(content, policy),
+        TruncationPolicy::Bytes(_) => truncate_with_byte_estimate(content, policy, bias),
         TruncationPolicy::Tokens(_) => {
-            let (truncated, _) = truncate_with_token_budget(content, policy);
+            let (truncated, _) = truncate_with_token_budget(content, policy, bias);
             truncated
         }
     }
@@ -106,6 +185,7 @@ pub(crate) fn truncate_text(content: &str, policy: TruncationPolicy) -> String {
 pub(crate) fn truncate_function_output_items_with_policy(
     items: &[FunctionCallOutputContentItem],
     policy: TruncationPolicy,
+    bias: TruncationBias,
 ) -> Vec<FunctionCallOutputContentItem> {
     let mut out: Vec<FunctionCallOutputContentItem> = Vec::with_capacity(items.len());
     let mut remaining_budget = match policy {
@@ -135,7 +215,7 @@ pub(crate) fn truncate_function_output_items_with_policy(
                         TruncationPolicy::Bytes(_) => TruncationPolicy::Bytes(remaining_budget),
                         TruncationPolicy::Tokens(_) => TruncationPolicy::Tokens(remaining_budget),
                     };
-                    let snippet = truncate_text(text, snippet_policy);
+                    let snippet = truncate_text(text, snippet_policy, bias);
                     if snippet.is_empty() {
                         omitted_text_items += 1;
                     } else {
@@ -165,7 +245,11 @@ pub(crate) fn truncate_function_output_items_with_policy(
 /// preserving the beginning and the end. Returns the possibly truncated string
 /// and `Some(original_token_count)` if truncation occurred; otherwise returns
 /// the original string and `None`.
-fn truncate_with_token_budget(s: &str, policy: TruncationPolicy) -> (String, Option<u64>) {
+fn truncate_with_token_budget(
+    s: &str,
+    policy: TruncationPolicy,
+    bias: TruncationBias,
+) -> (String, Option<u64>) {
     if s.is_empty() {
         return (String::new(), None);
     }
@@ -176,7 +260,7 @@ fn truncate_with_token_budget(s: &str, policy: TruncationPolicy) -> (String, Opt
         return (s.to_string(), None);
     }
 
-    let truncated = truncate_with_byte_estimate(s, policy);
+    let truncated = truncate_with_byte_estimate(s, policy, bias);
     let approx_total_usize = approx_token_count(s);
     let approx_total = u64::try_from(approx_total_usize).unwrap_or(u64::MAX);
     if truncated == s {
@@ -189,7 +273,7 @@ fn truncate_with_token_budget(s: &str, policy: TruncationPolicy) -> (String, Opt
 /// Truncate a string using a byte budget derived from the token budget, without
 /// performing any real tokenization. This keeps the logic purely byte-based and
 /// uses a bytes placeholder in the truncated output.
-fn truncate_with_byte_estimate(s: &str, policy: TruncationPolicy) -> String {
+fn truncate_with_byte_estimate(s: &str, policy: TruncationPolicy, bias: TruncationBias) -> String {
     if s.is_empty() {
         return String::new();
     }
@@ -212,7 +296,7 @@ fn truncate_with_byte_estimate(s: &str, policy: TruncationPolicy) -> String {
 
     let total_bytes = s.len();
 
-    let (left_budget, right_budget) = split_budget(max_bytes);
+    let (left_budget, right_budget) = split_budget(max_bytes, bias);
 
     let (removed_chars, left, right) = split_string(s, left_budget, right_budget);
 
@@ -271,8 +355,8 @@ fn format_truncation_marker(policy: TruncationPolicy, removed_count: u64) -> Str
     }
 }
 
-fn split_budget(budget: usize) -> (usize, usize) {
-    let left = budget / 2;
+fn split_budget(budget: usize, bias: TruncationBias) -> (usize, usize) {
+    let left = (budget as f64 * bias.head_ratio()) as usize;
     (left, budget - left)
 }
 
@@ -313,6 +397,7 @@ pub(crate) fn approx_tokens_from_byte_count(bytes: usize) -> u64 {
 #[cfg(test)]
 mod tests {
 
+    use super::TruncationBias;
     use super::TruncationPolicy;
     use super::approx_token_count;
     use super::formatted_truncate_text;
@@ -322,6 +407,17 @@ mod tests {
     use super::truncate_with_token_budget;
     use codex_protocol::models::FunctionCallOutputContentItem;
     use pretty_assertions::assert_eq;
+
+    #[test]
+    fn test_truncation_bias_ratios() {
+        let balanced = TruncationBias::Balanced;
+        assert_eq!(balanced.head_ratio(), 0.5);
+        assert_eq!(balanced.tail_ratio(), 0.5);
+
+        let tail_heavy = TruncationBias::TailHeavy;
+        assert_eq!(tail_heavy.head_ratio(), 0.2);
+        assert_eq!(tail_heavy.tail_ratio(), 0.8);
+    }
 
     #[test]
     fn split_string_works() {
@@ -364,7 +460,11 @@ mod tests {
 
         assert_eq!(
             "Total output lines: 1\n\n…13 chars truncated…t",
-            formatted_truncate_text(content, TruncationPolicy::Bytes(1)),
+            formatted_truncate_text(
+                content,
+                TruncationPolicy::Bytes(1),
+                TruncationBias::Balanced
+            ),
         );
     }
 
@@ -374,7 +474,11 @@ mod tests {
 
         assert_eq!(
             "Total output lines: 1\n\nex…3 tokens truncated…ut",
-            formatted_truncate_text(content, TruncationPolicy::Tokens(1)),
+            formatted_truncate_text(
+                content,
+                TruncationPolicy::Tokens(1),
+                TruncationBias::Balanced
+            ),
         );
     }
 
@@ -384,7 +488,11 @@ mod tests {
 
         assert_eq!(
             content,
-            formatted_truncate_text(content, TruncationPolicy::Tokens(10)),
+            formatted_truncate_text(
+                content,
+                TruncationPolicy::Tokens(10),
+                TruncationBias::Balanced
+            ),
         );
     }
 
@@ -394,7 +502,11 @@ mod tests {
 
         assert_eq!(
             content,
-            formatted_truncate_text(content, TruncationPolicy::Bytes(20)),
+            formatted_truncate_text(
+                content,
+                TruncationPolicy::Bytes(20),
+                TruncationBias::Balanced
+            ),
         );
     }
 
@@ -404,7 +516,11 @@ mod tests {
 
         assert_eq!(
             "Total output lines: 1\n\nthis is an…10 tokens truncated… truncated",
-            formatted_truncate_text(content, TruncationPolicy::Tokens(5)),
+            formatted_truncate_text(
+                content,
+                TruncationPolicy::Tokens(5),
+                TruncationBias::Balanced
+            ),
         );
     }
 
@@ -414,7 +530,11 @@ mod tests {
 
         assert_eq!(
             "Total output lines: 1\n\nthis is an exam…30 chars truncated…ld be truncated",
-            formatted_truncate_text(content, TruncationPolicy::Bytes(30)),
+            formatted_truncate_text(
+                content,
+                TruncationPolicy::Bytes(30),
+                TruncationBias::Balanced
+            ),
         );
     }
 
@@ -425,7 +545,11 @@ mod tests {
 
         assert_eq!(
             "Total output lines: 2\n\nthis is an exam…51 chars truncated…some other line",
-            formatted_truncate_text(content, TruncationPolicy::Bytes(30)),
+            formatted_truncate_text(
+                content,
+                TruncationPolicy::Bytes(30),
+                TruncationBias::Balanced
+            ),
         );
     }
 
@@ -436,7 +560,11 @@ mod tests {
 
         assert_eq!(
             "Total output lines: 2\n\nthis is an example o…11 tokens truncated…also some other line",
-            formatted_truncate_text(content, TruncationPolicy::Tokens(10)),
+            formatted_truncate_text(
+                content,
+                TruncationPolicy::Tokens(10),
+                TruncationBias::Balanced
+            ),
         );
     }
 
@@ -444,7 +572,11 @@ mod tests {
     fn truncate_with_token_budget_returns_original_when_under_limit() {
         let s = "short output";
         let limit = 100;
-        let (out, original) = truncate_with_token_budget(s, TruncationPolicy::Tokens(limit));
+        let (out, original) = truncate_with_token_budget(
+            s,
+            TruncationPolicy::Tokens(limit),
+            TruncationBias::Balanced,
+        );
         assert_eq!(out, s);
         assert_eq!(original, None);
     }
@@ -452,7 +584,8 @@ mod tests {
     #[test]
     fn truncate_with_token_budget_reports_truncation_at_zero_limit() {
         let s = "abcdef";
-        let (out, original) = truncate_with_token_budget(s, TruncationPolicy::Tokens(0));
+        let (out, original) =
+            truncate_with_token_budget(s, TruncationPolicy::Tokens(0), TruncationBias::Balanced);
         assert_eq!(out, "…2 tokens truncated…");
         assert_eq!(original, Some(2));
     }
@@ -460,7 +593,8 @@ mod tests {
     #[test]
     fn truncate_middle_tokens_handles_utf8_content() {
         let s = "😀😀😀😀😀😀😀😀😀😀\nsecond line with text\n";
-        let (out, tokens) = truncate_with_token_budget(s, TruncationPolicy::Tokens(8));
+        let (out, tokens) =
+            truncate_with_token_budget(s, TruncationPolicy::Tokens(8), TruncationBias::Balanced);
         assert_eq!(out, "😀😀😀😀…8 tokens truncated… line with text\n");
         assert_eq!(tokens, Some(16));
     }
@@ -468,7 +602,7 @@ mod tests {
     #[test]
     fn truncate_middle_bytes_handles_utf8_content() {
         let s = "😀😀😀😀😀😀😀😀😀😀\nsecond line with text\n";
-        let out = truncate_text(s, TruncationPolicy::Bytes(20));
+        let out = truncate_text(s, TruncationPolicy::Bytes(20), TruncationBias::Balanced);
         assert_eq!(out, "😀😀…21 chars truncated…with text\n");
     }
 
@@ -495,8 +629,11 @@ mod tests {
             FunctionCallOutputContentItem::InputText { text: t5 },
         ];
 
-        let output =
-            truncate_function_output_items_with_policy(&items, TruncationPolicy::Tokens(limit));
+        let output = truncate_function_output_items_with_policy(
+            &items,
+            TruncationPolicy::Tokens(limit),
+            TruncationBias::Balanced,
+        );
 
         // Expect: t1 (full), t2 (full), image, t3 (truncated), summary mentioning 2 omitted.
         assert_eq!(output.len(), 5);
@@ -534,5 +671,47 @@ mod tests {
             other => panic!("unexpected summary item: {other:?}"),
         };
         assert!(summary_text.contains("omitted 2 text items"));
+    }
+
+    #[test]
+    fn truncate_text_respects_tail_heavy_bias() {
+        let content = "1234567890".repeat(10); // 100 chars
+        let limit = 20;
+        let bias = TruncationBias::TailHeavy; // 20% head (4 chars), 80% tail (16 chars)
+
+        let truncated = truncate_text(&content, TruncationPolicy::Bytes(limit), bias);
+
+        // Expect: 4 chars head + marker + 16 chars tail
+        // 20 chars total budget.
+        // split_budget(20, TailHeavy) -> left = 20 * 0.2 = 4. right = 16.
+        // content: 1234...
+        // head: "1234"
+        // tail: last 16 chars. "567890" + "1234567890" = 16 chars?
+        // last 10: 1234567890. last 16: 5678901234567890.
+
+        assert!(truncated.starts_with("1234…"), "expected prefix 1234");
+        assert!(truncated.ends_with("5678901234567890"), "expected suffix");
+    }
+
+    #[test]
+    fn truncate_text_respects_balanced_bias() {
+        let content = "1234567890".repeat(10); // 100 chars
+        let limit = 20;
+        let bias = TruncationBias::Balanced; // 50% head (10 chars), 50% tail (10 chars)
+
+        let truncated = truncate_text(&content, TruncationPolicy::Bytes(limit), bias);
+
+        // split_budget(20, Balanced) -> left = 10, right = 10.
+        // head: "1234567890"
+        // tail: "1234567890"
+
+        assert!(
+            truncated.starts_with("1234567890…"),
+            "expected prefix 1234567890"
+        );
+        assert!(
+            truncated.ends_with("1234567890"),
+            "expected suffix 1234567890"
+        );
     }
 }
