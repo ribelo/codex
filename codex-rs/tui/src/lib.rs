@@ -7,8 +7,6 @@ use additional_dirs::add_dir_warning_message;
 use app::App;
 pub use app::AppExitInfo;
 use codex_app_server_protocol::AuthMode;
-use codex_common::oss::ensure_oss_provider_ready;
-use codex_common::oss::get_default_model_for_oss_provider;
 use codex_core::AuthManager;
 use codex_core::CodexAuth;
 use codex_core::INTERACTIVE_SESSION_SOURCES;
@@ -18,7 +16,6 @@ use codex_core::config::Config;
 use codex_core::config::ConfigOverrides;
 use codex_core::config::find_codex_home;
 use codex_core::config::load_config_as_toml_with_cli_overrides;
-use codex_core::config::resolve_oss_provider;
 use codex_core::find_conversation_path_by_id_str;
 use codex_core::get_platform_sandbox;
 use codex_core::protocol::AskForApproval;
@@ -59,7 +56,6 @@ mod markdown_render;
 mod markdown_stream;
 mod model_migration;
 pub mod onboarding;
-mod oss_selection;
 mod pager_overlay;
 pub mod public_widgets;
 mod render;
@@ -128,10 +124,7 @@ pub async fn run_main(
             .push("features.web_search_request=true".to_string());
     }
 
-    // When using `--oss`, let the bootstrapper pick the model (defaulting to
-    // gpt-oss:20b) and ensure it is present locally. Also, force the built‑in
     let raw_overrides = cli.config_overrides.raw_overrides.clone();
-    // `oss` model provider.
     let overrides_cli = codex_common::CliConfigOverrides { raw_overrides };
     let cli_kv_overrides = match overrides_cli.parse_overrides() {
         // Parse `-c` overrides from the CLI.
@@ -166,41 +159,8 @@ pub async fn run_main(
     // Extract available profile names for the /profile command.
     let available_profiles: Vec<String> = config_toml.profiles.keys().cloned().collect();
 
-    let model_provider_override = if cli.oss {
-        let resolved = resolve_oss_provider(
-            cli.oss_provider.as_deref(),
-            &config_toml,
-            cli.config_profile.clone(),
-        );
-
-        if let Some(provider) = resolved {
-            Some(provider)
-        } else {
-            // No provider configured, prompt the user
-            let provider = oss_selection::select_oss_provider(&codex_home).await?;
-            if provider == "__CANCELLED__" {
-                return Err(std::io::Error::other(
-                    "OSS provider selection was cancelled by user",
-                ));
-            }
-            Some(provider)
-        }
-    } else {
-        None
-    };
-
-    // When using `--oss`, let the bootstrapper pick the model based on selected provider
-    let model = if let Some(model) = &cli.model {
-        Some(model.clone())
-    } else if cli.oss {
-        // Use the provider from model_provider_override
-        model_provider_override
-            .as_ref()
-            .and_then(|provider_id| get_default_model_for_oss_provider(provider_id))
-            .map(std::borrow::ToOwned::to_owned)
-    } else {
-        None // No model specified, will use the default.
-    };
+    // Use model from CLI if provided.
+    let model = cli.model.clone();
 
     // canonicalize the cwd
     let cwd = cli.cwd.clone().map(|p| p.canonicalize().unwrap_or(p));
@@ -212,14 +172,14 @@ pub async fn run_main(
         approval_policy,
         sandbox_mode,
         cwd,
-        model_provider: model_provider_override.clone(),
+        model_provider: None,
         config_profile: cli.config_profile.clone(),
         codex_linux_sandbox_exe,
         base_instructions: None,
         developer_instructions: None,
         compact_prompt: None,
         include_apply_patch_tool: None,
-        show_raw_agent_reasoning: cli.oss.then_some(true),
+        show_raw_agent_reasoning: None,
         tools_web_search_request: None,
         additional_writable_roots: additional_dirs,
     };
@@ -284,21 +244,6 @@ pub async fn run_main(
         .with_ansi(false)
         .with_target(false)
         .with_filter(targets);
-
-    if cli.oss && model_provider_override.is_some() {
-        // We're in the oss section, so provider_id should be Some
-        // Let's handle None case gracefully though just in case
-        let provider_id = match model_provider_override.as_ref() {
-            Some(id) => id,
-            None => {
-                error!("OSS provider unexpectedly not set when oss flag is used");
-                return Err(std::io::Error::other(
-                    "OSS provider not set but oss flag was used",
-                ));
-            }
-        };
-        ensure_oss_provider_ready(provider_id, &config).await?;
-    }
 
     let otel = codex_core::otel_init::build_provider(&config, env!("CARGO_PKG_VERSION"));
 

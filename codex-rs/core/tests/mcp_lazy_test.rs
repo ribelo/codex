@@ -50,7 +50,7 @@ async fn test_mcp_lazy_init_background() {
         assert_eq!(ev.server, "sleepy");
         assert!(matches!(ev.status, McpStartupStatus::Starting));
     } else {
-        panic!("unexpected event: {:?}", event);
+        panic!("unexpected event: {event:?}");
     }
 
     // Wait for failure (handshake timeout or process exit)
@@ -63,6 +63,6 @@ async fn test_mcp_lazy_init_background() {
             panic!("expected failure, got {:?}", ev.status);
         }
     } else {
-        panic!("unexpected event: {:?}", event);
+        panic!("unexpected event: {event:?}");
     }
 }

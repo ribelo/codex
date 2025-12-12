@@ -18,15 +18,12 @@ members = [
     "exec",
     "exec-server",
     "execpolicy",
-    "execpolicy-legacy",
     "keyring-store",
     "file-search",
     "linux-sandbox",
-    "lmstudio",
     "login",
     "mcp-server",
     "mcp-types",
-    "ollama",
     "process-hardening",
     "protocol",
     "rmcp-client",
@@ -79,10 +76,8 @@ codex-file-search = { path = "file-search" }
 codex-git = { path = "utils/git" }
 codex-keyring-store = { path = "keyring-store" }
 codex-linux-sandbox = { path = "linux-sandbox" }
-codex-lmstudio = { path = "lmstudio" }
 codex-login = { path = "login" }
 codex-mcp-server = { path = "mcp-server" }
-codex-ollama = { path = "ollama" }
 codex-otel = { path = "otel" }
 codex-process-hardening = { path = "process-hardening" }
 codex-protocol = { path = "protocol" }

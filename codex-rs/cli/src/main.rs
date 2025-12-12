@@ -735,9 +735,6 @@ fn merge_resume_cli_flags(interactive: &mut TuiCli, resume_cli: TuiCli) {
     if let Some(model) = resume_cli.model {
         interactive.model = Some(model);
     }
-    if resume_cli.oss {
-        interactive.oss = true;
-    }
     if let Some(profile) = resume_cli.config_profile {
         interactive.config_profile = Some(profile);
     }
@@ -917,7 +914,6 @@ mod tests {
                 "codex",
                 "resume",
                 "sid",
-                "--oss",
                 "--full-auto",
                 "--search",
                 "--sandbox",
@@ -937,7 +933,6 @@ mod tests {
         );
 
         assert_eq!(interactive.model.as_deref(), Some("gpt-5.1-test"));
-        assert!(interactive.oss);
         assert_eq!(interactive.config_profile.as_deref(), Some("my-profile"));
         assert_matches!(
             interactive.sandbox_mode,

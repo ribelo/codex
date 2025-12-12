@@ -99,6 +99,7 @@ pub(crate) fn compose_account_display(
             Some(StatusAccountDisplay::ChatGpt { email, plan })
         }
         AuthMode::ApiKey => Some(StatusAccountDisplay::ApiKey),
+        AuthMode::Gemini | AuthMode::Antigravity => Some(StatusAccountDisplay::ApiKey),
     }
 }
 
