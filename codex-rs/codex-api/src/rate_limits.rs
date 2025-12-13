@@ -38,6 +38,7 @@ pub fn parse_rate_limit(headers: &HeaderMap) -> Option<RateLimitSnapshot> {
         secondary,
         credits,
         plan_type: None,
+        antigravity: None,
     })
 }
 

@@ -326,6 +326,7 @@ impl App {
                 SubagentErrorPromptOutcome::Continue => {}
             }
         }
+
         let enhanced_keys_supported = tui.enhanced_keys_supported();
         let model_family = conversation_manager
             .get_models_manager()
@@ -1079,6 +1080,19 @@ impl App {
             }
             AppEvent::OpenReviewCustomPrompt => {
                 self.chat_widget.show_review_custom_prompt();
+            }
+            AppEvent::SubmitCommand {
+                description,
+                prompt,
+                agent,
+                profile,
+            } => {
+                self.chat_widget.submit_op(Op::DelegateCommand {
+                    description,
+                    prompt,
+                    agent,
+                    profile,
+                });
             }
             AppEvent::FullScreenApprovalRequest(request) => match request {
                 ApprovalRequest::ApplyPatch { cwd, changes, .. } => {

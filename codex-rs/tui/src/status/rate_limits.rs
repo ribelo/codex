@@ -5,7 +5,9 @@ use chrono::DateTime;
 use chrono::Duration as ChronoDuration;
 use chrono::Local;
 use chrono::Utc;
+use codex_core::protocol::AntigravityQuota;
 use codex_core::protocol::CreditsSnapshot as CoreCreditsSnapshot;
+use codex_core::protocol::ModelQuota;
 use codex_core::protocol::RateLimitSnapshot;
 use codex_core::protocol::RateLimitWindow;
 
@@ -66,6 +68,7 @@ pub(crate) struct RateLimitSnapshotDisplay {
     pub primary: Option<RateLimitWindowDisplay>,
     pub secondary: Option<RateLimitWindowDisplay>,
     pub credits: Option<CreditsSnapshotDisplay>,
+    pub antigravity: Option<AntigravityQuotaDisplay>,
 }
 
 #[derive(Debug, Clone)]
@@ -75,10 +78,40 @@ pub(crate) struct CreditsSnapshotDisplay {
     pub balance: Option<String>,
 }
 
+/// Display-ready Antigravity quota data.
+#[derive(Debug, Clone)]
+pub(crate) struct AntigravityQuotaDisplay {
+    pub plan_name: Option<String>,
+    pub user_tier: Option<String>,
+    pub prompt_credits: CreditsDisplay,
+    pub flow_credits: CreditsDisplay,
+    pub model_quotas: Vec<ModelQuotaDisplay>,
+}
+
+/// Display-ready credits with available/total.
+#[derive(Debug, Clone)]
+pub(crate) struct CreditsDisplay {
+    pub available: i64,
+    pub monthly: i64,
+}
+
+/// Display-ready per-model quota.
+#[derive(Debug, Clone)]
+pub(crate) struct ModelQuotaDisplay {
+    pub label: String,
+    pub remaining_percent: f64,
+    pub resets_at: Option<String>,
+}
+
 pub(crate) fn rate_limit_snapshot_display(
     snapshot: &RateLimitSnapshot,
     captured_at: DateTime<Local>,
 ) -> RateLimitSnapshotDisplay {
+    let antigravity = snapshot
+        .antigravity
+        .as_ref()
+        .map(|ag| antigravity_quota_display(ag, captured_at));
+
     RateLimitSnapshotDisplay {
         captured_at,
         primary: snapshot
@@ -90,6 +123,7 @@ pub(crate) fn rate_limit_snapshot_display(
             .as_ref()
             .map(|window| RateLimitWindowDisplay::from_window(window, captured_at)),
         credits: snapshot.credits.as_ref().map(CreditsSnapshotDisplay::from),
+        antigravity,
     }
 }
 
@@ -103,14 +137,116 @@ impl From<&CoreCreditsSnapshot> for CreditsSnapshotDisplay {
     }
 }
 
+fn antigravity_quota_display(
+    quota: &AntigravityQuota,
+    captured_at: DateTime<Local>,
+) -> AntigravityQuotaDisplay {
+    let model_quotas = quota
+        .model_quotas
+        .iter()
+        .map(|mq| model_quota_display(mq, captured_at))
+        .collect();
+
+    AntigravityQuotaDisplay {
+        plan_name: quota.plan_name.clone(),
+        user_tier: quota.user_tier.clone(),
+        prompt_credits: CreditsDisplay {
+            available: quota.available_prompt_credits,
+            monthly: quota.monthly_prompt_credits,
+        },
+        flow_credits: CreditsDisplay {
+            available: quota.available_flow_credits,
+            monthly: quota.monthly_flow_credits,
+        },
+        model_quotas,
+    }
+}
+
+fn model_quota_display(quota: &ModelQuota, captured_at: DateTime<Local>) -> ModelQuotaDisplay {
+    let resets_at = quota
+        .resets_at
+        .and_then(|seconds| DateTime::<Utc>::from_timestamp(seconds, 0))
+        .map(|dt| dt.with_timezone(&Local))
+        .map(|dt| format_reset_timestamp(dt, captured_at));
+
+    ModelQuotaDisplay {
+        label: quota.label.clone(),
+        remaining_percent: quota.remaining_fraction * 100.0,
+        resets_at,
+    }
+}
+
 pub(crate) fn compose_rate_limit_data(
     snapshot: Option<&RateLimitSnapshotDisplay>,
     now: DateTime<Local>,
 ) -> StatusRateLimitData {
     match snapshot {
         Some(snapshot) => {
-            let mut rows = Vec::with_capacity(3);
+            let mut rows = Vec::with_capacity(10);
 
+            // Handle Antigravity data if present (overrides ChatGPT-style limits)
+            if let Some(antigravity) = &snapshot.antigravity {
+                // Plan and tier info
+                if let Some(plan_name) = &antigravity.plan_name {
+                    let tier_info = antigravity
+                        .user_tier
+                        .as_ref()
+                        .map(|t| format!("{plan_name} ({t})"))
+                        .unwrap_or_else(|| plan_name.clone());
+                    rows.push(StatusRateLimitRow {
+                        label: "Plan".to_string(),
+                        value: StatusRateLimitValue::Text(tier_info),
+                    });
+                }
+
+                // Prompt credits
+                if antigravity.prompt_credits.monthly > 0 {
+                    rows.push(StatusRateLimitRow {
+                        label: "Prompt credits".to_string(),
+                        value: StatusRateLimitValue::Text(format!(
+                            "{} / {} monthly",
+                            antigravity.prompt_credits.available,
+                            antigravity.prompt_credits.monthly
+                        )),
+                    });
+                }
+
+                // Flow credits
+                if antigravity.flow_credits.monthly > 0 {
+                    rows.push(StatusRateLimitRow {
+                        label: "Flow credits".to_string(),
+                        value: StatusRateLimitValue::Text(format!(
+                            "{} / {} monthly",
+                            antigravity.flow_credits.available, antigravity.flow_credits.monthly
+                        )),
+                    });
+                }
+
+                // Per-model quotas
+                for model in &antigravity.model_quotas {
+                    let used_percent = 100.0 - model.remaining_percent;
+                    rows.push(StatusRateLimitRow {
+                        label: model.label.clone(),
+                        value: StatusRateLimitValue::Window {
+                            percent_used: used_percent,
+                            resets_at: model.resets_at.clone(),
+                        },
+                    });
+                }
+
+                let is_stale = now.signed_duration_since(snapshot.captured_at)
+                    > ChronoDuration::minutes(RATE_LIMIT_STALE_THRESHOLD_MINUTES);
+
+                return if rows.is_empty() {
+                    StatusRateLimitData::Available(vec![])
+                } else if is_stale {
+                    StatusRateLimitData::Stale(rows)
+                } else {
+                    StatusRateLimitData::Available(rows)
+                };
+            }
+
+            // ChatGPT-style rate limits (fallback when no Antigravity data)
             if let Some(primary) = snapshot.primary.as_ref() {
                 let label: String = primary
                     .window_minutes

@@ -1586,6 +1586,9 @@ async fn submission_loop(sess: Arc<Session>, config: Arc<Config>, rx_sub: Receiv
             Op::ListCustomPrompts => {
                 handlers::list_custom_prompts(&sess, sub.id.clone()).await;
             }
+            Op::ListCommands => {
+                handlers::list_commands(&sess, sub.id.clone()).await;
+            }
             Op::Undo => {
                 handlers::undo(&sess, sub.id.clone()).await;
             }
@@ -1607,6 +1610,31 @@ async fn submission_loop(sess: Arc<Session>, config: Arc<Config>, rx_sub: Receiv
                 decision,
             } => {
                 handlers::resolve_elicitation(&sess, server_name, request_id, decision).await;
+            }
+            Op::DelegateSubagent {
+                description,
+                prompt,
+                agent,
+            } => {
+                handlers::delegate_subagent(&sess, sub.id.clone(), description, prompt, agent)
+                    .await;
+            }
+            Op::DelegateCommand {
+                description,
+                prompt,
+                agent,
+                profile,
+            } => {
+                handlers::delegate_command(
+                    &sess,
+                    &config,
+                    sub.id.clone(),
+                    description,
+                    prompt,
+                    agent,
+                    profile,
+                )
+                .await;
             }
             Op::Shutdown => {
                 if handlers::shutdown(&sess, sub.id.clone()).await {
@@ -1633,15 +1661,18 @@ mod handlers {
     use crate::mcp::auth::compute_auth_statuses;
     use crate::mcp::collect_mcp_snapshot_from_manager;
     use crate::review_prompts::resolve_review_request;
+    use crate::tasks::CommandDelegateTask;
     use crate::tasks::CompactTask;
     use crate::tasks::RegularTask;
     use crate::tasks::UndoTask;
     use crate::tasks::UserShellCommandTask;
+    use codex_protocol::custom_commands::CustomCommand;
     use codex_protocol::custom_prompts::CustomPrompt;
     use codex_protocol::protocol::CodexErrorInfo;
     use codex_protocol::protocol::ErrorEvent;
     use codex_protocol::protocol::Event;
     use codex_protocol::protocol::EventMsg;
+    use codex_protocol::protocol::ListCommandsResponseEvent;
     use codex_protocol::protocol::ListCustomPromptsResponseEvent;
     use codex_protocol::protocol::Op;
     use codex_protocol::protocol::ReviewDecision;
@@ -1863,6 +1894,120 @@ mod handlers {
         sess.send_event_raw(event).await;
     }
 
+    pub async fn delegate_subagent(
+        sess: &Arc<Session>,
+        sub_id: String,
+        description: String,
+        prompt: String,
+        agent: String,
+    ) {
+        use crate::tasks::SubagentDelegateTask;
+        use codex_protocol::models::ContentItem;
+        use codex_protocol::models::ResponseItem;
+
+        // 1. Create TurnContext for the tool execution
+        let turn_context = sess
+            .new_turn_with_sub_id(sub_id.clone(), SessionSettingsUpdate::default())
+            .await;
+
+        // 2. Record UserMessage (the prompt)
+        {
+            let mut state = sess.state.lock().await;
+            let items = vec![ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: prompt.clone(),
+                }],
+            }];
+            state.record_items(
+                &items,
+                turn_context.truncation_policy,
+                turn_context.truncation_bias,
+            );
+        }
+
+        // 3. Record Assistant ToolCall
+        let call_id = format!("call-{}", uuid::Uuid::new_v4());
+        let tool_name = "task".to_string();
+        let args = serde_json::json!({
+            "description": description,
+            "prompt": prompt,
+            "subagent_type": agent,
+        });
+        let args_str = args.to_string();
+
+        {
+            let mut state = sess.state.lock().await;
+            let items = vec![ResponseItem::CustomToolCall {
+                id: None,
+                status: None,
+                call_id: call_id.clone(),
+                name: tool_name.clone(),
+                input: args_str.clone(),
+            }];
+            state.record_items(
+                &items,
+                turn_context.truncation_policy,
+                turn_context.truncation_bias,
+            );
+        }
+
+        // 4. Spawn task to execute the subagent delegation
+        // Using spawn_task ensures Ctrl+C interrupts work correctly
+        sess.spawn_task(
+            turn_context,
+            Vec::new(),
+            SubagentDelegateTask {
+                call_id,
+                tool_name,
+                args_str,
+            },
+        )
+        .await;
+    }
+
+    pub async fn delegate_command(
+        sess: &Arc<Session>,
+        _config: &Arc<Config>,
+        sub_id: String,
+        description: String,
+        prompt: String,
+        agent: Option<String>,
+        profile: Option<String>,
+    ) {
+        if agent.is_some() && profile.is_some() {
+            let turn_context = sess
+                .new_turn_with_sub_id(sub_id.clone(), SessionSettingsUpdate::default())
+                .await;
+            let event = Event {
+                id: sub_id,
+                msg: EventMsg::Error(ErrorEvent {
+                    message:
+                        "Cannot specify both 'agent' and 'profile' for a command. Use one or the other.".to_string(),
+                    codex_error_info: Some(CodexErrorInfo::Other),
+                }),
+            };
+            sess.send_event(&turn_context, event.msg).await;
+            return;
+        }
+
+        let turn_context = sess
+            .new_turn_with_sub_id(sub_id, SessionSettingsUpdate::default())
+            .await;
+        sess.spawn_task(
+            turn_context,
+            Vec::new(),
+            CommandDelegateTask {
+                description,
+                prompt,
+                agent,
+                profile,
+            },
+        )
+        .await;
+    }
+
     pub async fn list_custom_prompts(sess: &Session, sub_id: String) {
         let custom_prompts: Vec<CustomPrompt> =
             if let Some(dir) = crate::custom_prompts::default_prompts_dir() {
@@ -1876,6 +2021,60 @@ mod handlers {
             msg: EventMsg::ListCustomPromptsResponse(ListCustomPromptsResponseEvent {
                 custom_prompts,
             }),
+        };
+        sess.send_event_raw(event).await;
+    }
+
+    pub async fn list_commands(sess: &Session, sub_id: String) {
+        let commands: Vec<CustomCommand> =
+            if let Some(dir) = crate::custom_commands::default_commands_dir() {
+                crate::custom_commands::discover_commands_in(&dir).await
+            } else {
+                Vec::new()
+            };
+
+        use crate::custom_commands::validate_commands;
+        use crate::custom_prompts::load_profile_names;
+        use crate::subagents::SubagentRegistry;
+
+        let codex_home = {
+            let state = sess.state.lock().await;
+            state
+                .session_configuration
+                .original_config_do_not_use
+                .codex_home
+                .clone()
+        };
+        let registry = SubagentRegistry::new(&codex_home);
+        let agent_slugs: std::collections::HashSet<_> =
+            registry.list().iter().map(|a| a.slug.clone()).collect();
+        let profile_names = load_profile_names(&codex_home).await;
+        let errors = validate_commands(&commands, &agent_slugs, &profile_names);
+
+        if !errors.is_empty() {
+            for err in &errors {
+                warn!(
+                    "Command validation error in {}: {}",
+                    err.path.display(),
+                    err.message
+                );
+                let warning = Event {
+                    id: sub_id.clone(),
+                    msg: EventMsg::Warning(WarningEvent {
+                        message: format!(
+                            "Command validation error in {}: {}",
+                            err.path.file_name().unwrap_or_default().to_string_lossy(),
+                            err.message
+                        ),
+                    }),
+                };
+                sess.send_event_raw(warning).await;
+            }
+        }
+
+        let event = Event {
+            id: sub_id,
+            msg: EventMsg::ListCommandsResponse(ListCommandsResponseEvent { commands }),
         };
         sess.send_event_raw(event).await;
     }
@@ -2715,6 +2914,7 @@ mod tests {
                 balance: Some("10.00".to_string()),
             }),
             plan_type: Some(codex_protocol::account::PlanType::Plus),
+            antigravity: None,
         };
         state.set_rate_limits(initial.clone());
 
@@ -2731,6 +2931,7 @@ mod tests {
             }),
             credits: None,
             plan_type: None,
+            antigravity: None,
         };
         state.set_rate_limits(update.clone());
 
@@ -2741,6 +2942,7 @@ mod tests {
                 secondary: update.secondary,
                 credits: initial.credits,
                 plan_type: initial.plan_type,
+                antigravity: None,
             })
         );
     }
@@ -2791,6 +2993,7 @@ mod tests {
                 balance: Some("15.00".to_string()),
             }),
             plan_type: Some(codex_protocol::account::PlanType::Plus),
+            antigravity: None,
         };
         state.set_rate_limits(initial.clone());
 
@@ -2803,6 +3006,7 @@ mod tests {
             secondary: None,
             credits: None,
             plan_type: Some(codex_protocol::account::PlanType::Pro),
+            antigravity: None,
         };
         state.set_rate_limits(update.clone());
 
@@ -2813,6 +3017,7 @@ mod tests {
                 secondary: update.secondary,
                 credits: initial.credits,
                 plan_type: update.plan_type,
+                antigravity: None,
             })
         );
     }

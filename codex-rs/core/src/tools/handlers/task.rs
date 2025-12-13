@@ -172,6 +172,12 @@ impl ToolHandler for TaskHandler {
             ))
         })?;
 
+        info!(
+            subagent = %args.subagent_type,
+            profile = ?subagent_def.metadata.profile,
+            "Task handler: resolved subagent definition"
+        );
+
         // Enforce allowed_subagents restriction at execution time.
         // This prevents the model from bypassing restrictions by guessing subagent names.
         let config = turn.client.config();
@@ -240,9 +246,22 @@ impl ToolHandler for TaskHandler {
                         ))
                     })?
                 {
+                    info!(
+                        subagent = %args.subagent_type,
+                        profile_name = ?subagent_def.metadata.profile,
+                        profile_model = ?profile.model,
+                        profile_provider = ?profile.model_provider,
+                        "Task handler: loaded profile configuration"
+                    );
+
                     // Apply model from profile
                     if let Some(ref model) = profile.model {
                         sub_config.model = Some(model.clone());
+                        info!(
+                            subagent = %args.subagent_type,
+                            model = %model,
+                            "Task handler: applied model from profile"
+                        );
                     }
 
                     // Apply model_provider from profile
@@ -275,6 +294,12 @@ impl ToolHandler for TaskHandler {
                     if profile.model_verbosity.is_some() {
                         sub_config.model_verbosity = profile.model_verbosity;
                     }
+                } else {
+                    info!(
+                        subagent = %args.subagent_type,
+                        profile_name = ?subagent_def.metadata.profile,
+                        "Task handler: no profile configured or profile returned None"
+                    );
                 }
 
                 // Apply sandbox_policy override (only if more restrictive than parent)

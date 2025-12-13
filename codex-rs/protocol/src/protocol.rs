@@ -13,6 +13,7 @@ use std::time::Duration;
 use crate::ConversationId;
 use crate::approvals::ElicitationRequestEvent;
 use crate::config_types::ReasoningSummary as ReasoningSummaryConfig;
+use crate::custom_commands::CustomCommand;
 use crate::custom_prompts::CustomPrompt;
 use crate::items::TurnItem;
 use crate::message_history::HistoryEntry;
@@ -184,6 +185,9 @@ pub enum Op {
     /// Request the list of available custom prompts.
     ListCustomPrompts,
 
+    /// Request the list of available custom commands.
+    ListCommands,
+
     /// Request the agent to summarize the current conversation context.
     /// The agent will use its existing context (either conversation history or previous response id)
     /// to generate a summary which will be returned as an AgentMessage event.
@@ -206,6 +210,30 @@ pub enum Op {
     RunUserShellCommand {
         /// The raw command string after '!'
         command: String,
+    },
+
+    /// Delegate a task to a subagent (triggered by agent-routed prompts).
+    DelegateSubagent {
+        /// Short description (e.g. prompt name)
+        description: String,
+        /// Full prompt content
+        prompt: String,
+        /// Subagent slug
+        agent: String,
+    },
+
+    /// Delegate a custom command in a new session.
+    DelegateCommand {
+        /// Short description (e.g. command name)
+        description: String,
+        /// Expanded command content (Markdown body) to use as the user message.
+        prompt: String,
+        /// Optional subagent slug to use for the command (mutually exclusive with profile).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        agent: Option<String>,
+        /// Optional profile name to use for the command (mutually exclusive with agent).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        profile: Option<String>,
     },
 
     /// Request the list of available models.
@@ -562,6 +590,9 @@ pub enum EventMsg {
     /// List of custom prompts available to the agent.
     ListCustomPromptsResponse(ListCustomPromptsResponseEvent),
 
+    /// List of custom commands available to the agent.
+    ListCommandsResponse(ListCommandsResponseEvent),
+
     PlanUpdate(UpdatePlanArgs),
 
     TurnAborted(TurnAbortedEvent),
@@ -875,6 +906,9 @@ pub struct RateLimitSnapshot {
     pub secondary: Option<RateLimitWindow>,
     pub credits: Option<CreditsSnapshot>,
     pub plan_type: Option<crate::account::PlanType>,
+    /// Antigravity-specific quota data with per-model quotas and credits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub antigravity: Option<AntigravityQuota>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema, TS)]
@@ -894,6 +928,43 @@ pub struct CreditsSnapshot {
     pub has_credits: bool,
     pub unlimited: bool,
     pub balance: Option<String>,
+}
+
+/// Antigravity-specific quota information including per-model quotas and credits.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema, TS)]
+pub struct AntigravityQuota {
+    /// User's display name.
+    pub user_name: Option<String>,
+    /// User's email address.
+    pub email: Option<String>,
+    /// Plan name (e.g., "Pro", "Free", "Teams").
+    pub plan_name: Option<String>,
+    /// User tier name (e.g., "Google AI Ultra").
+    pub user_tier: Option<String>,
+    /// Available prompt credits.
+    pub available_prompt_credits: i64,
+    /// Monthly prompt credits limit.
+    pub monthly_prompt_credits: i64,
+    /// Available flow credits.
+    pub available_flow_credits: i64,
+    /// Monthly flow credits limit.
+    pub monthly_flow_credits: i64,
+    /// Per-model quota information.
+    pub model_quotas: Vec<ModelQuota>,
+}
+
+/// Quota information for a specific model.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema, TS)]
+pub struct ModelQuota {
+    /// Human-readable model label (e.g., "Claude Opus 4.5 (Thinking)").
+    pub label: String,
+    /// Model identifier.
+    pub model_id: String,
+    /// Fraction of quota remaining (0.0-1.0).
+    pub remaining_fraction: f64,
+    /// Unix timestamp (seconds since epoch) when quota resets.
+    #[ts(type = "number | null")]
+    pub resets_at: Option<i64>,
 }
 
 // Includes prompts, tools and space to call compact.
@@ -1649,6 +1720,12 @@ impl fmt::Display for McpAuthStatus {
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
 pub struct ListCustomPromptsResponseEvent {
     pub custom_prompts: Vec<CustomPrompt>,
+}
+
+/// Response payload for `Op::ListCommands`.
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
+pub struct ListCommandsResponseEvent {
+    pub commands: Vec<CustomCommand>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]

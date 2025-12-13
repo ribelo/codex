@@ -99,5 +99,8 @@ fn merge_rate_limit_fields(
     if snapshot.plan_type.is_none() {
         snapshot.plan_type = previous.and_then(|prior| prior.plan_type);
     }
+    if snapshot.antigravity.is_none() {
+        snapshot.antigravity = previous.and_then(|prior| prior.antigravity.clone());
+    }
     snapshot
 }

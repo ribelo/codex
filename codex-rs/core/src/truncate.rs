@@ -59,7 +59,7 @@ pub fn truncate_with_file_fallback(
         if !temp_dir.exists() {
             fs::create_dir_all(temp_dir)?;
         }
-        let file_path = temp_dir.join(format!("{}.output", call_id));
+        let file_path = temp_dir.join(format!("{call_id}.output"));
         // Atomic write via temp file could be better but simple write is okay for now as per constraints
         fs::write(&file_path, content)?;
 

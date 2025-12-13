@@ -11,6 +11,8 @@ use crate::render::RectExt;
 use crate::slash_command::SlashCommand;
 use crate::slash_command::built_in_slash_commands;
 use codex_common::fuzzy_match::fuzzy_match;
+use codex_protocol::custom_commands::COMMANDS_CMD_PREFIX;
+use codex_protocol::custom_commands::CustomCommand;
 use codex_protocol::custom_prompts::CustomPrompt;
 use codex_protocol::custom_prompts::PROMPTS_CMD_PREFIX;
 use std::collections::HashSet;
@@ -21,17 +23,24 @@ pub(crate) enum CommandItem {
     Builtin(SlashCommand),
     // Index into `prompts`
     UserPrompt(usize),
+    // Index into `commands`
+    UserCommand(usize),
 }
 
 pub(crate) struct CommandPopup {
     command_filter: String,
     builtins: Vec<(&'static str, SlashCommand)>,
     prompts: Vec<CustomPrompt>,
+    commands: Vec<CustomCommand>,
     state: ScrollState,
 }
 
 impl CommandPopup {
-    pub(crate) fn new(mut prompts: Vec<CustomPrompt>, skills_enabled: bool) -> Self {
+    pub(crate) fn new(
+        mut prompts: Vec<CustomPrompt>,
+        mut commands: Vec<CustomCommand>,
+        skills_enabled: bool,
+    ) -> Self {
         let builtins: Vec<(&'static str, SlashCommand)> = built_in_slash_commands()
             .into_iter()
             .filter(|(_, cmd)| skills_enabled || *cmd != SlashCommand::Skills)
@@ -40,10 +49,13 @@ impl CommandPopup {
         let exclude: HashSet<String> = builtins.iter().map(|(n, _)| (*n).to_string()).collect();
         prompts.retain(|p| !exclude.contains(&p.name));
         prompts.sort_by(|a, b| a.name.cmp(&b.name));
+        commands.retain(|c| !exclude.contains(&c.name));
+        commands.sort_by(|a, b| a.name.cmp(&b.name));
         Self {
             command_filter: String::new(),
             builtins,
             prompts,
+            commands,
             state: ScrollState::new(),
         }
     }
@@ -59,8 +71,23 @@ impl CommandPopup {
         self.prompts = prompts;
     }
 
+    pub(crate) fn set_commands(&mut self, mut commands: Vec<CustomCommand>) {
+        let exclude: HashSet<String> = self
+            .builtins
+            .iter()
+            .map(|(n, _)| (*n).to_string())
+            .collect();
+        commands.retain(|c| !exclude.contains(&c.name));
+        commands.sort_by(|a, b| a.name.cmp(&b.name));
+        self.commands = commands;
+    }
+
     pub(crate) fn prompt(&self, idx: usize) -> Option<&CustomPrompt> {
         self.prompts.get(idx)
+    }
+
+    pub(crate) fn command(&self, idx: usize) -> Option<&CustomCommand> {
+        self.commands.get(idx)
     }
 
     /// Update the filter string based on the current composer text. The text
@@ -118,6 +145,9 @@ impl CommandPopup {
             for idx in 0..self.prompts.len() {
                 out.push((CommandItem::UserPrompt(idx), None, 0));
             }
+            for idx in 0..self.commands.len() {
+                out.push((CommandItem::UserCommand(idx), None, 0));
+            }
             return out;
         }
 
@@ -135,16 +165,24 @@ impl CommandPopup {
                 out.push((CommandItem::UserPrompt(idx), Some(indices), score));
             }
         }
+        for (idx, c) in self.commands.iter().enumerate() {
+            let display = format!("{COMMANDS_CMD_PREFIX}:{}", c.name);
+            if let Some((indices, score)) = fuzzy_match(&display, filter) {
+                out.push((CommandItem::UserCommand(idx), Some(indices), score));
+            }
+        }
         // When filtering, sort by ascending score and then by name for stability.
         out.sort_by(|a, b| {
             a.2.cmp(&b.2).then_with(|| {
                 let an = match a.0 {
                     CommandItem::Builtin(c) => c.command(),
                     CommandItem::UserPrompt(i) => &self.prompts[i].name,
+                    CommandItem::UserCommand(i) => &self.commands[i].name,
                 };
                 let bn = match b.0 {
                     CommandItem::Builtin(c) => c.command(),
                     CommandItem::UserPrompt(i) => &self.prompts[i].name,
+                    CommandItem::UserCommand(i) => &self.commands[i].name,
                 };
                 an.cmp(bn)
             })
@@ -175,6 +213,22 @@ impl CommandPopup {
                             .unwrap_or_else(|| "send saved prompt".to_string());
                         (
                             format!("/{PROMPTS_CMD_PREFIX}:{}", prompt.name),
+                            description,
+                        )
+                    }
+                    CommandItem::UserCommand(i) => {
+                        let command = &self.commands[i];
+                        let mut description = command
+                            .description
+                            .clone()
+                            .unwrap_or_else(|| "run saved command".to_string());
+                        if let Some(agent) = &command.agent {
+                            description.push_str(&format!(" (@{agent})"));
+                        } else if let Some(profile) = &command.profile {
+                            description.push_str(&format!(" (profile: {profile})"));
+                        }
+                        (
+                            format!("/{COMMANDS_CMD_PREFIX}:{}", command.name),
                             description,
                         )
                     }
@@ -235,7 +289,7 @@ mod tests {
 
     #[test]
     fn filter_includes_init_when_typing_prefix() {
-        let mut popup = CommandPopup::new(Vec::new(), false);
+        let mut popup = CommandPopup::new(Vec::new(), Vec::new(), false);
         // Simulate the composer line starting with '/in' so the popup filters
         // matching commands by prefix.
         popup.on_composer_text_change("/in".to_string());
@@ -245,7 +299,7 @@ mod tests {
         let matches = popup.filtered_items();
         let has_init = matches.iter().any(|item| match item {
             CommandItem::Builtin(cmd) => cmd.command() == "init",
-            CommandItem::UserPrompt(_) => false,
+            CommandItem::UserPrompt(_) | CommandItem::UserCommand(_) => false,
         });
         assert!(
             has_init,
@@ -255,7 +309,7 @@ mod tests {
 
     #[test]
     fn selecting_init_by_exact_match() {
-        let mut popup = CommandPopup::new(Vec::new(), false);
+        let mut popup = CommandPopup::new(Vec::new(), Vec::new(), false);
         popup.on_composer_text_change("/init".to_string());
 
         // When an exact match exists, the selected command should be that
@@ -263,19 +317,21 @@ mod tests {
         let selected = popup.selected_item();
         match selected {
             Some(CommandItem::Builtin(cmd)) => assert_eq!(cmd.command(), "init"),
-            Some(CommandItem::UserPrompt(_)) => panic!("unexpected prompt selected for '/init'"),
+            Some(CommandItem::UserPrompt(_) | CommandItem::UserCommand(_)) => {
+                panic!("unexpected custom item selected for '/init'")
+            }
             None => panic!("expected a selected command for exact match"),
         }
     }
 
     #[test]
     fn model_is_first_suggestion_for_mo() {
-        let mut popup = CommandPopup::new(Vec::new(), false);
+        let mut popup = CommandPopup::new(Vec::new(), Vec::new(), false);
         popup.on_composer_text_change("/mo".to_string());
         let matches = popup.filtered_items();
         match matches.first() {
             Some(CommandItem::Builtin(cmd)) => assert_eq!(cmd.command(), "model"),
-            Some(CommandItem::UserPrompt(_)) => {
+            Some(CommandItem::UserPrompt(_) | CommandItem::UserCommand(_)) => {
                 panic!("unexpected prompt ranked before '/model' for '/mo'")
             }
             None => panic!("expected at least one match for '/mo'"),
@@ -300,7 +356,7 @@ mod tests {
                 argument_hint: None,
             },
         ];
-        let popup = CommandPopup::new(prompts, false);
+        let popup = CommandPopup::new(prompts, Vec::new(), false);
         let items = popup.filtered_items();
         let mut prompt_names: Vec<String> = items
             .into_iter()
@@ -324,6 +380,7 @@ mod tests {
                 description: None,
                 argument_hint: None,
             }],
+            Vec::new(),
             false,
         );
         let items = popup.filtered_items();
@@ -347,6 +404,7 @@ mod tests {
                 description: Some("Create feature branch, commit and open draft PR.".to_string()),
                 argument_hint: None,
             }],
+            Vec::new(),
             false,
         );
         let rows = popup.rows_from_matches(vec![(CommandItem::UserPrompt(0), None, 0)]);
@@ -367,6 +425,7 @@ mod tests {
                 description: None,
                 argument_hint: None,
             }],
+            Vec::new(),
             false,
         );
         let rows = popup.rows_from_matches(vec![(CommandItem::UserPrompt(0), None, 0)]);

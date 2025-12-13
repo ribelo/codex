@@ -95,6 +95,7 @@ fn snapshot(percent: f64) -> RateLimitSnapshot {
         secondary: None,
         credits: None,
         plan_type: None,
+        antigravity: None,
     }
 }
 
@@ -573,6 +574,7 @@ fn rate_limit_snapshot_keeps_prior_credits_when_missing_from_headers() {
             balance: Some("17.5".to_string()),
         }),
         plan_type: None,
+        antigravity: None,
     }));
     let initial_balance = chat
         .rate_limit_snapshot
@@ -590,6 +592,7 @@ fn rate_limit_snapshot_keeps_prior_credits_when_missing_from_headers() {
         secondary: None,
         credits: None,
         plan_type: None,
+        antigravity: None,
     }));
 
     let display = chat
@@ -626,6 +629,7 @@ fn rate_limit_snapshot_updates_and_retains_plan_type() {
         }),
         credits: None,
         plan_type: Some(PlanType::Plus),
+        antigravity: None,
     }));
     assert_eq!(chat.plan_type, Some(PlanType::Plus));
 
@@ -642,6 +646,7 @@ fn rate_limit_snapshot_updates_and_retains_plan_type() {
         }),
         credits: None,
         plan_type: Some(PlanType::Pro),
+        antigravity: None,
     }));
     assert_eq!(chat.plan_type, Some(PlanType::Pro));
 
@@ -658,6 +663,7 @@ fn rate_limit_snapshot_updates_and_retains_plan_type() {
         }),
         credits: None,
         plan_type: None,
+        antigravity: None,
     }));
     assert_eq!(chat.plan_type, Some(PlanType::Pro));
 }

@@ -1136,7 +1136,9 @@ impl Config {
         let config = Self {
             model,
             review_model,
-            model_context_window: cfg.model_context_window,
+            model_context_window: config_profile
+                .model_context_window
+                .or(cfg.model_context_window),
             model_auto_compact_token_limit: cfg.model_auto_compact_token_limit,
             model_provider_id,
             model_provider,

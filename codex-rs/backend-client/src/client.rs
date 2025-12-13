@@ -293,6 +293,7 @@ impl Client {
             secondary,
             credits: Self::map_credits(payload.credits),
             plan_type: Some(Self::map_plan_type(payload.plan_type)),
+            antigravity: None,
         }
     }
 

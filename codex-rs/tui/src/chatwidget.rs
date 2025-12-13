@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use codex_app_server_protocol::AuthMode;
 use codex_backend_client::Client as BackendClient;
+use codex_core::ProviderKind;
 use codex_core::config::Config;
 use codex_core::config::types::Notifications;
 use codex_core::git_info::current_branch_name;
@@ -32,6 +33,7 @@ use codex_core::protocol::ExecCommandBeginEvent;
 use codex_core::protocol::ExecCommandEndEvent;
 use codex_core::protocol::ExecCommandSource;
 use codex_core::protocol::ExitedReviewModeEvent;
+use codex_core::protocol::ListCommandsResponseEvent;
 use codex_core::protocol::ListCustomPromptsResponseEvent;
 use codex_core::protocol::McpListToolsResponseEvent;
 use codex_core::protocol::McpStartupCompleteEvent;
@@ -60,6 +62,8 @@ use codex_core::protocol::ViewImageToolCallEvent;
 use codex_core::protocol::WarningEvent;
 use codex_core::protocol::WebSearchBeginEvent;
 use codex_core::protocol::WebSearchEndEvent;
+use codex_core::quota::AntigravityQuotaClient;
+use codex_core::quota::ProviderQuotaClient;
 use codex_core::skills::model::SkillMetadata;
 use codex_protocol::ConversationId;
 use codex_protocol::account::PlanType;
@@ -448,6 +452,7 @@ impl ChatWidget {
         }
         // Ask codex-core to enumerate custom prompts for this session.
         self.submit_op(Op::ListCustomPrompts);
+        self.submit_op(Op::ListCommands);
         if let Some(user_message) = self.initial_user_message.take() {
             self.submit_user_message(user_message);
         }
@@ -1637,6 +1642,19 @@ impl ChatWidget {
                     InputResult::Command(cmd) => {
                         self.dispatch_command(cmd);
                     }
+                    InputResult::DelegateCommand {
+                        description,
+                        prompt,
+                        agent,
+                        profile,
+                    } => {
+                        self.app_event_tx.send(AppEvent::SubmitCommand {
+                            description,
+                            prompt,
+                            agent,
+                            profile,
+                        });
+                    }
                     InputResult::None => {}
                 }
             }
@@ -2027,6 +2045,7 @@ impl ChatWidget {
             EventMsg::GetHistoryEntryResponse(ev) => self.on_get_history_entry_response(ev),
             EventMsg::McpListToolsResponse(ev) => self.on_list_mcp_tools(ev),
             EventMsg::ListCustomPromptsResponse(ev) => self.on_list_custom_prompts(ev),
+            EventMsg::ListCommandsResponse(ev) => self.on_list_commands(ev),
             EventMsg::ShutdownComplete => self.on_shutdown_complete(),
             EventMsg::TurnDiff(TurnDiffEvent { unified_diff }) => self.on_turn_diff(unified_diff),
             EventMsg::DeprecationNotice(ev) => self.on_deprecation_notice(ev),
@@ -2234,7 +2253,7 @@ impl ChatWidget {
                 let cmd_summary = if ev.command.is_empty() {
                     "Running command".to_string()
                 } else {
-                    let cmd_display = ev.command.join(" ");
+                    let cmd_display = strip_bash_lc_and_escape(&ev.command);
                     if cmd_display.len() > 60 {
                         format!("{}...", &cmd_display[..57])
                     } else {
@@ -2248,10 +2267,20 @@ impl ChatWidget {
             }
             EventMsg::ExecCommandEnd(ev) => {
                 let success = ev.exit_code == 0;
-                guard.activities.push(history_cell::SubagentActivityItem {
-                    summary: format!("Completed (exit {})", ev.exit_code),
-                    success: Some(success),
-                });
+                // Update the last "Run" activity to "Ran" with success status
+                // instead of adding a separate "Completed" entry
+                if let Some(last) = guard.activities.last_mut() {
+                    if last.summary.starts_with("Run ") {
+                        last.summary = last.summary.replacen("Run ", "Ran ", 1);
+                        last.success = Some(success);
+                    } else {
+                        // Fallback if we can't find the matching Run activity
+                        guard.activities.push(history_cell::SubagentActivityItem {
+                            summary: format!("Completed (exit {})", ev.exit_code),
+                            success: Some(success),
+                        });
+                    }
+                }
             }
             EventMsg::McpToolCallBegin(ev) => {
                 let summary = format!("Called {}::{}", ev.invocation.server, ev.invocation.tool);
@@ -2421,28 +2450,53 @@ impl ChatWidget {
     fn prefetch_rate_limits(&mut self) {
         self.stop_rate_limit_poller();
 
-        let Some(auth) = self.auth_manager.auth() else {
-            return;
-        };
-        if auth.mode != AuthMode::ChatGPT {
-            return;
-        }
-
-        let base_url = self.config.chatgpt_base_url.clone();
         let app_event_tx = self.app_event_tx.clone();
 
-        let handle = tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(60));
+        // Determine which quota client to use based on provider
+        match self.config.model_provider.provider_kind {
+            ProviderKind::Antigravity => {
+                // Use the Antigravity quota client
+                let handle = tokio::spawn(async move {
+                    let mut interval = tokio::time::interval(Duration::from_secs(60));
+                    let client = AntigravityQuotaClient::new();
 
-            loop {
-                if let Some(snapshot) = fetch_rate_limits(base_url.clone(), auth.clone()).await {
-                    app_event_tx.send(AppEvent::RateLimitSnapshotFetched(snapshot));
-                }
-                interval.tick().await;
+                    loop {
+                        if let Some(snapshot) = client.fetch_quota().await {
+                            app_event_tx.send(AppEvent::RateLimitSnapshotFetched(snapshot));
+                        }
+                        interval.tick().await;
+                    }
+                });
+
+                self.rate_limit_poller = Some(handle);
             }
-        });
+            _ => {
+                // For OpenAI/ChatGPT, use the existing flow
+                let Some(auth) = self.auth_manager.auth() else {
+                    return;
+                };
+                if auth.mode != AuthMode::ChatGPT {
+                    return;
+                }
 
-        self.rate_limit_poller = Some(handle);
+                let base_url = self.config.chatgpt_base_url.clone();
+
+                let handle = tokio::spawn(async move {
+                    let mut interval = tokio::time::interval(Duration::from_secs(60));
+
+                    loop {
+                        if let Some(snapshot) =
+                            fetch_rate_limits(base_url.clone(), auth.clone()).await
+                        {
+                            app_event_tx.send(AppEvent::RateLimitSnapshotFetched(snapshot));
+                        }
+                        interval.tick().await;
+                    }
+                });
+
+                self.rate_limit_poller = Some(handle);
+            }
+        }
     }
 
     fn lower_cost_preset(&self) -> Option<ModelPreset> {
@@ -3488,8 +3542,28 @@ impl ChatWidget {
     fn on_list_custom_prompts(&mut self, ev: ListCustomPromptsResponseEvent) {
         let len = ev.custom_prompts.len();
         debug!("received {len} custom prompts");
+        for p in &ev.custom_prompts {
+            tracing::info!(
+                name = %p.name,
+                "Custom prompt loaded"
+            );
+        }
         // Forward to bottom pane so the slash popup can show them now.
         self.bottom_pane.set_custom_prompts(ev.custom_prompts);
+    }
+
+    fn on_list_commands(&mut self, ev: ListCommandsResponseEvent) {
+        let len = ev.commands.len();
+        debug!("received {len} custom commands");
+        for c in &ev.commands {
+            tracing::info!(
+                name = %c.name,
+                agent = ?c.agent,
+                profile = ?c.profile,
+                "Custom command loaded"
+            );
+        }
+        self.bottom_pane.set_custom_commands(ev.commands);
     }
 
     pub(crate) fn open_review_popup(&mut self) {
@@ -3937,3 +4011,4 @@ fn find_skill_mentions(text: &str, skills: &[SkillMetadata]) -> Vec<SkillMetadat
 
 #[cfg(test)]
 pub(crate) mod tests;
+use crate::exec_command::strip_bash_lc_and_escape;

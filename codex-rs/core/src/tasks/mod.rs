@@ -1,7 +1,9 @@
+mod command_delegate;
 mod compact;
 mod ghost_snapshot;
 mod regular;
 mod review;
+mod subagent_delegate;
 mod undo;
 mod user_shell;
 
@@ -29,10 +31,12 @@ use crate::state::RunningTask;
 use crate::state::TaskKind;
 use codex_protocol::user_input::UserInput;
 
+pub(crate) use command_delegate::CommandDelegateTask;
 pub(crate) use compact::CompactTask;
 pub(crate) use ghost_snapshot::GhostSnapshotTask;
 pub(crate) use regular::RegularTask;
 pub(crate) use review::ReviewTask;
+pub(crate) use subagent_delegate::SubagentDelegateTask;
 pub(crate) use undo::UndoTask;
 pub(crate) use user_shell::UserShellCommandTask;
 

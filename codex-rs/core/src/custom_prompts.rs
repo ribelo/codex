@@ -1,8 +1,54 @@
 use codex_protocol::custom_prompts::CustomPrompt;
+use serde::Deserialize;
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
 use tokio::fs;
+
+use crate::config::profile::ConfigProfile;
+
+pub struct PromptLoadError {
+    pub path: PathBuf,
+    pub message: String,
+}
+
+/// Load a specific profile by name from config.toml.
+/// Returns None if the profile doesn't exist or can't be loaded.
+pub async fn load_profile_by_name(codex_home: &Path, profile_name: &str) -> Option<ConfigProfile> {
+    let config_path = codex_home.join("config.toml");
+    let content = fs::read_to_string(&config_path).await.ok()?;
+
+    #[derive(Deserialize)]
+    struct ProfilesOnly {
+        #[serde(default)]
+        profiles: HashMap<String, ConfigProfile>,
+    }
+
+    let parsed: ProfilesOnly = toml::from_str(&content).ok()?;
+    parsed.profiles.get(profile_name).cloned()
+}
+
+/// Load available profile names from config.toml.
+/// Returns an empty set if the config file doesn't exist or can't be parsed.
+pub async fn load_profile_names(codex_home: &Path) -> HashSet<String> {
+    let config_path = codex_home.join("config.toml");
+    let content = match fs::read_to_string(&config_path).await {
+        Ok(s) => s,
+        Err(_) => return HashSet::new(),
+    };
+
+    #[derive(Deserialize)]
+    struct ProfilesOnly {
+        #[serde(default)]
+        profiles: HashMap<String, ConfigProfile>,
+    }
+
+    match toml::from_str::<ProfilesOnly>(&content) {
+        Ok(parsed) => parsed.profiles.into_keys().collect(),
+        Err(_) => HashSet::new(),
+    }
+}
 
 /// Return the default prompts directory: `$CODEX_HOME/prompts`.
 /// If `CODEX_HOME` cannot be resolved, returns `None`.
@@ -79,7 +125,7 @@ pub async fn discover_prompts_in_excluding(
 /// Supported keys:
 /// - `description`: short description shown in the slash popup
 /// - `argument-hint` or `argument_hint`: brief hint string shown after the description
-///   Returns (description, argument_hint, body_without_frontmatter).
+/// Returns (description, argument_hint, body_without_frontmatter).
 fn parse_frontmatter(content: &str) -> (Option<String>, Option<String>, String) {
     let mut segments = content.split_inclusive('\n');
     let Some(first_segment) = segments.next() else {
@@ -240,5 +286,41 @@ mod tests {
         assert_eq!(desc.as_deref(), Some("Line endings"));
         assert_eq!(hint.as_deref(), Some("[arg]"));
         assert_eq!(body, "First line\r\nSecond line\r\n");
+    }
+
+    #[tokio::test]
+    async fn discovers_simple_prompt() {
+        let tmp = tempdir().expect("create TempDir");
+        let dir = tmp.path();
+        fs::write(dir.join("simple.md"), "Just a prompt").unwrap();
+
+        let found = discover_prompts_in(dir).await;
+        assert_eq!(found.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn load_profile_names_returns_empty_for_missing_config() {
+        let tmp = tempdir().expect("create TempDir");
+        // No config.toml file
+        let names = load_profile_names(tmp.path()).await;
+        assert!(names.is_empty());
+    }
+
+    #[tokio::test]
+    async fn load_profile_names_parses_profiles_from_config() {
+        let tmp = tempdir().expect("create TempDir");
+        let config_content = r#"
+[profiles.fast]
+model = "gpt-4o-mini"
+
+[profiles.kimi]
+model = "moonshot-v1-128k"
+"#;
+        fs::write(tmp.path().join("config.toml"), config_content).unwrap();
+
+        let names = load_profile_names(tmp.path()).await;
+        assert_eq!(names.len(), 2);
+        assert!(names.contains("fast"));
+        assert!(names.contains("kimi"));
     }
 }

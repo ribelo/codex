@@ -297,10 +297,10 @@ fn parse_process_output(stdout: &str, process_name: &str) -> Result<(i32, String
         }
 
         let parts: Vec<&str> = line.splitn(2, char::is_whitespace).collect();
-        if parts.len() >= 2 {
-            if let Ok(pid) = parts[0].parse::<i32>() {
-                return Ok((pid, parts[1].to_string()));
-            }
+        if parts.len() >= 2
+            && let Ok(pid) = parts[0].parse::<i32>()
+        {
+            return Ok((pid, parts[1].to_string()));
         }
     }
 
@@ -374,29 +374,23 @@ fn parse_listening_ports(stdout: &str) -> Vec<i32> {
 
     for line in stdout.lines() {
         // Try ss regex
-        if let Some(re) = &ss_regex {
-            if let Some(caps) = re.captures(line) {
-                if let Some(port_match) = caps.get(1) {
-                    if let Ok(port) = port_match.as_str().parse::<i32>() {
-                        if !ports.contains(&port) {
-                            ports.push(port);
-                        }
-                    }
-                }
-            }
+        if let Some(re) = &ss_regex
+            && let Some(caps) = re.captures(line)
+            && let Some(port_match) = caps.get(1)
+            && let Ok(port) = port_match.as_str().parse::<i32>()
+            && !ports.contains(&port)
+        {
+            ports.push(port);
         }
 
         // Try lsof regex
-        if let Some(re) = &lsof_regex {
-            if let Some(caps) = re.captures(line) {
-                if let Some(port_match) = caps.get(1) {
-                    if let Ok(port) = port_match.as_str().parse::<i32>() {
-                        if !ports.contains(&port) {
-                            ports.push(port);
-                        }
-                    }
-                }
-            }
+        if let Some(re) = &lsof_regex
+            && let Some(caps) = re.captures(line)
+            && let Some(port_match) = caps.get(1)
+            && let Ok(port) = port_match.as_str().parse::<i32>()
+            && !ports.contains(&port)
+        {
+            ports.push(port);
         }
     }
 

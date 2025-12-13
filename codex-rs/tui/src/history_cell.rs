@@ -1276,20 +1276,37 @@ impl HistoryCell for SubagentTaskCell {
             SubagentTaskStatus::Failed => "•".red().bold(),
         };
 
-        let header_action = match status {
-            SubagentTaskStatus::Running => "Delegating to",
-            SubagentTaskStatus::Completed | SubagentTaskStatus::Failed => "Delegated to",
+        let profile_name = self.subagent_type.strip_prefix("profile:");
+        let header = if let Some(profile_name) = profile_name {
+            let header_action = match status {
+                SubagentTaskStatus::Running => "Running with profile:",
+                SubagentTaskStatus::Completed | SubagentTaskStatus::Failed => "Ran with profile:",
+            };
+            Line::from(vec![
+                base_indent.clone().into(),
+                tree_connector.dim(),
+                bullet,
+                " ".into(),
+                header_action.bold(),
+                " ".into(),
+                profile_name.trim().to_string().magenta(),
+            ])
+        } else {
+            let header_action = match status {
+                SubagentTaskStatus::Running => "Delegating to",
+                SubagentTaskStatus::Completed | SubagentTaskStatus::Failed => "Delegated to",
+            };
+            Line::from(vec![
+                base_indent.clone().into(),
+                tree_connector.dim(),
+                bullet,
+                " ".into(),
+                header_action.bold(),
+                " @".magenta(),
+                self.subagent_type.clone().magenta(),
+            ])
         };
 
-        let header = Line::from(vec![
-            base_indent.clone().into(),
-            tree_connector.dim(),
-            bullet,
-            " ".into(),
-            header_action.bold(),
-            " @".magenta(),
-            self.subagent_type.clone().magenta(),
-        ]);
         lines.push(header);
 
         // Adjust wrap width to account for indentation
@@ -2809,6 +2826,33 @@ mod tests {
         insta::assert_snapshot!(rendered.join("\n"), @r###"
         • Delegated to @explorer
           └ Find all test files
+        "###);
+    }
+
+    #[test]
+    fn profile_task_cell_root_level_rendering() {
+        let state = Arc::new(Mutex::new(SubagentState {
+            activities: vec![],
+            status: SubagentTaskStatus::Completed,
+        }));
+
+        let cell = new_subagent_task_cell(
+            "call-1".to_string(),
+            "profile:kimi".to_string(),
+            "Find current Bitcoin (BTC) price".to_string(),
+            Some("delegation-1".to_string()),
+            None,
+            0,
+            state,
+            false,
+        );
+
+        let lines = cell.display_lines(80);
+        let rendered = render_lines(&lines);
+
+        insta::assert_snapshot!(rendered.join("\n"), @r###"
+        • Ran with profile: kimi
+          └ Find current Bitcoin (BTC) price
         "###);
     }
 

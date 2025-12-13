@@ -179,6 +179,18 @@ pub(crate) enum AppEvent {
     OpenFeedbackConsent {
         category: FeedbackCategory,
     },
+
+    /// Submit a custom command to be executed in a new session.
+    SubmitCommand {
+        /// Short description for the task (typically the command name).
+        description: String,
+        /// The fully expanded command content to send.
+        prompt: String,
+        /// Optional subagent slug to run the command under.
+        agent: Option<String>,
+        /// Optional profile name to run the command under.
+        profile: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

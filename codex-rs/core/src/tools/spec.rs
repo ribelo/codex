@@ -657,8 +657,7 @@ fn create_list_mcp_resources_tool(server_names: &[String]) -> ToolSpec {
             .to_string()
     } else {
         format!(
-            "Lists resources provided by MCP servers. Available servers: {:?}. Resources allow servers to share data that provides context to language models.",
-            server_names
+            "Lists resources provided by MCP servers. Available servers: {server_names:?}. Resources allow servers to share data that provides context to language models."
         )
     };
 
@@ -701,8 +700,7 @@ fn create_list_mcp_resource_templates_tool(server_names: &[String]) -> ToolSpec 
             "Lists resource templates provided by MCP servers. No MCP servers are currently available.".to_string()
         } else {
             format!(
-                "Lists resource templates provided by MCP servers. Available servers: {:?}. Parameterized resource templates allow servers to share data that takes parameters and provides context to language models.",
-                server_names
+                "Lists resource templates provided by MCP servers. Available servers: {server_names:?}. Parameterized resource templates allow servers to share data that takes parameters and provides context to language models."
             )
         },
         strict: false,
@@ -741,8 +739,7 @@ fn create_read_mcp_resource_tool(server_names: &[String]) -> ToolSpec {
             "Read a specific resource from an MCP server. No MCP servers are currently available. For local file access, use shell_command.".to_string()
         } else {
             format!(
-                "Read a specific resource from an MCP server given the server name and resource URI. Available servers: {:?}. For local file access, use shell_command instead.",
-                server_names
+                "Read a specific resource from an MCP server given the server name and resource URI. Available servers: {server_names:?}. For local file access, use shell_command instead."
             )
         },
         strict: false,
@@ -987,7 +984,7 @@ pub(crate) fn build_specs(
                 .keys()
                 .filter_map(|k| {
                     let parts: Vec<&str> = k.split(crate::mcp::MCP_TOOL_NAME_DELIMITER).collect();
-                    parts.get(1).map(|s| s.to_string())
+                    parts.get(1).map(std::string::ToString::to_string)
                 })
                 .collect::<BTreeSet<_>>()
                 .into_iter()
