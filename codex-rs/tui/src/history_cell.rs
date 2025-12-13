@@ -1312,16 +1312,11 @@ impl HistoryCell for SubagentTaskCell {
         // Adjust wrap width to account for indentation
         let wrap_width = (width as usize).saturating_sub(4 + indent_size).max(1);
 
-        let desc_wrapped = textwrap::wrap(&self.task_description, wrap_width);
-        for (idx, segment) in desc_wrapped.iter().enumerate() {
-            let nested_indent = format!("{base_indent}  ");
-            let prefix: Span<'static> = if idx == 0 {
-                format!("{nested_indent}└ ").dim()
-            } else {
-                format!("{nested_indent}  ").into()
-            };
-            lines.push(Line::from(vec![prefix, segment.to_string().dim()]));
-        }
+        // Truncate description to single line
+        let nested_indent = format!("{base_indent}  ");
+        let prefix: Span<'static> = format!("{nested_indent}└ ").dim();
+        let truncated_desc = truncate_text(&self.task_description, wrap_width.saturating_sub(3));
+        lines.push(Line::from(vec![prefix, truncated_desc.dim()]));
 
         if !activities.is_empty() {
             let max_activities = 5;
@@ -1362,6 +1357,122 @@ impl HistoryCell for SubagentTaskCell {
         }
 
         lines
+    }
+
+    fn transcript_lines(&self, width: u16) -> Vec<Line<'static>> {
+        let mut lines: Vec<Line<'static>> = Vec::new();
+
+        // Calculate indentation based on depth
+        let indent_size = (self.depth * 2) as usize;
+        let base_indent = " ".repeat(indent_size);
+
+        // Tree connector: use └ for nested items, otherwise empty
+        let tree_connector = if self.depth > 0 { "└ " } else { "" };
+
+        // Lock the state to read status and activities
+        let (status, activities) = if let Ok(state) = self.state.lock() {
+            (state.status, state.activities.clone())
+        } else {
+            (SubagentTaskStatus::Failed, vec![])
+        };
+
+        let bullet = match status {
+            SubagentTaskStatus::Running => spinner(Some(self.start_time), self.animations_enabled),
+            SubagentTaskStatus::Completed => "•".green().bold(),
+            SubagentTaskStatus::Failed => "•".red().bold(),
+        };
+
+        let profile_name = self.subagent_type.strip_prefix("profile:");
+        let header = if let Some(profile_name) = profile_name {
+            let header_action = match status {
+                SubagentTaskStatus::Running => "Running with profile:",
+                SubagentTaskStatus::Completed | SubagentTaskStatus::Failed => "Ran with profile:",
+            };
+            Line::from(vec![
+                base_indent.clone().into(),
+                tree_connector.dim(),
+                bullet,
+                " ".into(),
+                header_action.bold(),
+                " ".into(),
+                profile_name.trim().to_string().magenta(),
+            ])
+        } else {
+            let header_action = match status {
+                SubagentTaskStatus::Running => "Delegating to",
+                SubagentTaskStatus::Completed | SubagentTaskStatus::Failed => "Delegated to",
+            };
+            Line::from(vec![
+                base_indent.clone().into(),
+                tree_connector.dim(),
+                bullet,
+                " ".into(),
+                header_action.bold(),
+                " @".magenta(),
+                self.subagent_type.clone().magenta(),
+            ])
+        };
+
+        lines.push(header);
+
+        // Wrap width for content
+        let wrap_width = (width as usize).saturating_sub(4 + indent_size).max(1);
+        let nested_indent = format!("{base_indent}  ");
+
+        // Full description wrapped (not truncated)
+        let desc_wrapped = textwrap::wrap(&self.task_description, wrap_width);
+        for (idx, segment) in desc_wrapped.iter().enumerate() {
+            let prefix: Span<'static> = if idx == 0 {
+                format!("{nested_indent}└ ").dim()
+            } else {
+                format!("{nested_indent}  ").into()
+            };
+            lines.push(Line::from(vec![prefix, segment.to_string().dim()]));
+        }
+
+        // Show ALL activities (no limit)
+        if !activities.is_empty() {
+            let activity_indent = format!("{base_indent}    ");
+
+            for activity in &activities {
+                let status_indicator: Span<'static> = match activity.success {
+                    Some(true) => "✓".green(),
+                    Some(false) => "✗".red(),
+                    None => "·".dim(),
+                };
+
+                // Wrap activity summary instead of truncating
+                let activity_wrapped =
+                    textwrap::wrap(&activity.summary, wrap_width.saturating_sub(2));
+                for (idx, segment) in activity_wrapped.iter().enumerate() {
+                    if idx == 0 {
+                        lines.push(Line::from(vec![
+                            activity_indent.clone().into(),
+                            status_indicator.clone(),
+                            " ".into(),
+                            segment.to_string().dim(),
+                        ]));
+                    } else {
+                        lines.push(Line::from(vec![
+                            activity_indent.clone().into(),
+                            "  ".into(),
+                            segment.to_string().dim(),
+                        ]));
+                    }
+                }
+            }
+        }
+
+        // Recursively render children with transcript_lines
+        for child in &self.children {
+            lines.extend(child.transcript_lines(width));
+        }
+
+        lines
+    }
+
+    fn desired_transcript_height(&self, width: u16) -> u16 {
+        self.transcript_lines(width).len() as u16
     }
 }
 
@@ -2912,5 +3023,136 @@ mod tests {
           └ List directory contents
             ✓ Run ls -la
         ");
+    }
+
+    #[test]
+    fn subagent_task_cell_transcript_expands_long_description() {
+        let state = Arc::new(Mutex::new(SubagentState {
+            activities: vec![],
+            status: SubagentTaskStatus::Completed,
+        }));
+
+        let long_description = "As an expert Version Control Agent, your task is to commit all pending changes in the working tree. Follow these strict guidelines for creating commits.";
+
+        let cell = new_subagent_task_cell(
+            "call-1".to_string(),
+            "profile:kimi".to_string(),
+            long_description.to_string(),
+            Some("delegation-1".to_string()),
+            None,
+            0,
+            state,
+            false,
+        );
+
+        // display_lines should truncate
+        let display = cell.display_lines(60);
+        let display_rendered = render_lines(&display);
+        assert!(
+            display_rendered.iter().any(|l| l.contains("...")),
+            "display_lines should truncate long description"
+        );
+
+        // transcript_lines should wrap without truncation
+        let transcript = cell.transcript_lines(60);
+        let transcript_rendered = render_lines(&transcript);
+        assert!(
+            transcript_rendered.len() > display_rendered.len(),
+            "transcript_lines should have more lines than display_lines for long content"
+        );
+        assert!(
+            transcript_rendered
+                .iter()
+                .any(|l| l.contains("Version Control Agent")),
+            "transcript should contain full description"
+        );
+    }
+
+    #[test]
+    fn subagent_task_cell_transcript_shows_all_activities() {
+        let activities: Vec<SubagentActivityItem> = (1..=10)
+            .map(|i| SubagentActivityItem {
+                summary: format!("Ran command {i}"),
+                success: Some(true),
+            })
+            .collect();
+
+        let state = Arc::new(Mutex::new(SubagentState {
+            activities,
+            status: SubagentTaskStatus::Completed,
+        }));
+
+        let cell = new_subagent_task_cell(
+            "call-1".to_string(),
+            "explorer".to_string(),
+            "Test task".to_string(),
+            Some("delegation-1".to_string()),
+            None,
+            0,
+            state,
+            false,
+        );
+
+        // display_lines should show only 5 activities + "... +5 more"
+        let display = cell.display_lines(80);
+        let display_rendered = render_lines(&display);
+        assert!(
+            display_rendered.iter().any(|l| l.contains("... +5 more")),
+            "display_lines should show +5 more indicator"
+        );
+
+        // transcript_lines should show all 10 activities
+        let transcript = cell.transcript_lines(80);
+        let transcript_rendered = render_lines(&transcript);
+        assert!(
+            !transcript_rendered.iter().any(|l| l.contains("... +")),
+            "transcript_lines should NOT have 'more' indicator"
+        );
+        assert!(
+            transcript_rendered.iter().any(|l| l.contains("command 1")),
+            "transcript should show first activity"
+        );
+        assert!(
+            transcript_rendered.iter().any(|l| l.contains("command 10")),
+            "transcript should show last activity"
+        );
+    }
+
+    #[test]
+    fn subagent_task_cell_transcript_wraps_long_activities() {
+        let state = Arc::new(Mutex::new(SubagentState {
+            activities: vec![SubagentActivityItem {
+                summary: "Ran very long command with many arguments: git commit --message 'This is a very long commit message that should wrap'".to_string(),
+                success: Some(true),
+            }],
+            status: SubagentTaskStatus::Completed,
+        }));
+
+        let cell = new_subagent_task_cell(
+            "call-1".to_string(),
+            "explorer".to_string(),
+            "Test".to_string(),
+            Some("delegation-1".to_string()),
+            None,
+            0,
+            state,
+            false,
+        );
+
+        // With narrow width, transcript should wrap the activity
+        let transcript = cell.transcript_lines(50);
+        let transcript_rendered = render_lines(&transcript);
+
+        // Count lines that contain parts of the activity
+        let activity_lines: Vec<_> = transcript_rendered
+            .iter()
+            .filter(|l| l.contains("commit") || l.contains("message") || l.contains("wrap"))
+            .collect();
+
+        assert!(
+            activity_lines.len() >= 2,
+            "Long activity should wrap to multiple lines in transcript, got: {:?}",
+            activity_lines
+        );
     }
 }
