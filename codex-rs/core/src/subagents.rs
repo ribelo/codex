@@ -15,6 +15,70 @@ use crate::protocol::AskForApproval;
 use crate::protocol::SandboxPolicy;
 use tokio_util::sync::CancellationToken;
 
+/// Approval policy for subagents, with an additional `Inherit` variant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SubagentApprovalPolicy {
+    /// Inherit the parent session's approval policy.
+    Inherit,
+    /// Only "known safe" commands are auto-approved.
+    #[serde(rename = "untrusted")]
+    UnlessTrusted,
+    /// All commands auto-approved in sandbox; failures escalate.
+    OnFailure,
+    /// The model decides when to ask.
+    OnRequest,
+    /// Never ask the user.
+    Never,
+}
+
+impl SubagentApprovalPolicy {
+    /// Convert to the protocol's `AskForApproval`, returning `None` for `Inherit`.
+    pub fn to_ask_for_approval(self) -> Option<AskForApproval> {
+        match self {
+            SubagentApprovalPolicy::Inherit => None,
+            SubagentApprovalPolicy::UnlessTrusted => Some(AskForApproval::UnlessTrusted),
+            SubagentApprovalPolicy::OnFailure => Some(AskForApproval::OnFailure),
+            SubagentApprovalPolicy::OnRequest => Some(AskForApproval::OnRequest),
+            SubagentApprovalPolicy::Never => Some(AskForApproval::Never),
+        }
+    }
+
+    /// Returns the restrictiveness level (lower = more restrictive).
+    /// `Inherit` returns `None` since it depends on the parent.
+    pub fn restrictiveness(self) -> Option<i32> {
+        match self {
+            SubagentApprovalPolicy::Inherit => None,
+            SubagentApprovalPolicy::UnlessTrusted => Some(0),
+            SubagentApprovalPolicy::OnFailure => Some(2),
+            SubagentApprovalPolicy::OnRequest => Some(1),
+            SubagentApprovalPolicy::Never => Some(3),
+        }
+    }
+}
+
+/// Profile setting for subagents.
+/// Either inherits from parent session or uses a named profile from config.toml.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SubagentProfile {
+    /// Inherit the parent session's model/provider settings.
+    Inherit,
+    /// Use a named profile from config.toml.
+    #[serde(untagged)]
+    Named(String),
+}
+
+impl SubagentProfile {
+    /// Returns the profile name if not `Inherit`.
+    pub fn profile_name(&self) -> Option<&str> {
+        match self {
+            SubagentProfile::Inherit => None,
+            SubagentProfile::Named(name) => Some(name),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SubagentError {
     pub path: PathBuf,
@@ -31,9 +95,9 @@ pub struct SubagentLoadOutcome {
 pub struct SubagentMetadata {
     pub name: Option<String>,
     pub description: Option<String>,
-    pub profile: Option<String>,
-    pub sandbox_policy: Option<SubagentSandboxPolicy>,
-    pub approval_policy: Option<AskForApproval>,
+    pub profile: SubagentProfile,
+    pub sandbox_policy: SubagentSandboxPolicy,
+    pub approval_policy: SubagentApprovalPolicy,
     /// Optional list of subagent slugs this subagent is allowed to delegate to.
     /// - `None`: full access to all subagents (default for root sessions)
     /// - `Some(vec![])`: no access to any subagents
@@ -48,7 +112,7 @@ impl SubagentMetadata {
     /// Load the profile configuration from the config file if a profile name is specified.
     /// Uses async I/O to avoid blocking the executor.
     pub async fn load_profile(&self, codex_home: &Path) -> Result<Option<ConfigProfile>> {
-        let Some(ref profile_name) = self.profile else {
+        let Some(profile_name) = self.profile.profile_name() else {
             return Ok(None);
         };
 
@@ -95,25 +159,31 @@ pub enum SubagentSandboxPolicy {
     WorkspaceWrite,
     #[serde(rename = "danger-full-access")]
     DangerFullAccess,
+    /// Inherit the parent session's sandbox policy.
+    Inherit,
 }
 
 impl SubagentSandboxPolicy {
-    /// Convert to the full SandboxPolicy enum.
-    pub fn to_sandbox_policy(self) -> SandboxPolicy {
+    /// Convert to the full SandboxPolicy enum, returning `None` for `Inherit`.
+    pub fn to_sandbox_policy(self) -> Option<SandboxPolicy> {
         match self {
-            SubagentSandboxPolicy::ReadOnly => SandboxPolicy::new_read_only_policy(),
-            SubagentSandboxPolicy::WorkspaceWrite => SandboxPolicy::new_workspace_write_policy(),
-            SubagentSandboxPolicy::DangerFullAccess => SandboxPolicy::DangerFullAccess,
+            SubagentSandboxPolicy::ReadOnly => Some(SandboxPolicy::new_read_only_policy()),
+            SubagentSandboxPolicy::WorkspaceWrite => {
+                Some(SandboxPolicy::new_workspace_write_policy())
+            }
+            SubagentSandboxPolicy::DangerFullAccess => Some(SandboxPolicy::DangerFullAccess),
+            SubagentSandboxPolicy::Inherit => None,
         }
     }
 
     /// Returns the restrictiveness level (lower = more restrictive).
-    /// Used to ensure subagents can only tighten, not loosen security.
-    pub fn restrictiveness(self) -> i32 {
+    /// `Inherit` returns `None` since it depends on the parent.
+    pub fn restrictiveness(self) -> Option<i32> {
         match self {
-            SubagentSandboxPolicy::ReadOnly => 0,
-            SubagentSandboxPolicy::WorkspaceWrite => 1,
-            SubagentSandboxPolicy::DangerFullAccess => 2,
+            SubagentSandboxPolicy::ReadOnly => Some(0),
+            SubagentSandboxPolicy::WorkspaceWrite => Some(1),
+            SubagentSandboxPolicy::DangerFullAccess => Some(2),
+            SubagentSandboxPolicy::Inherit => None,
         }
     }
 
@@ -244,19 +314,13 @@ impl SubagentRegistry {
         let content = std::fs::read_to_string(path)?;
         let (frontmatter, body) = Self::parse_frontmatter(&content)?;
 
-        let metadata: SubagentMetadata = if !frontmatter.is_empty() {
-            serde_yaml::from_str(frontmatter).context("Failed to parse YAML frontmatter")?
-        } else {
-            SubagentMetadata {
-                name: None,
-                description: None,
-                profile: None,
-                sandbox_policy: None,
-                approval_policy: None,
-                allowed_subagents: None,
-                extra: HashMap::new(),
-            }
-        };
+        anyhow::ensure!(
+            !frontmatter.is_empty(),
+            "Missing YAML frontmatter. Subagent files require frontmatter with at least 'profile', 'sandbox_policy', and 'approval_policy' fields."
+        );
+
+        let metadata: SubagentMetadata =
+            serde_yaml::from_str(frontmatter).context("Failed to parse YAML frontmatter")?;
 
         Ok(SubagentDefinition {
             slug: slug.to_string(),
@@ -327,7 +391,7 @@ mod tests {
         write_agent(
             &codex_home,
             "test-agent",
-            "---\nname: Test Agent\ndescription: A test agent\n---\n\nYou are a test agent.",
+            "---\nname: Test Agent\ndescription: A test agent\nprofile: inherit\nsandbox_policy: inherit\napproval_policy: inherit\n---\n\nYou are a test agent.",
         );
 
         let outcome = load_subagents(codex_home.path()).await;
@@ -343,7 +407,7 @@ mod tests {
         write_agent(
             &codex_home,
             "explorer",
-            "---\nname: Explorer\ndescription: Fast agent\nprofile: fast\n---\n\nYou are an explorer.",
+            "---\nname: Explorer\ndescription: Fast agent\nprofile: fast\nsandbox_policy: read-only\napproval_policy: never\n---\n\nYou are an explorer.",
         );
 
         let outcome = load_subagents(codex_home.path()).await;
@@ -359,7 +423,7 @@ mod tests {
         let path = write_agent(
             &codex_home,
             "explorer",
-            "---\nname: Explorer\ndescription: Fast agent\nprofile: x-ai/grok-4.1-fast\n---\n\nYou are an explorer.",
+            "---\nname: Explorer\ndescription: Fast agent\nprofile: x-ai/grok-4.1-fast\nsandbox_policy: inherit\napproval_policy: inherit\n---\n\nYou are an explorer.",
         );
 
         let outcome = load_subagents(codex_home.path()).await;
@@ -388,7 +452,7 @@ mod tests {
         let path = write_agent(
             &codex_home,
             "broken",
-            "---\nname: Broken\ninvalid yaml here\n---\n\nYou are broken.",
+            "---\nname: Broken\ninvalid yaml here\nprofile: inherit\nsandbox_policy: inherit\napproval_policy: inherit\n---\n\nYou are broken.",
         );
 
         let outcome = load_subagents(codex_home.path()).await;
@@ -399,6 +463,50 @@ mod tests {
             outcome.errors[0].message.contains("parse")
                 || outcome.errors[0].message.contains("YAML"),
             "Error should mention YAML parsing issue: {}",
+            outcome.errors[0].message
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_agent_missing_required_fields() {
+        let codex_home = setup_codex_home();
+        let path = write_agent(
+            &codex_home,
+            "incomplete",
+            "---\nname: Incomplete\ndescription: Missing required fields\nprofile: inherit\n---\n\nYou are incomplete.",
+        );
+
+        let outcome = load_subagents(codex_home.path()).await;
+        assert_eq!(outcome.agents.len(), 0);
+        assert_eq!(outcome.errors.len(), 1);
+        assert_eq!(outcome.errors[0].path, path);
+        // The error message should indicate a YAML parsing issue due to missing required fields.
+        // serde_yaml will report "missing field" for the required sandbox_policy/approval_policy.
+        assert!(
+            outcome.errors[0].message.contains("YAML")
+                || outcome.errors[0].message.contains("parse")
+                || outcome.errors[0].message.contains("missing field"),
+            "Error should mention parsing issue or missing field: {}",
+            outcome.errors[0].message
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_agent_without_frontmatter() {
+        let codex_home = setup_codex_home();
+        let path = write_agent(
+            &codex_home,
+            "no-frontmatter",
+            "You are an agent without frontmatter.",
+        );
+
+        let outcome = load_subagents(codex_home.path()).await;
+        assert_eq!(outcome.agents.len(), 0);
+        assert_eq!(outcome.errors.len(), 1);
+        assert_eq!(outcome.errors[0].path, path);
+        assert!(
+            outcome.errors[0].message.contains("frontmatter"),
+            "Error should mention missing frontmatter: {}",
             outcome.errors[0].message
         );
     }
@@ -428,9 +536,9 @@ mod tests {
                 metadata: SubagentMetadata {
                     name: Some("Test".to_string()),
                     description: Some("A test".to_string()),
-                    profile: None,
-                    sandbox_policy: None,
-                    approval_policy: None,
+                    profile: SubagentProfile::Inherit,
+                    sandbox_policy: SubagentSandboxPolicy::Inherit,
+                    approval_policy: SubagentApprovalPolicy::Inherit,
                     allowed_subagents: None,
                     extra: HashMap::new(),
                 },

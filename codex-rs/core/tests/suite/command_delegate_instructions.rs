@@ -61,8 +61,7 @@ async fn delegate_command_preserves_base_instructions() -> anyhow::Result<()> {
 
     assert!(
         content.contains(base_instructions),
-        "System prompt should contain base instructions. Got: {}",
-        content
+        "System prompt should contain base instructions. Got: {content}"
     );
 
     Ok(())

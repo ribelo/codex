@@ -303,23 +303,38 @@ impl ToolHandler for TaskHandler {
                 }
 
                 // Apply sandbox_policy override (only if more restrictive than parent)
-                if let Some(subagent_sandbox) = subagent_def.metadata.sandbox_policy {
+                // Apply sandbox_policy override (only if more restrictive than parent).
+                // If subagent specifies `Inherit`, we keep the parent's policy.
+                if let Some(subagent_sandbox_policy) =
+                    subagent_def.metadata.sandbox_policy.to_sandbox_policy()
+                {
                     let parent_sandbox =
                         SubagentSandboxPolicy::from_sandbox_policy(&config.sandbox_policy);
-                    // Only apply if subagent policy is more restrictive (lower value)
-                    if subagent_sandbox.restrictiveness() <= parent_sandbox.restrictiveness() {
-                        sub_config.sandbox_policy = subagent_sandbox.to_sandbox_policy();
+                    let subagent_restrictiveness =
+                        subagent_def.metadata.sandbox_policy.restrictiveness();
+                    // Only apply if subagent policy is more restrictive (lower value).
+                    // `Inherit` (None restrictiveness) never overrides.
+                    if let Some(sub_level) = subagent_restrictiveness
+                        && sub_level <= parent_sandbox.restrictiveness().unwrap_or(i32::MAX)
+                    {
+                        sub_config.sandbox_policy = subagent_sandbox_policy;
                     }
                 }
 
-                // Apply approval_policy override (only if more restrictive than parent)
-                if let Some(subagent_approval) = subagent_def.metadata.approval_policy {
-                    let parent_approval = config.approval_policy;
-                    // Only apply if subagent policy is more restrictive
-                    if approval_restrictiveness(subagent_approval)
-                        <= approval_restrictiveness(parent_approval)
+                // Apply approval_policy override (only if more restrictive than parent).
+                // If subagent specifies `Inherit`, we keep the parent's policy.
+                if let Some(subagent_approval_policy) =
+                    subagent_def.metadata.approval_policy.to_ask_for_approval()
+                {
+                    let subagent_restrictiveness =
+                        subagent_def.metadata.approval_policy.restrictiveness();
+                    let parent_restrictiveness = approval_restrictiveness(config.approval_policy);
+                    // Only apply if subagent policy is more restrictive (lower value).
+                    // `Inherit` (None restrictiveness) never overrides.
+                    if let Some(sub_level) = subagent_restrictiveness
+                        && sub_level <= parent_restrictiveness
                     {
-                        sub_config.approval_policy = subagent_approval;
+                        sub_config.approval_policy = subagent_approval_policy;
                     }
                 }
 
