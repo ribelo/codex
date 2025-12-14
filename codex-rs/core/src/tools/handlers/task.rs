@@ -223,12 +223,6 @@ impl ToolHandler for TaskHandler {
                 let spawn_started = Instant::now();
                 let config = turn.client.config();
                 let mut sub_config = (*config).clone();
-                sub_config.base_instructions = Some(format!(
-                    "{}
-
-{SANDBOX_AND_APPROVALS_PROMPT}",
-                    subagent_def.system_prompt
-                ));
                 sub_config.codex_home = codex_home.clone();
 
                 // Apply profile settings from frontmatter.
@@ -301,6 +295,20 @@ impl ToolHandler for TaskHandler {
                         "Task handler: no profile configured or profile returned None"
                     );
                 }
+
+                // Determine the base instructions for the subagent.
+                // If the agent file has a custom system prompt, use it.
+                // Otherwise, fall back to the model family's default instructions.
+                let base_prompt = if subagent_def.system_prompt.is_empty() {
+                    // Use the parent session's base instructions as fallback.
+                    // This inherits the model-appropriate prompt from the parent.
+                    config.base_instructions.clone().unwrap_or_default()
+                } else {
+                    subagent_def.system_prompt.clone()
+                };
+
+                sub_config.base_instructions =
+                    Some(format!("{base_prompt}\n\n{SANDBOX_AND_APPROVALS_PROMPT}"));
 
                 // Apply sandbox_policy override (only if more restrictive than parent)
                 // Apply sandbox_policy override (only if more restrictive than parent).

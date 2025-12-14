@@ -512,6 +512,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn loads_agent_with_frontmatter_only() {
+        let codex_home = setup_codex_home();
+        write_agent(
+            &codex_home,
+            "minimal",
+            "---\nprofile: inherit\nsandbox_policy: inherit\napproval_policy: inherit\n---\n",
+        );
+
+        let outcome = load_subagents(codex_home.path()).await;
+        assert!(
+            outcome.errors.is_empty(),
+            "Expected no errors: {:?}",
+            outcome.errors
+        );
+        assert_eq!(outcome.agents.len(), 1);
+        assert_eq!(outcome.agents[0].slug, "minimal");
+        assert!(
+            outcome.agents[0].system_prompt.is_empty(),
+            "Expected empty system_prompt for frontmatter-only agent"
+        );
+    }
+
+    #[tokio::test]
     async fn handles_empty_agents_directory() {
         let codex_home = setup_codex_home();
         let outcome = load_subagents(codex_home.path()).await;
