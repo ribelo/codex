@@ -31,6 +31,7 @@ pub struct ResponsesOptions {
     pub store_override: Option<bool>,
     pub conversation_id: Option<String>,
     pub session_source: Option<SessionSource>,
+    pub provider: Option<Value>,
 }
 
 impl<T: HttpTransport, A: AuthProvider> ResponsesClient<T, A> {
@@ -71,6 +72,7 @@ impl<T: HttpTransport, A: AuthProvider> ResponsesClient<T, A> {
             store_override,
             conversation_id,
             session_source,
+            provider,
         } = options;
 
         let request = ResponsesRequestBuilder::new(model, &prompt.instructions, &prompt.input)
@@ -83,6 +85,7 @@ impl<T: HttpTransport, A: AuthProvider> ResponsesClient<T, A> {
             .conversation(conversation_id)
             .session_source(session_source)
             .store_override(store_override)
+            .provider(provider)
             .build(self.streaming.provider())?;
 
         self.stream_request(request).await

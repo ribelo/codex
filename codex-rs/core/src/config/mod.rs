@@ -57,6 +57,7 @@ use toml_edit::DocumentMut;
 
 pub mod edit;
 pub mod profile;
+pub mod provider_profile;
 pub mod types;
 
 const OPENAI_DEFAULT_REVIEW_MODEL: &str = "gpt-5.1-codex-max";
@@ -99,6 +100,9 @@ pub struct Config {
 
     /// Info needed to make an API request to the model.
     pub model_provider: ModelProviderInfo,
+
+    /// Provider-specific profile configuration.
+    pub provider_profile_config: provider_profile::ProviderProfileConfig,
 
     /// Approval policy for executing commands.
     pub approval_policy: AskForApproval,
@@ -1054,6 +1058,15 @@ impl Config {
             })?
             .clone();
 
+        let profile_name_for_error = active_profile_name.as_deref().unwrap_or("<default>");
+
+        let provider_profile_config = provider_profile::resolve_provider_config(
+            config_profile.provider.as_ref(),
+            model_provider.provider_kind,
+            profile_name_for_error,
+        )
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
+
         let shell_environment_policy = cfg.shell_environment_policy.into();
 
         let history = cfg.history.unwrap_or_default();
@@ -1142,6 +1155,7 @@ impl Config {
             model_auto_compact_token_limit: cfg.model_auto_compact_token_limit,
             model_provider_id,
             model_provider,
+            provider_profile_config,
             cwd: resolved_cwd,
             approval_policy,
             sandbox_policy,
@@ -2926,6 +2940,7 @@ model_verbosity = "high"
                 model_auto_compact_token_limit: None,
                 model_provider_id: "openai".to_string(),
                 model_provider: fixture.openai_provider.clone(),
+                provider_profile_config: Default::default(),
                 approval_policy: AskForApproval::Never,
                 sandbox_policy: SandboxPolicy::new_read_only_policy(),
                 did_user_set_custom_approval_policy_or_sandbox_mode: true,
@@ -3002,6 +3017,7 @@ model_verbosity = "high"
             model_auto_compact_token_limit: None,
             model_provider_id: "openai-chat-completions".to_string(),
             model_provider: fixture.openai_chat_completions_provider.clone(),
+            provider_profile_config: Default::default(),
             approval_policy: AskForApproval::UnlessTrusted,
             sandbox_policy: SandboxPolicy::new_read_only_policy(),
             did_user_set_custom_approval_policy_or_sandbox_mode: true,
@@ -3093,6 +3109,7 @@ model_verbosity = "high"
             model_auto_compact_token_limit: None,
             model_provider_id: "openai".to_string(),
             model_provider: fixture.openai_provider.clone(),
+            provider_profile_config: Default::default(),
             approval_policy: AskForApproval::OnFailure,
             sandbox_policy: SandboxPolicy::new_read_only_policy(),
             did_user_set_custom_approval_policy_or_sandbox_mode: true,
@@ -3170,6 +3187,7 @@ model_verbosity = "high"
             model_auto_compact_token_limit: None,
             model_provider_id: "openai".to_string(),
             model_provider: fixture.openai_provider.clone(),
+            provider_profile_config: Default::default(),
             approval_policy: AskForApproval::OnFailure,
             sandbox_policy: SandboxPolicy::new_read_only_policy(),
             did_user_set_custom_approval_policy_or_sandbox_mode: true,

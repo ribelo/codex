@@ -32,6 +32,7 @@ pub struct ResponsesRequestBuilder<'a> {
     session_source: Option<SessionSource>,
     store_override: Option<bool>,
     headers: HeaderMap,
+    provider: Option<Value>,
 }
 
 impl<'a> ResponsesRequestBuilder<'a> {
@@ -89,6 +90,11 @@ impl<'a> ResponsesRequestBuilder<'a> {
         self
     }
 
+    pub fn provider(mut self, provider: Option<Value>) -> Self {
+        self.provider = provider;
+        self
+    }
+
     pub fn extra_headers(mut self, headers: HeaderMap) -> Self {
         self.headers = headers;
         self
@@ -127,6 +133,12 @@ impl<'a> ResponsesRequestBuilder<'a> {
 
         let mut body = serde_json::to_value(&req)
             .map_err(|e| ApiError::Stream(format!("failed to encode responses request: {e}")))?;
+
+        if let Some(provider_config) = self.provider {
+            if let Some(obj) = body.as_object_mut() {
+                obj.insert("provider".to_string(), provider_config);
+            }
+        }
 
         if store && provider.is_azure_responses_endpoint() {
             attach_item_ids(&mut body, input);
@@ -173,6 +185,7 @@ mod tests {
     use super::*;
     use crate::provider::RetryConfig;
     use crate::provider::WireApi;
+    use codex_protocol::models::ContentItem;
     use codex_protocol::protocol::SubAgentSource;
     use http::HeaderValue;
     use pretty_assertions::assert_eq;
@@ -242,5 +255,29 @@ mod tests {
             request.headers.get("x-openai-subagent"),
             Some(&HeaderValue::from_static("review"))
         );
+    }
+
+    #[test]
+    fn provider_config_injected_into_request_body() {
+        let provider = provider("openrouter", "https://openrouter.ai/api/v1");
+        let input = vec![ResponseItem::Message {
+            id: None,
+            role: "user".into(),
+            content: vec![ContentItem::InputText {
+                text: "Hello".into(),
+            }],
+        }];
+
+        let provider_config = serde_json::json!({
+            "order": ["xai"],
+            "allow_fallbacks": false
+        });
+
+        let request = ResponsesRequestBuilder::new("gpt-test", "inst", &input)
+            .provider(Some(provider_config.clone()))
+            .build(&provider)
+            .expect("request");
+
+        assert_eq!(request.body.get("provider"), Some(&provider_config));
     }
 }

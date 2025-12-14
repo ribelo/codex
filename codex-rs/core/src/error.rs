@@ -137,6 +137,9 @@ pub enum CodexErr {
     #[error("internal error; agent loop died unexpectedly")]
     InternalAgentDied,
 
+    #[error("Configuration error: {0}")]
+    ConfigError(String),
+
     /// Sandbox error
     #[error("sandbox error: {0}")]
     Sandbox(#[from] SandboxErr),

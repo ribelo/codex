@@ -65,6 +65,7 @@ pub enum ProviderKind {
     Anthropic,
     Gemini,
     Antigravity,
+    OpenRouter,
 }
 
 /// Serializable representation of a provider definition.
@@ -176,6 +177,7 @@ impl<'de> Deserialize<'de> for ModelProviderInfo {
             ProviderKind::Gemini => WireApi::Gemini,
             ProviderKind::Antigravity => WireApi::Antigravity,
             ProviderKind::OpenAi => WireApi::Chat,
+            ProviderKind::OpenRouter => WireApi::Responses,
         });
 
         Ok(Self {
@@ -744,6 +746,30 @@ pub fn built_in_model_providers() -> HashMap<String, ModelProviderInfo> {
                 use_bearer_auth: false,
             },
         ),
+        (
+            "openrouter",
+            P {
+                name: "OpenRouter".into(),
+                base_url: Some("https://openrouter.ai/api/v1".into()),
+                env_key: Some("OPENROUTER_API_KEY".to_string()),
+                env_key_instructions: Some("Get your API key at https://openrouter.ai/keys".into()),
+                experimental_bearer_token: None,
+                wire_api: WireApi::Responses,
+                provider_kind: ProviderKind::OpenRouter,
+                query_params: None,
+                http_headers: None,
+                env_http_headers: None,
+                request_max_retries: Some(DEFAULT_REQUEST_MAX_RETRIES),
+                stream_max_retries: Some(DEFAULT_STREAM_MAX_RETRIES),
+                stream_idle_timeout_ms: Some(DEFAULT_STREAM_IDLE_TIMEOUT_MS),
+                requires_openai_auth: false,
+                api_key_env_var: None,
+                version: None,
+                beta: None,
+                project_id: None,
+                use_bearer_auth: true,
+            },
+        ),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_string(), v))
@@ -754,6 +780,53 @@ pub fn built_in_model_providers() -> HashMap<String, ModelProviderInfo> {
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
+
+    #[test]
+    fn built_in_providers_includes_openrouter() {
+        let providers = built_in_model_providers();
+
+        let openrouter = providers
+            .get("openrouter")
+            .expect("openrouter should be a built-in provider");
+
+        assert_eq!(openrouter.name, "OpenRouter");
+        assert_eq!(openrouter.provider_kind, ProviderKind::OpenRouter);
+        assert_eq!(openrouter.wire_api, WireApi::Responses);
+        assert_eq!(
+            openrouter.base_url,
+            Some("https://openrouter.ai/api/v1".to_string())
+        );
+        assert_eq!(openrouter.env_key, Some("OPENROUTER_API_KEY".to_string()));
+        assert!(openrouter.use_bearer_auth);
+    }
+
+    #[test]
+    fn deserializes_openrouter_provider() {
+        let toml = r#"
+    name = "OpenRouter"
+    provider_kind = "openrouter"
+    base_url = "https://openrouter.ai/api/v1"
+    env_key = "OPENROUTER_API_KEY"
+        "#;
+
+        let provider: ModelProviderInfo = toml::from_str(toml).unwrap();
+        assert_eq!(provider.provider_kind, ProviderKind::OpenRouter);
+        assert_eq!(provider.wire_api, WireApi::Responses);
+    }
+
+    #[test]
+    fn openrouter_can_use_chat_wire_api() {
+        let toml = r#"
+    name = "OpenRouter Chat"
+    provider_kind = "openrouter"
+    wire_api = "chat"
+    base_url = "https://openrouter.ai/api/v1"
+        "#;
+
+        let provider: ModelProviderInfo = toml::from_str(toml).unwrap();
+        assert_eq!(provider.provider_kind, ProviderKind::OpenRouter);
+        assert_eq!(provider.wire_api, WireApi::Chat);
+    }
 
     #[test]
     fn test_deserialize_custom_model_provider_toml() {

@@ -260,6 +260,83 @@ Valid values are:
 oss_provider = "lmstudio"
 ```
 
+## Provider-Specific Configuration
+
+Some providers support additional configuration beyond standard profile fields.
+These are specified in a `[profiles.<name>.provider]` table.
+
+### OpenRouter
+
+OpenRouter supports routing preferences to control which underlying providers
+serve your requests.
+
+#### Quick Start
+
+```toml
+# Use built-in OpenRouter provider
+model_provider = "openrouter"
+model = "x-ai/grok-4.1-fast"
+
+# Or define a profile with routing preferences
+[profiles.grok]
+model_provider = "openrouter"
+model = "x-ai/grok-4.1-fast"
+
+[profiles.grok.provider]
+routing.order = ["xai"]
+routing.allow_fallbacks = false
+routing.data_collection = "deny"
+```
+
+#### Full Example with Custom Provider
+
+```toml
+[model_providers.openrouter]
+name = "OpenRouter"
+provider_kind = "openrouter"
+base_url = "https://openrouter.ai/api/v1"
+env_key = "OPENROUTER_API_KEY"
+wire_api = "responses"
+
+[profiles.my-profile]
+model_provider = "openrouter"
+model = "x-ai/grok-4.1-fast"
+model_reasoning_effort = "high"
+
+[profiles.my-profile.provider]
+routing.order = ["xai"]
+routing.allow_fallbacks = false
+routing.require_parameters = true
+routing.data_collection = "deny"
+```
+
+#### Available Routing Options
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `order` | string[] | Ordered list of preferred provider names |
+| `allow_fallbacks` | bool | Allow fallback to non-preferred providers (default: true) |
+| `require_parameters` | bool | Only use providers supporting all request params (default: true) |
+| `data_collection` | "allow" \| "deny" | Control training data collection |
+| `zdr` | bool | Zero Data Retention - only use providers with ZDR agreements |
+| `only` | string[] | Exclusive list of allowed providers |
+| `ignore` | string[] | Providers to never use |
+| `sort` | "price" \| "throughput" \| "latency" | Sort preference for provider ranking |
+| `max_price.prompt` | float | Max price per million prompt tokens (USD) |
+| `max_price.completion` | float | Max price per million completion tokens (USD) |
+
+See [OpenRouter Provider Routing](https://openrouter.ai/docs/api/api-reference/responses/create-responses#request.body.provider) for full details.
+
+### Other Providers
+
+Other providers will have their own `[profiles.<name>.provider]` options:
+
+- **OpenAI**: (planned) reasoning settings
+- **Anthropic**: (planned) thinking settings, beta flags
+- **Gemini**: (planned) safety settings
+
+Using options for the wrong provider type results in a configuration error.
+
 ## Execution environment
 
 ### approval_policy

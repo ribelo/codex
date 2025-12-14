@@ -44,6 +44,7 @@ use crate::client_common::Prompt;
 use crate::client_common::ResponseEvent;
 use crate::client_common::ResponseStream;
 use crate::config::Config;
+use crate::config::provider_profile::ProviderProfileConfig;
 use crate::default_client::build_reqwest_client;
 use crate::default_client::create_client;
 use crate::error::CodexErr;
@@ -51,6 +52,7 @@ use crate::error::Result;
 use crate::flags::CODEX_RS_SSE_FIXTURE;
 use crate::gemini_messages::stream_gemini_messages;
 use crate::model_provider_info::ModelProviderInfo;
+use crate::model_provider_info::ProviderKind;
 use crate::model_provider_info::WireApi;
 use crate::openai_models::model_family::ModelFamily;
 use crate::tools::spec::create_tools_json_for_chat_completions_api;
@@ -303,6 +305,26 @@ impl ModelClient {
             let client = ApiResponsesClient::new(transport, api_provider, api_auth)
                 .with_telemetry(Some(request_telemetry), Some(sse_telemetry));
 
+            let provider_config_json = if self.provider.provider_kind == ProviderKind::OpenRouter {
+                if let ProviderProfileConfig::OpenRouter(ref openrouter_config) =
+                    self.config.provider_profile_config
+                {
+                    if let Some(ref routing) = openrouter_config.routing {
+                        Some(serde_json::to_value(routing).map_err(|e| {
+                            CodexErr::ConfigError(format!(
+                                "Failed to serialize OpenRouter routing config: {e}"
+                            ))
+                        })?)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
             let options = ApiResponsesOptions {
                 reasoning: reasoning.clone(),
                 include: include.clone(),
@@ -311,6 +333,7 @@ impl ModelClient {
                 store_override: None,
                 conversation_id: Some(conversation_id.clone()),
                 session_source: Some(session_source.clone()),
+                provider: provider_config_json,
             };
 
             let stream_result = client

@@ -1,5 +1,6 @@
 use serde::Deserialize;
 use std::path::PathBuf;
+use toml::Table as TomlTable;
 
 use crate::config::types::ReasoningSummaryFormat;
 use crate::protocol::AskForApproval;
@@ -39,6 +40,11 @@ pub struct ConfigProfile {
     /// Optional feature toggles scoped to this profile.
     #[serde(default)]
     pub features: Option<crate::features::FeaturesToml>,
+
+    /// Provider-specific configuration.
+    /// Parsed as raw TOML table, then validated against resolved ProviderKind.
+    #[serde(default)]
+    pub provider: Option<TomlTable>,
 }
 
 impl From<ConfigProfile> for codex_app_server_protocol::Profile {
