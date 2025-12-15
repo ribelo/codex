@@ -15,7 +15,8 @@ use std::task::Context;
 use std::task::Poll;
 use tokio::sync::mpsc;
 
-/// Review thread system prompt. Edit `core/src/review_prompt.md` to customize.
+/// Sandbox and approvals instructions. Injected into all prompts.
+const SANDBOX_AND_APPROVALS: &str = include_str!("../sandbox_and_approvals.md");
 pub const REVIEW_PROMPT: &str = include_str!("../review_prompt.md");
 
 // Centralized templates for review-related user messages
@@ -63,11 +64,15 @@ impl Prompt {
             && model.needs_special_apply_patch_instructions
             && !is_apply_patch_tool_present;
 
+        // Always append sandbox instructions, optionally with apply_patch instructions
+        let mut result = base.to_string();
         if needs_apply_patch_instructions {
-            Cow::Owned(format!("{base}\n{APPLY_PATCH_TOOL_INSTRUCTIONS}"))
-        } else {
-            Cow::Borrowed(base)
+            result.push('\n');
+            result.push_str(APPLY_PATCH_TOOL_INSTRUCTIONS);
         }
+        result.push_str("\n\n");
+        result.push_str(SANDBOX_AND_APPROVALS);
+        Cow::Owned(result)
     }
 
     pub(crate) fn get_formatted_input(&self) -> Vec<ResponseItem> {
@@ -300,13 +305,19 @@ mod tests {
             let config = test_config();
             let model_family =
                 ModelsManager::construct_model_family_offline(test_case.slug, &config);
+            // Sandbox instructions are always appended
             let expected = if test_case.expects_apply_patch_instructions {
                 format!(
-                    "{}\n{}",
-                    model_family.base_instructions, APPLY_PATCH_TOOL_INSTRUCTIONS
+                    "{}\n{}\n\n{}",
+                    model_family.base_instructions,
+                    APPLY_PATCH_TOOL_INSTRUCTIONS,
+                    SANDBOX_AND_APPROVALS
                 )
             } else {
-                model_family.base_instructions.to_string()
+                format!(
+                    "{}\n\n{}",
+                    model_family.base_instructions, SANDBOX_AND_APPROVALS
+                )
             };
 
             let full = prompt.get_full_instructions(&model_family);

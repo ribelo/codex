@@ -18,7 +18,7 @@ const BASE_INSTRUCTIONS: &str = include_str!("../../prompt.md");
 const GPT_5_1_INSTRUCTIONS: &str = include_str!("../../gpt_5_1_prompt.md");
 const GPT_5_2_INSTRUCTIONS: &str = include_str!("../../gpt_5_2_prompt.md");
 const GPT_5_1_CODEX_MAX_INSTRUCTIONS: &str = include_str!("../../gpt-5.1-codex-max_prompt.md");
-const GEMINI_3_INSTRUCTIONS: &str = include_str!("../../gemini-3-prompt.md");
+const PRAXIS_INSTRUCTIONS: &str = include_str!("../../praxis.md");
 pub(crate) const CONTEXT_WINDOW_272K: i64 = 272_000;
 
 /// A model family is a group of models that share certain characteristics.
@@ -325,6 +325,7 @@ pub(in crate::openai_models) fn find_family_for_model(slug: &str) -> ModelFamily
             needs_special_apply_patch_instructions: true,
             shell_type: ConfigShellToolType::Default,
             support_verbosity: true,
+            base_instructions: PRAXIS_INSTRUCTIONS.to_string(),
             truncation_policy: TruncationPolicy::Bytes(10_000),
             truncation_bias: TruncationBias::TailHeavy,
             mcp_truncation_bias: TruncationBias::TailHeavy,
@@ -340,7 +341,7 @@ pub(in crate::openai_models) fn find_family_for_model(slug: &str) -> ModelFamily
                 default_reasoning_effort: supports_reasoning.then_some(ReasoningEffort::High),
                 reasoning_summary_format: ReasoningSummaryFormat::None,
                 shell_type: ConfigShellToolType::ShellCommand,
-                base_instructions: GEMINI_3_INSTRUCTIONS.to_string(),
+                base_instructions: PRAXIS_INSTRUCTIONS.to_string(),
                 apply_patch_tool_type: Some(ApplyPatchToolType::Function),
                 truncation_bias: TruncationBias::TailHeavy,
                 mcp_truncation_bias: TruncationBias::TailHeavy,
@@ -352,6 +353,7 @@ pub(in crate::openai_models) fn find_family_for_model(slug: &str) -> ModelFamily
                 default_reasoning_effort: supports_reasoning.then_some(ReasoningEffort::Medium),
                 reasoning_summary_format: ReasoningSummaryFormat::None,
                 shell_type: ConfigShellToolType::ShellCommand,
+                base_instructions: PRAXIS_INSTRUCTIONS.to_string(),
                 apply_patch_tool_type: Some(ApplyPatchToolType::Function),
                 truncation_bias: TruncationBias::TailHeavy,
                 mcp_truncation_bias: TruncationBias::TailHeavy,
@@ -374,7 +376,7 @@ fn derive_default_model_family(model: &str) -> ModelFamily {
         reasoning_summary_format: ReasoningSummaryFormat::None,
         // let's add apply patch to every model by default
         apply_patch_tool_type: Some(ApplyPatchToolType::Function),
-        base_instructions: BASE_INSTRUCTIONS.to_string(),
+        base_instructions: PRAXIS_INSTRUCTIONS.to_string(),
         experimental_supported_tools: Vec::new(),
         effective_context_window_percent: 95,
         support_verbosity: false,

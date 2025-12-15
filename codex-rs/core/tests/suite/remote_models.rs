@@ -49,7 +49,8 @@ use wiremock::BodyPrintLimit;
 use wiremock::MockServer;
 
 /// Parallel instructions that are always appended to the base instructions.
-const PARALLEL_INSTRUCTIONS: &str = include_str!("../../templates/parallel/instructions.md");
+/// Sandbox instructions that are always appended to the base instructions.
+const SANDBOX_AND_APPROVALS: &str = include_str!("../../sandbox_and_approvals.md");
 
 const REMOTE_MODEL_SLUG: &str = "codex-test";
 
@@ -278,8 +279,8 @@ async fn remote_models_apply_remote_base_instructions() -> Result<()> {
 
     let body = response_mock.single_request().body_json();
     let instructions = body["instructions"].as_str().unwrap();
-    // Parallel instructions are always appended to base instructions.
-    let expected_instructions = format!("{remote_base}{PARALLEL_INSTRUCTIONS}");
+    // Sandbox instructions are always appended to base instructions.
+    let expected_instructions = format!("{remote_base}\n\n{SANDBOX_AND_APPROVALS}");
     assert_eq!(instructions, expected_instructions);
 
     Ok(())

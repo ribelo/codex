@@ -29,7 +29,8 @@ fn text_user_input(text: String) -> serde_json::Value {
 }
 
 /// Parallel instructions that are always appended to the base instructions.
-const PARALLEL_INSTRUCTIONS: &str = include_str!("../../templates/parallel/instructions.md");
+/// Sandbox instructions that are always appended to the base instructions.
+const SANDBOX_AND_APPROVALS: &str = include_str!("../../sandbox_and_approvals.md");
 
 fn default_env_context_str(cwd: &str, shell: &Shell) -> String {
     let shell_name = shell.name();
@@ -98,10 +99,10 @@ async fn codex_mini_latest_tools() -> anyhow::Result<()> {
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TaskComplete(_))).await;
 
     let expected_instructions = format!(
-        "{}\n{}{}",
+        "{}\n{}\n\n{}",
         include_str!("../../prompt.md"),
         include_str!("../../../apply-patch/apply_patch_tool_instructions.md"),
-        include_str!("../../templates/parallel/instructions.md"),
+        include_str!("../../sandbox_and_approvals.md"),
     );
 
     let body0 = req1.single_request().body_json();
@@ -182,8 +183,8 @@ async fn prompt_tools_are_consistent_across_requests() -> anyhow::Result<()> {
     ];
     let body0 = req1.single_request().body_json();
 
-    // Parallel instructions are always appended now.
-    let expected_instructions = format!("{base_instructions}{PARALLEL_INSTRUCTIONS}");
+    // Sandbox instructions are always appended now.
+    let expected_instructions = format!("{base_instructions}\n\n{SANDBOX_AND_APPROVALS}");
 
     assert_eq!(
         body0["instructions"],
