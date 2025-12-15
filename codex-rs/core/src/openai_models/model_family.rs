@@ -90,11 +90,6 @@ pub struct ModelFamily {
 
     /// Truncation bias for MCP tool output.
     pub mcp_truncation_bias: TruncationBias,
-
-    /// Whether additional instructions (like PARALLEL_INSTRUCTIONS) can be
-    /// appended to this model's base_instructions. Some models (e.g., gpt-5.2)
-    /// require their prompts to be sent exactly as-is without modifications.
-    pub allows_instruction_modifications: bool,
 }
 
 impl ModelFamily {
@@ -163,7 +158,6 @@ macro_rules! model_family {
             truncation_bias: TruncationBias::Balanced,
             mcp_truncation_policy: TruncationPolicy::Bytes(DEFAULT_MCP_TOOL_OUTPUT_BYTES),
             mcp_truncation_bias: TruncationBias::Balanced,
-            allows_instruction_modifications: true,
         };
 
         // apply overrides
@@ -310,7 +304,6 @@ pub(in crate::openai_models) fn find_family_for_model(slug: &str) -> ModelFamily
             truncation_policy: TruncationPolicy::Bytes(10_000),
             shell_type: ConfigShellToolType::ShellCommand,
             context_window: Some(CONTEXT_WINDOW_272K),
-            allows_instruction_modifications: false,
         )
     } else if slug.starts_with("gpt-5.1") {
         model_family!(
@@ -392,7 +385,6 @@ fn derive_default_model_family(model: &str) -> ModelFamily {
         truncation_bias: TruncationBias::Balanced,
         mcp_truncation_policy: TruncationPolicy::Bytes(DEFAULT_MCP_TOOL_OUTPUT_BYTES),
         mcp_truncation_bias: TruncationBias::Balanced,
-        allows_instruction_modifications: true,
     }
 }
 

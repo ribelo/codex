@@ -23,7 +23,7 @@ const SKILLS_FILENAME: &str = "SKILL.md";
 const SKILLS_DIR_NAME: &str = "skills";
 const REPO_ROOT_CONFIG_DIR_NAME: &str = ".codex";
 const MAX_NAME_LEN: usize = 100;
-const MAX_DESCRIPTION_LEN: usize = 500;
+const MAX_DESCRIPTION_LEN: usize = 1000;
 
 #[derive(Debug)]
 enum SkillParseError {

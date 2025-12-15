@@ -15,9 +15,6 @@ use std::task::Context;
 use std::task::Poll;
 use tokio::sync::mpsc;
 
-/// Parallel tool call instructions that are always appended to base instructions.
-const PARALLEL_INSTRUCTIONS: &str = include_str!("../templates/parallel/instructions.md");
-
 /// Review thread system prompt. Edit `core/src/review_prompt.md` to customize.
 pub const REVIEW_PROMPT: &str = include_str!("../review_prompt.md");
 
@@ -59,28 +56,17 @@ impl Prompt {
             _ => false,
         });
 
-        // Build the full instructions by conditionally appending apply_patch and parallel
-        // instructions. Don't append extra instructions when:
+        // Build the full instructions by conditionally appending apply_patch instructions.
+        // Don't append extra instructions when:
         // - base_instructions_override is set (e.g., for review tasks)
-        // - model.allows_instruction_modifications is false (e.g., gpt-5.2 requires exact prompts)
-        let has_override = self.base_instructions_override.is_some();
         let needs_apply_patch_instructions = self.base_instructions_override.is_none()
             && model.needs_special_apply_patch_instructions
             && !is_apply_patch_tool_present;
-        let can_modify = model.allows_instruction_modifications;
 
-        if needs_apply_patch_instructions && can_modify {
-            Cow::Owned(format!(
-                "{base}\n{APPLY_PATCH_TOOL_INSTRUCTIONS}{PARALLEL_INSTRUCTIONS}"
-            ))
-        } else if needs_apply_patch_instructions && !can_modify {
-            // Model needs apply_patch instructions but doesn't allow parallel additions
+        if needs_apply_patch_instructions {
             Cow::Owned(format!("{base}\n{APPLY_PATCH_TOOL_INSTRUCTIONS}"))
-        } else if has_override || !can_modify {
-            // Use instructions as-is without appending parallel instructions
-            Cow::Borrowed(base)
         } else {
-            Cow::Owned(format!("{base}{PARALLEL_INSTRUCTIONS}"))
+            Cow::Borrowed(base)
         }
     }
 
@@ -314,18 +300,13 @@ mod tests {
             let config = test_config();
             let model_family =
                 ModelsManager::construct_model_family_offline(test_case.slug, &config);
-            let base_instructions = &model_family.base_instructions;
-            // Parallel instructions are always appended.
-            let base_with_parallel = format!("{base_instructions}{PARALLEL_INSTRUCTIONS}");
             let expected = if test_case.expects_apply_patch_instructions {
                 format!(
-                    "{}\n{}{}",
-                    model_family.base_instructions,
-                    APPLY_PATCH_TOOL_INSTRUCTIONS,
-                    PARALLEL_INSTRUCTIONS
+                    "{}\n{}",
+                    model_family.base_instructions, APPLY_PATCH_TOOL_INSTRUCTIONS
                 )
             } else {
-                base_with_parallel
+                model_family.base_instructions.to_string()
             };
 
             let full = prompt.get_full_instructions(&model_family);
