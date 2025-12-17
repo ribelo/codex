@@ -1128,6 +1128,7 @@ use std::sync::Mutex;
 pub(crate) struct SubagentState {
     pub(crate) activities: Vec<SubagentActivityItem>,
     pub(crate) status: SubagentTaskStatus,
+    pub(crate) final_message: Option<String>,
 }
 
 /// History cell for displaying a subagent task container.
@@ -1256,18 +1257,19 @@ impl HistoryCell for SubagentTaskCell {
     fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
         let mut lines: Vec<Line<'static>> = Vec::new();
 
-        // Calculate indentation based on depth
-        let indent_size = (self.depth * 2) as usize;
-        let base_indent = " ".repeat(indent_size);
+        // Indentation based on depth
+        let indent = "  ".repeat(self.depth as usize);
+        let content_indent = format!("{indent}  ");
 
-        // Tree connector: use └ for nested items, otherwise empty
-        let tree_connector = if self.depth > 0 { "└ " } else { "" };
-
-        // Lock the state to read status and activities
-        let (status, activities) = if let Ok(state) = self.state.lock() {
-            (state.status, state.activities.clone())
+        // Lock state
+        let (status, activities, final_message) = if let Ok(state) = self.state.lock() {
+            (
+                state.status,
+                state.activities.clone(),
+                state.final_message.clone(),
+            )
         } else {
-            (SubagentTaskStatus::Failed, vec![])
+            (SubagentTaskStatus::Failed, vec![], None)
         };
 
         let bullet = match status {
@@ -1276,84 +1278,88 @@ impl HistoryCell for SubagentTaskCell {
             SubagentTaskStatus::Failed => "•".red().bold(),
         };
 
+        // Header
         let profile_name = self.subagent_type.strip_prefix("profile:");
         let header = if let Some(profile_name) = profile_name {
-            let header_action = match status {
+            let action = match status {
                 SubagentTaskStatus::Running => "Running with profile:",
-                SubagentTaskStatus::Completed | SubagentTaskStatus::Failed => "Ran with profile:",
+                _ => "Ran with profile:",
             };
             Line::from(vec![
-                base_indent.clone().into(),
-                tree_connector.dim(),
+                indent.into(),
                 bullet,
                 " ".into(),
-                header_action.bold(),
+                action.bold(),
                 " ".into(),
                 profile_name.trim().to_string().magenta(),
             ])
         } else {
-            let header_action = match status {
+            let action = match status {
                 SubagentTaskStatus::Running => "Delegating to",
-                SubagentTaskStatus::Completed | SubagentTaskStatus::Failed => "Delegated to",
+                _ => "Delegated to",
             };
             Line::from(vec![
-                base_indent.clone().into(),
-                tree_connector.dim(),
+                indent.into(),
                 bullet,
                 " ".into(),
-                header_action.bold(),
+                action.bold(),
                 " @".magenta(),
                 self.subagent_type.clone().magenta(),
             ])
         };
-
         lines.push(header);
 
-        // Adjust wrap width to account for indentation
-        let wrap_width = (width as usize).saturating_sub(4 + indent_size).max(1);
+        let wrap_width = (width as usize)
+            .saturating_sub(content_indent.len() + 2)
+            .max(1);
 
-        // Truncate description to single line
-        let nested_indent = format!("{base_indent}  ");
-        let prefix: Span<'static> = format!("{nested_indent}└ ").dim();
-        let truncated_desc = truncate_text(&self.task_description, wrap_width.saturating_sub(3));
-        lines.push(Line::from(vec![prefix, truncated_desc.dim()]));
+        // Task description with › prefix
+        lines.push(Line::from(vec![
+            content_indent.clone().into(),
+            "› ".dim(),
+            truncate_text(&self.task_description, wrap_width.saturating_sub(2)).dim(),
+        ]));
 
+        // Activities (last 5)
         if !activities.is_empty() {
-            let max_activities = 5;
-            let skip_count = activities.len().saturating_sub(max_activities);
-            let activities_to_show = if skip_count > 0 {
-                &activities[skip_count..]
-            } else {
-                &activities
-            };
-
-            let activity_indent = format!("{base_indent}    ");
-
-            if skip_count > 0 {
+            let skip = activities.len().saturating_sub(5);
+            if skip > 0 {
                 lines.push(Line::from(vec![
-                    activity_indent.clone().into(),
-                    format!("... +{skip_count} more").dim().italic(),
+                    content_indent.clone().into(),
+                    format!("... +{skip} more").dim().italic(),
                 ]));
             }
-
-            for activity in activities_to_show {
-                let status_indicator: Span<'static> = match activity.success {
+            for activity in activities.iter().skip(skip) {
+                let indicator: Span<'static> = match activity.success {
                     Some(true) => "✓".green(),
                     Some(false) => "✗".red(),
                     None => "·".dim(),
                 };
-                let activity_line = Line::from(vec![
-                    activity_indent.clone().into(),
-                    status_indicator,
+                lines.push(Line::from(vec![
+                    content_indent.clone().into(),
+                    indicator,
                     " ".into(),
-                    truncate_text(&activity.summary, wrap_width.saturating_sub(6)).dim(),
-                ]);
-                lines.push(activity_line);
+                    truncate_text(&activity.summary, wrap_width.saturating_sub(2)).dim(),
+                ]));
             }
         }
 
+        // Children
         for child in &self.children {
             lines.extend(child.display_lines(width));
+        }
+
+        // Final message with = prefix
+        if let Some(ref msg) = final_message {
+            let trimmed = msg.trim();
+            if !trimmed.is_empty() {
+                let single_line = trimmed.replace('\n', " ");
+                lines.push(Line::from(vec![
+                    content_indent.clone().into(),
+                    "< ".dim(),
+                    truncate_text(&single_line, wrap_width.saturating_sub(2)).dim(),
+                ]));
+            }
         }
 
         lines
@@ -1362,18 +1368,19 @@ impl HistoryCell for SubagentTaskCell {
     fn transcript_lines(&self, width: u16) -> Vec<Line<'static>> {
         let mut lines: Vec<Line<'static>> = Vec::new();
 
-        // Calculate indentation based on depth
-        let indent_size = (self.depth * 2) as usize;
-        let base_indent = " ".repeat(indent_size);
+        // Indentation based on depth
+        let indent = "  ".repeat(self.depth as usize);
+        let content_indent = format!("{indent}  ");
 
-        // Tree connector: use └ for nested items, otherwise empty
-        let tree_connector = if self.depth > 0 { "└ " } else { "" };
-
-        // Lock the state to read status and activities
-        let (status, activities) = if let Ok(state) = self.state.lock() {
-            (state.status, state.activities.clone())
+        // Lock state
+        let (status, activities, final_message) = if let Ok(state) = self.state.lock() {
+            (
+                state.status,
+                state.activities.clone(),
+                state.final_message.clone(),
+            )
         } else {
-            (SubagentTaskStatus::Failed, vec![])
+            (SubagentTaskStatus::Failed, vec![], None)
         };
 
         let bullet = match status {
@@ -1382,90 +1389,116 @@ impl HistoryCell for SubagentTaskCell {
             SubagentTaskStatus::Failed => "•".red().bold(),
         };
 
+        // Header
         let profile_name = self.subagent_type.strip_prefix("profile:");
         let header = if let Some(profile_name) = profile_name {
-            let header_action = match status {
+            let action = match status {
                 SubagentTaskStatus::Running => "Running with profile:",
-                SubagentTaskStatus::Completed | SubagentTaskStatus::Failed => "Ran with profile:",
+                _ => "Ran with profile:",
             };
             Line::from(vec![
-                base_indent.clone().into(),
-                tree_connector.dim(),
+                indent.into(),
                 bullet,
                 " ".into(),
-                header_action.bold(),
+                action.bold(),
                 " ".into(),
                 profile_name.trim().to_string().magenta(),
             ])
         } else {
-            let header_action = match status {
+            let action = match status {
                 SubagentTaskStatus::Running => "Delegating to",
-                SubagentTaskStatus::Completed | SubagentTaskStatus::Failed => "Delegated to",
+                _ => "Delegated to",
             };
             Line::from(vec![
-                base_indent.clone().into(),
-                tree_connector.dim(),
+                indent.into(),
                 bullet,
                 " ".into(),
-                header_action.bold(),
+                action.bold(),
                 " @".magenta(),
                 self.subagent_type.clone().magenta(),
             ])
         };
-
         lines.push(header);
 
-        // Wrap width for content
-        let wrap_width = (width as usize).saturating_sub(4 + indent_size).max(1);
-        let nested_indent = format!("{base_indent}  ");
+        let wrap_width = (width as usize)
+            .saturating_sub(content_indent.len() + 2)
+            .max(1);
 
-        // Full description wrapped (not truncated)
-        let desc_wrapped = textwrap::wrap(&self.task_description, wrap_width);
-        for (idx, segment) in desc_wrapped.iter().enumerate() {
-            let prefix: Span<'static> = if idx == 0 {
-                format!("{nested_indent}└ ").dim()
+        // Task description with › prefix (wrapped)
+        let desc_wrap_width = wrap_width.saturating_sub(2);
+        for (idx, segment) in textwrap::wrap(&self.task_description, desc_wrap_width)
+            .iter()
+            .enumerate()
+        {
+            if idx == 0 {
+                lines.push(Line::from(vec![
+                    content_indent.clone().into(),
+                    "› ".dim(),
+                    segment.to_string().dim(),
+                ]));
             } else {
-                format!("{nested_indent}  ").into()
-            };
-            lines.push(Line::from(vec![prefix, segment.to_string().dim()]));
+                lines.push(Line::from(vec![
+                    content_indent.clone().into(),
+                    "  ".into(),
+                    segment.to_string().dim(),
+                ]));
+            }
         }
 
-        // Show ALL activities (no limit)
-        if !activities.is_empty() {
-            let activity_indent = format!("{base_indent}    ");
+        // All activities (wrapped)
+        for activity in &activities {
+            let indicator: Span<'static> = match activity.success {
+                Some(true) => "✓".green(),
+                Some(false) => "✗".red(),
+                None => "·".dim(),
+            };
+            for (idx, segment) in textwrap::wrap(&activity.summary, wrap_width.saturating_sub(2))
+                .iter()
+                .enumerate()
+            {
+                if idx == 0 {
+                    lines.push(Line::from(vec![
+                        content_indent.clone().into(),
+                        indicator.clone(),
+                        " ".into(),
+                        segment.to_string().dim(),
+                    ]));
+                } else {
+                    lines.push(Line::from(vec![
+                        content_indent.clone().into(),
+                        "  ".into(),
+                        segment.to_string().dim(),
+                    ]));
+                }
+            }
+        }
 
-            for activity in &activities {
-                let status_indicator: Span<'static> = match activity.success {
-                    Some(true) => "✓".green(),
-                    Some(false) => "✗".red(),
-                    None => "·".dim(),
-                };
+        // Children
+        for child in &self.children {
+            lines.extend(child.transcript_lines(width));
+        }
 
-                // Wrap activity summary instead of truncating
-                let activity_wrapped =
-                    textwrap::wrap(&activity.summary, wrap_width.saturating_sub(2));
-                for (idx, segment) in activity_wrapped.iter().enumerate() {
+        // Final message with = prefix (wrapped)
+        if let Some(ref msg) = final_message {
+            let trimmed = msg.trim();
+            if !trimmed.is_empty() {
+                let msg_wrap_width = wrap_width.saturating_sub(2);
+                for (idx, segment) in textwrap::wrap(trimmed, msg_wrap_width).iter().enumerate() {
                     if idx == 0 {
                         lines.push(Line::from(vec![
-                            activity_indent.clone().into(),
-                            status_indicator.clone(),
-                            " ".into(),
+                            content_indent.clone().into(),
+                            "< ".dim(),
                             segment.to_string().dim(),
                         ]));
                     } else {
                         lines.push(Line::from(vec![
-                            activity_indent.clone().into(),
+                            content_indent.clone().into(),
                             "  ".into(),
                             segment.to_string().dim(),
                         ]));
                     }
                 }
             }
-        }
-
-        // Recursively render children with transcript_lines
-        for child in &self.children {
-            lines.extend(child.transcript_lines(width));
         }
 
         lines
@@ -2918,6 +2951,7 @@ mod tests {
         let state = Arc::new(Mutex::new(SubagentState {
             activities: vec![],
             status: SubagentTaskStatus::Completed,
+            final_message: None,
         }));
 
         let cell = new_subagent_task_cell(
@@ -2934,10 +2968,10 @@ mod tests {
         let lines = cell.display_lines(80);
         let rendered = render_lines(&lines);
 
-        insta::assert_snapshot!(rendered.join("\n"), @r###"
+        insta::assert_snapshot!(rendered.join("\n"), @r"
         • Delegated to @explorer
-          └ Find all test files
-        "###);
+          › Find all test files
+        ");
     }
 
     #[test]
@@ -2945,6 +2979,7 @@ mod tests {
         let state = Arc::new(Mutex::new(SubagentState {
             activities: vec![],
             status: SubagentTaskStatus::Completed,
+            final_message: None,
         }));
 
         let cell = new_subagent_task_cell(
@@ -2961,10 +2996,10 @@ mod tests {
         let lines = cell.display_lines(80);
         let rendered = render_lines(&lines);
 
-        insta::assert_snapshot!(rendered.join("\n"), @r###"
+        insta::assert_snapshot!(rendered.join("\n"), @r"
         • Ran with profile: kimi
-          └ Find current Bitcoin (BTC) price
-        "###);
+          › Find current Bitcoin (BTC) price
+        ");
     }
 
     #[test]
@@ -2972,6 +3007,7 @@ mod tests {
         let state = Arc::new(Mutex::new(SubagentState {
             activities: vec![],
             status: SubagentTaskStatus::Completed,
+            final_message: None,
         }));
 
         let cell = new_subagent_task_cell(
@@ -2989,8 +3025,8 @@ mod tests {
         let rendered = render_lines(&lines);
 
         insta::assert_snapshot!(rendered.join("\n"), @r"
-        └ • Delegated to @explorer
-          └ Search for API endpoints
+        • Delegated to @explorer
+          › Search for API endpoints
         ");
     }
 
@@ -3002,6 +3038,7 @@ mod tests {
                 success: Some(true),
             }],
             status: SubagentTaskStatus::Completed,
+            final_message: None,
         }));
 
         let cell = new_subagent_task_cell(
@@ -3019,9 +3056,9 @@ mod tests {
         let rendered = render_lines(&lines);
 
         insta::assert_snapshot!(rendered.join("\n"), @r"
-        └ • Delegated to @explorer
-          └ List directory contents
-            ✓ Run ls -la
+        • Delegated to @explorer
+          › List directory contents
+          ✓ Run ls -la
         ");
     }
 
@@ -3030,6 +3067,7 @@ mod tests {
         let state = Arc::new(Mutex::new(SubagentState {
             activities: vec![],
             status: SubagentTaskStatus::Completed,
+            final_message: None,
         }));
 
         let long_description = "As an expert Version Control Agent, your task is to commit all pending changes in the working tree. Follow these strict guidelines for creating commits.";
@@ -3080,6 +3118,7 @@ mod tests {
         let state = Arc::new(Mutex::new(SubagentState {
             activities,
             status: SubagentTaskStatus::Completed,
+            final_message: None,
         }));
 
         let cell = new_subagent_task_cell(
@@ -3126,6 +3165,7 @@ mod tests {
                 success: Some(true),
             }],
             status: SubagentTaskStatus::Completed,
+            final_message: None,
         }));
 
         let cell = new_subagent_task_cell(
@@ -3151,8 +3191,162 @@ mod tests {
 
         assert!(
             activity_lines.len() >= 2,
-            "Long activity should wrap to multiple lines in transcript, got: {:?}",
-            activity_lines
+            "Long activity should wrap to multiple lines in transcript, got: {activity_lines:?}"
+        );
+    }
+
+    #[test]
+    fn subagent_task_cell_renders_final_message() {
+        let state = Arc::new(Mutex::new(SubagentState {
+            activities: vec![],
+            status: SubagentTaskStatus::Completed,
+            final_message: Some("This is the final message.".to_string()),
+        }));
+
+        let cell = new_subagent_task_cell(
+            "call-1".to_string(),
+            "explorer".to_string(),
+            "Test task".to_string(),
+            None,
+            None,
+            0,
+            state,
+            false,
+        );
+
+        // Test display_lines (truncated/short rendering)
+        let display = cell.display_lines(80);
+        let display_rendered = render_lines(&display);
+
+        assert!(
+            display_rendered
+                .iter()
+                .any(|l| l.contains("This is the final message")),
+            "Display should contain final message"
+        );
+        assert!(
+            display_rendered
+                .iter()
+                .any(|l| l.contains("•") || l.contains("Delegated")),
+            "Display should contain corner connector"
+        );
+
+        // Test transcript_lines (full rendering)
+        let transcript = cell.transcript_lines(80);
+        let transcript_rendered = render_lines(&transcript);
+
+        assert!(
+            transcript_rendered
+                .iter()
+                .any(|l| l.contains("This is the final message")),
+            "Transcript should contain final message"
+        );
+        assert!(
+            transcript_rendered
+                .iter()
+                .any(|l| l.contains("•") || l.contains("Delegated")),
+            "Transcript should contain corner connector"
+        );
+    }
+
+    #[test]
+    fn subagent_with_children_and_final_message_ordering() {
+        // Create child states
+        let child1_state = Arc::new(Mutex::new(SubagentState {
+            activities: vec![],
+            status: SubagentTaskStatus::Completed,
+            final_message: Some("Child 1 result".to_string()),
+        }));
+        let child2_state = Arc::new(Mutex::new(SubagentState {
+            activities: vec![],
+            status: SubagentTaskStatus::Completed,
+            final_message: Some("Child 2 result".to_string()),
+        }));
+
+        // Create child cells
+        let child1 = new_subagent_task_cell(
+            "child-call-1".to_string(),
+            "finder".to_string(),
+            "First finder call".to_string(),
+            Some("child-del-1".to_string()),
+            Some("parent-del".to_string()),
+            1,
+            child1_state,
+            false,
+        );
+        let child2 = new_subagent_task_cell(
+            "child-call-2".to_string(),
+            "finder".to_string(),
+            "Second finder call".to_string(),
+            Some("child-del-2".to_string()),
+            Some("parent-del".to_string()),
+            1,
+            child2_state,
+            false,
+        );
+
+        // Create parent state and cell
+        let parent_state = Arc::new(Mutex::new(SubagentState {
+            activities: vec![],
+            status: SubagentTaskStatus::Completed,
+            final_message: Some("Parent completed both calls.".to_string()),
+        }));
+
+        let mut parent = new_subagent_task_cell(
+            "parent-call".to_string(),
+            "general".to_string(),
+            "Run two finder calls".to_string(),
+            Some("parent-del".to_string()),
+            None,
+            0,
+            parent_state,
+            false,
+        );
+        parent.add_child(child1);
+        parent.add_child(child2);
+
+        // Test display_lines
+        let display = parent.display_lines(80);
+        let display_rendered = render_lines(&display);
+        let display_text = display_rendered.join("\n");
+
+        // Children should appear BEFORE parent's final message
+        let child1_pos = display_text.find("First finder call");
+        let child2_pos = display_text.find("Second finder call");
+        let parent_msg_pos = display_text.find("Parent completed");
+
+        assert!(child1_pos.is_some(), "Child 1 should be present");
+        assert!(child2_pos.is_some(), "Child 2 should be present");
+        assert!(
+            parent_msg_pos.is_some(),
+            "Parent final message should be present"
+        );
+        assert!(
+            child1_pos.unwrap() < parent_msg_pos.unwrap(),
+            "Child 1 should appear before parent's final message"
+        );
+        assert!(
+            child2_pos.unwrap() < parent_msg_pos.unwrap(),
+            "Child 2 should appear before parent's final message"
+        );
+
+        // Test transcript_lines
+        let transcript = parent.transcript_lines(80);
+        let transcript_rendered = render_lines(&transcript);
+        let transcript_text = transcript_rendered.join("\n");
+
+        // Same ordering in transcript
+        let t_child1_pos = transcript_text.find("First finder call");
+        let t_child2_pos = transcript_text.find("Second finder call");
+        let t_parent_msg_pos = transcript_text.find("Parent completed");
+
+        assert!(
+            t_child1_pos.unwrap() < t_parent_msg_pos.unwrap(),
+            "Transcript: Child 1 should appear before parent's final message"
+        );
+        assert!(
+            t_child2_pos.unwrap() < t_parent_msg_pos.unwrap(),
+            "Transcript: Child 2 should appear before parent's final message"
         );
     }
 }

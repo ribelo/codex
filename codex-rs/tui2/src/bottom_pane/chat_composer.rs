@@ -1271,23 +1271,22 @@ impl ChatComposer {
                         return (InputResult::None, true);
                     }
                 };
-                if let Some(expanded) = expanded_command {
-                    if let Some((cmd_name, _)) = parse_slash_name(&text)
-                        && let Some(command_name) =
-                            cmd_name.strip_prefix(&format!("{COMMANDS_CMD_PREFIX}:"))
-                        && let Some(command) =
-                            self.custom_commands.iter().find(|c| c.name == command_name)
-                    {
-                        return (
-                            InputResult::DelegateCommand {
-                                description: command.name.clone(),
-                                prompt: expanded,
-                                agent: command.agent.clone(),
-                                profile: command.profile.clone(),
-                            },
-                            true,
-                        );
-                    }
+                if let Some(expanded) = expanded_command
+                    && let Some((cmd_name, _)) = parse_slash_name(&text)
+                    && let Some(command_name) =
+                        cmd_name.strip_prefix(&format!("{COMMANDS_CMD_PREFIX}:"))
+                    && let Some(command) =
+                        self.custom_commands.iter().find(|c| c.name == command_name)
+                {
+                    return (
+                        InputResult::DelegateCommand {
+                            description: command.name.clone(),
+                            prompt: expanded,
+                            agent: command.agent.clone(),
+                            profile: command.profile.clone(),
+                        },
+                        true,
+                    );
                 }
 
                 let expanded_prompt = match expand_custom_prompt(&text, &self.custom_prompts) {

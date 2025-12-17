@@ -436,7 +436,9 @@ fn subagent_patch_activity_display() {
 
     // Expect: Edited 2 files (+2 -1)
     // Note: The actual string might be wrapped or formatted, but "Edited 2 files (+2 -1)" should be present.
-    let found = rendered.iter().any(|s| s.contains("Edited 2 files (+2 -1)"));
+    let found = rendered
+        .iter()
+        .any(|s| s.contains("Edited 2 files (+2 -1)"));
     assert!(
         found,
         "Expected summary 'Edited 2 files (+2 -1)', found: {:#?}",

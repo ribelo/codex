@@ -1554,19 +1554,17 @@ fn custom_prompt_submit_sends_review_op() {
     chat.handle_paste("  please audit dependencies  ".to_string());
     chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
-    // Expect AppEvent::CodexOp(Op::Review { .. }) with trimmed prompt
+    // Expect AppEvent::CodexOp(Op::DelegateSubagent { .. }) with trimmed prompt
     let evt = rx.try_recv().expect("expected one app event");
     match evt {
-        AppEvent::CodexOp(Op::Review { review_request }) => {
-            assert_eq!(
-                review_request,
-                ReviewRequest {
-                    target: ReviewTarget::Custom {
-                        instructions: "please audit dependencies".to_string(),
-                    },
-                    user_facing_hint: None,
-                }
-            );
+        AppEvent::CodexOp(Op::DelegateSubagent {
+            agent,
+            prompt,
+            description,
+        }) => {
+            assert_eq!(agent, "review");
+            assert_eq!(prompt, "please audit dependencies");
+            assert_eq!(description, "please audit dependencies");
         }
         other => panic!("unexpected app event: {other:?}"),
     }
