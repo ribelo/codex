@@ -44,6 +44,7 @@ use codex_core::protocol::McpToolCallEndEvent;
 use codex_core::protocol::Op;
 use codex_core::protocol::PatchApplyBeginEvent;
 use codex_core::protocol::RateLimitSnapshot;
+use codex_core::protocol::ReviewOutputEvent;
 use codex_core::protocol::ReviewRequest;
 use codex_core::protocol::ReviewTarget;
 use codex_core::protocol::SkillLoadOutcomeInfo;
@@ -64,6 +65,8 @@ use codex_core::protocol::WebSearchBeginEvent;
 use codex_core::protocol::WebSearchEndEvent;
 use codex_core::quota::AntigravityQuotaClient;
 use codex_core::quota::ProviderQuotaClient;
+use codex_core::review_prompts::review_prompt;
+use codex_core::review_prompts::user_facing_hint;
 use codex_core::skills::model::SkillMetadata;
 use codex_protocol::ConversationId;
 use codex_protocol::account::PlanType;
@@ -2154,15 +2157,23 @@ impl ChatWidget {
                 Arc::new(std::sync::Mutex::new(history_cell::SubagentState {
                     activities: Vec::new(),
                     status: history_cell::SubagentTaskStatus::Running,
+                    final_message: None,
                 }))
             })
             .clone();
 
         // Create a new cell if we don't have one for this call_id yet
         if is_new {
+            if subagent_type == "review" {
+                self.is_review_mode = true;
+                if self.pre_review_token_info.is_none() {
+                    self.pre_review_token_info = Some(self.token_info.clone());
+                }
+            }
+
             let cell = history_cell::new_subagent_task_cell(
                 parent_call_id.clone(),
-                subagent_type,
+                subagent_type.clone(),
                 task_description,
                 delegation_id.clone(),
                 parent_delegation_id.clone(),
@@ -2223,6 +2234,37 @@ impl ChatWidget {
             inner.as_ref(),
             EventMsg::TaskComplete(_) | EventMsg::TurnAborted(_)
         ) {
+            if subagent_type == "review" {
+                if let EventMsg::TaskComplete(tc) = inner.as_ref()
+                    && let Some(ref output_text) = tc.last_agent_message
+                    && let Ok(review_output) =
+                        serde_json::from_str::<ReviewOutputEvent>(output_text)
+                {
+                    if review_output.findings.is_empty() {
+                        let explanation = review_output.overall_explanation.trim().to_string();
+                        if !explanation.is_empty() {
+                            let mut rendered: Vec<ratatui::text::Line<'static>> = vec!["".into()];
+                            append_markdown(&explanation, None, &mut rendered);
+                            let body_cell = AgentMessageCell::new(rendered, false);
+                            self.app_event_tx
+                                .send(AppEvent::InsertHistoryCell(Box::new(body_cell)));
+                        }
+                    } else {
+                        let message_text = codex_core::review_format::format_review_findings_block(
+                            &review_output.findings,
+                            None,
+                        );
+                        let mut message_lines: Vec<ratatui::text::Line<'static>> = Vec::new();
+                        append_markdown(&message_text, None, &mut message_lines);
+                        let body_cell = AgentMessageCell::new(message_lines, true);
+                        self.app_event_tx
+                            .send(AppEvent::InsertHistoryCell(Box::new(body_cell)));
+                    }
+                }
+                self.is_review_mode = false;
+                self.restore_pre_review_token_info();
+            }
+
             if let Some(cell) = self.active_subagent_cells.remove(&parent_call_id) {
                 // The cell's state has already been updated via the shared Arc<Mutex>
                 // Now flush it to history so it renders with the final state
@@ -2300,37 +2342,57 @@ impl ChatWidget {
                     success,
                 });
             }
-            EventMsg::PatchApplyBegin(ev) => {
-                let file_count = ev.changes.len();
-                let summary = if file_count == 1 {
-                    format!(
-                        "Patching {}",
-                        ev.changes
-                            .keys()
-                            .next()
-                            .map(|p| p.display().to_string())
-                            .unwrap_or_default()
-                    )
-                } else {
-                    format!("Patching {file_count} files")
-                };
-                guard.activities.push(history_cell::SubagentActivityItem {
-                    summary,
-                    success: None,
-                });
+            EventMsg::PatchApplyBegin(_) => {
+                // Don't add an activity yet. Wait for PatchApplyEnd to add the summary.
             }
             EventMsg::PatchApplyEnd(ev) => {
                 let success = ev.success;
+                let mut added = 0;
+                let mut removed = 0;
+                let mut file_path = None;
+
+                for (path, change) in &ev.changes {
+                    if file_path.is_none() {
+                        file_path = Some(path.clone());
+                    }
+                    match change {
+                        codex_core::protocol::FileChange::Add { content } => {
+                            added += content.lines().count();
+                        }
+                        codex_core::protocol::FileChange::Delete { content } => {
+                            removed += content.lines().count();
+                        }
+                        codex_core::protocol::FileChange::Update { unified_diff, .. } => {
+                            let (a, r) =
+                                crate::diff_render::calculate_add_remove_from_diff(unified_diff);
+                            added += a;
+                            removed += r;
+                        }
+                    }
+                }
+
+                let summary = if ev.changes.len() == 1 {
+                    let path_str = file_path
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_default();
+                    format!("Edited {path_str} (+{added} -{removed})")
+                } else {
+                    format!("Edited {} files (+{added} -{removed})", ev.changes.len())
+                };
+
                 guard.activities.push(history_cell::SubagentActivityItem {
-                    summary: "Patch applied".to_string(),
+                    summary,
                     success: Some(success),
                 });
             }
             EventMsg::AgentMessage(_) | EventMsg::AgentMessageDelta(_) => {
                 // Don't add individual message deltas as activities
             }
-            EventMsg::TaskComplete(_) => {
+            EventMsg::TaskComplete(ev) => {
                 guard.status = history_cell::SubagentTaskStatus::Completed;
+                if let Some(ref msg) = ev.last_agent_message {
+                    guard.final_message = Some(msg.clone());
+                }
             }
             EventMsg::TurnAborted(_) => {
                 guard.status = history_cell::SubagentTaskStatus::Failed;
@@ -3584,13 +3646,21 @@ impl ChatWidget {
 
         items.push(SelectionItem {
             name: "Review uncommitted changes".to_string(),
-            actions: vec![Box::new(move |tx: &AppEventSender| {
-                tx.send(AppEvent::CodexOp(Op::Review {
-                    review_request: ReviewRequest {
-                        target: ReviewTarget::UncommittedChanges,
-                        user_facing_hint: None,
-                    },
-                }));
+            actions: vec![Box::new({
+                let cwd = self.config.cwd.clone();
+                move |tx: &AppEventSender| {
+                    let target = ReviewTarget::UncommittedChanges;
+                    if let Ok(prompt) = review_prompt(&target, &cwd) {
+                        let description = user_facing_hint(&target);
+                        tx.send(AppEvent::CodexOp(Op::DelegateSubagent {
+                            agent: "review".to_string(),
+                            prompt,
+                            description,
+                        }));
+                    } else {
+                        tracing::error!("Failed to generate review prompt for uncommitted changes");
+                    }
+                }
             })],
             dismiss_on_select: true,
             ..Default::default()
@@ -3635,17 +3705,26 @@ impl ChatWidget {
 
         for option in branches {
             let branch = option.clone();
+            let cwd = cwd.to_path_buf();
             items.push(SelectionItem {
                 name: format!("{current_branch} -> {branch}"),
                 actions: vec![Box::new(move |tx3: &AppEventSender| {
-                    tx3.send(AppEvent::CodexOp(Op::Review {
-                        review_request: ReviewRequest {
-                            target: ReviewTarget::BaseBranch {
-                                branch: branch.clone(),
-                            },
-                            user_facing_hint: None,
-                        },
-                    }));
+                    let target = ReviewTarget::BaseBranch {
+                        branch: branch.clone(),
+                    };
+                    match review_prompt(&target, &cwd) {
+                        Ok(prompt) => {
+                            let description = user_facing_hint(&target);
+                            tx3.send(AppEvent::CodexOp(Op::DelegateSubagent {
+                                agent: "review".to_string(),
+                                prompt,
+                                description,
+                            }));
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to generate review prompt: {}", e);
+                        }
+                    }
                 })],
                 dismiss_on_select: true,
                 search_value: Some(option),
@@ -3671,19 +3750,28 @@ impl ChatWidget {
             let subject = entry.subject.clone();
             let sha = entry.sha.clone();
             let search_val = format!("{subject} {sha}");
+            let cwd = cwd.to_path_buf();
 
             items.push(SelectionItem {
                 name: subject.clone(),
                 actions: vec![Box::new(move |tx3: &AppEventSender| {
-                    tx3.send(AppEvent::CodexOp(Op::Review {
-                        review_request: ReviewRequest {
-                            target: ReviewTarget::Commit {
-                                sha: sha.clone(),
-                                title: Some(subject.clone()),
-                            },
-                            user_facing_hint: None,
-                        },
-                    }));
+                    let target = ReviewTarget::Commit {
+                        sha: sha.clone(),
+                        title: Some(subject.clone()),
+                    };
+                    match review_prompt(&target, &cwd) {
+                        Ok(prompt) => {
+                            let description = user_facing_hint(&target);
+                            tx3.send(AppEvent::CodexOp(Op::DelegateSubagent {
+                                agent: "review".to_string(),
+                                prompt,
+                                description,
+                            }));
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to generate review prompt: {}", e);
+                        }
+                    }
                 })],
                 dismiss_on_select: true,
                 search_value: Some(search_val),
@@ -3703,6 +3791,7 @@ impl ChatWidget {
 
     pub(crate) fn show_review_custom_prompt(&mut self) {
         let tx = self.app_event_tx.clone();
+        let cwd = self.config.cwd.clone();
         let view = CustomPromptView::new(
             "Custom review instructions".to_string(),
             "Type instructions and press Enter".to_string(),
@@ -3712,14 +3801,22 @@ impl ChatWidget {
                 if trimmed.is_empty() {
                     return;
                 }
-                tx.send(AppEvent::CodexOp(Op::Review {
-                    review_request: ReviewRequest {
-                        target: ReviewTarget::Custom {
-                            instructions: trimmed,
-                        },
-                        user_facing_hint: None,
-                    },
-                }));
+                let target = ReviewTarget::Custom {
+                    instructions: trimmed,
+                };
+                match review_prompt(&target, &cwd) {
+                    Ok(prompt) => {
+                        let description = user_facing_hint(&target);
+                        tx.send(AppEvent::CodexOp(Op::DelegateSubagent {
+                            agent: "review".to_string(),
+                            prompt,
+                            description,
+                        }));
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to generate review prompt: {}", e);
+                    }
+                }
             }),
         );
         self.bottom_pane.show_view(Box::new(view));
@@ -3951,19 +4048,28 @@ pub(crate) fn show_review_commit_picker_with_entries(
         let subject = entry.subject.clone();
         let sha = entry.sha.clone();
         let search_val = format!("{subject} {sha}");
+        let cwd = chat.config.cwd.clone();
 
         items.push(SelectionItem {
             name: subject.clone(),
             actions: vec![Box::new(move |tx3: &AppEventSender| {
-                tx3.send(AppEvent::CodexOp(Op::Review {
-                    review_request: ReviewRequest {
-                        target: ReviewTarget::Commit {
-                            sha: sha.clone(),
-                            title: Some(subject.clone()),
-                        },
-                        user_facing_hint: None,
-                    },
-                }));
+                let target = ReviewTarget::Commit {
+                    sha: sha.clone(),
+                    title: Some(subject.clone()),
+                };
+                match review_prompt(&target, &cwd) {
+                    Ok(prompt) => {
+                        let description = user_facing_hint(&target);
+                        tx3.send(AppEvent::CodexOp(Op::DelegateSubagent {
+                            agent: "review".to_string(),
+                            prompt,
+                            description,
+                        }));
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to generate review prompt: {}", e);
+                    }
+                }
             })],
             dismiss_on_select: true,
             search_value: Some(search_val),

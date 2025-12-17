@@ -374,7 +374,16 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
             task_id
         }
         InitialOperation::Review { review_request } => {
-            let task_id = conversation.submit(Op::Review { review_request }).await?;
+            let resolved =
+                codex_core::review_prompts::resolve_review_request(review_request, &default_cwd)
+                    .map_err(|e| anyhow::anyhow!(e))?;
+            let task_id = conversation
+                .submit(Op::DelegateSubagent {
+                    description: "Review code".to_string(),
+                    prompt: resolved.prompt,
+                    agent: "review".to_string(),
+                })
+                .await?;
             info!("Sent review request with event ID: {task_id}");
             task_id
         }

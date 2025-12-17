@@ -196,9 +196,6 @@ pub enum Op {
     /// Request Codex to undo a turn (turn are stacked so it is the same effect as CMD + Z).
     Undo,
 
-    /// Request a code review from the agent.
-    Review { review_request: ReviewRequest },
-
     /// Request to shut down codex instance.
     Shutdown,
 

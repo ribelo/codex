@@ -2791,8 +2791,30 @@ impl CodexMessageProcessor {
         display_text: &str,
         parent_thread_id: String,
     ) -> std::result::Result<(), JSONRPCErrorError> {
+        let rollout_path = parent_conversation.rollout_path();
+        let fallback_provider = self.config.model_provider_id.as_str();
+        let summary = read_summary_from_rollout(rollout_path.as_path(), fallback_provider)
+            .await
+            .map_err(|e| JSONRPCErrorError {
+                code: INTERNAL_ERROR_CODE,
+                message: format!("failed to read summary to resolve review request: {e}"),
+                data: None,
+            })?;
+
+        let resolved =
+            codex_core::review_prompts::resolve_review_request(review_request, &summary.cwd)
+                .map_err(|e| JSONRPCErrorError {
+                    code: INVALID_REQUEST_ERROR_CODE,
+                    message: format!("failed to resolve review request: {e}"),
+                    data: None,
+                })?;
+
         let turn_id = parent_conversation
-            .submit(Op::Review { review_request })
+            .submit(Op::DelegateSubagent {
+                description: "Review code".to_string(),
+                prompt: resolved.prompt,
+                agent: "review".to_string(),
+            })
             .await;
 
         match turn_id {
@@ -2886,8 +2908,22 @@ impl CodexMessageProcessor {
             }
         }
 
+        let resolved = codex_core::review_prompts::resolve_review_request(
+            review_request,
+            &session_configured.cwd,
+        )
+        .map_err(|e| JSONRPCErrorError {
+            code: INVALID_REQUEST_ERROR_CODE,
+            message: format!("failed to resolve review request: {e}"),
+            data: None,
+        })?;
+
         let turn_id = conversation
-            .submit(Op::Review { review_request })
+            .submit(Op::DelegateSubagent {
+                description: "Review code".to_string(),
+                prompt: resolved.prompt,
+                agent: "review".to_string(),
+            })
             .await
             .map_err(|err| JSONRPCErrorError {
                 code: INTERNAL_ERROR_CODE,

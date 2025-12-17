@@ -178,11 +178,8 @@ fn subagent_nesting_logic() {
     // Child header should have tree connector and be indented (depth=1)
     let child_line_idx = rendered
         .iter()
-        .position(|s| s.contains("@explorer") && s.contains("└"));
-    assert!(
-        child_line_idx.is_some(),
-        "Child header should have tree connector"
-    );
+        .position(|s| s.contains("@explorer") && s.contains("•"));
+    assert!(child_line_idx.is_some(), "Child header should have bullet");
 }
 
 #[test]
@@ -245,13 +242,14 @@ fn subagent_nested_rendering_order() {
         .collect();
 
     // Find positions of key elements
+    // Parent is at depth 0 (starts with "•"), child is indented (starts with "  •")
     let parent_header_idx = rendered
         .iter()
-        .position(|s| s.contains("@explorer") && !s.contains("└"));
+        .position(|s| s.contains("@explorer") && s.starts_with("•"));
     let parent_desc_idx = rendered.iter().position(|s| s.contains("Parent Task"));
     let child_header_idx = rendered
         .iter()
-        .position(|s| s.contains("@explorer") && s.contains("└"));
+        .position(|s| s.contains("@explorer") && s.starts_with("  •"));
     let child_desc_idx = rendered.iter().position(|s| s.contains("Child Task"));
 
     // All elements should be present
@@ -366,5 +364,82 @@ fn subagent_child_before_parent_becomes_separate_cell() {
         parent_cell.children().len(),
         1,
         "Parent should have 1 child after re-parenting"
+    );
+}
+
+#[test]
+fn subagent_patch_activity_display() {
+    let (mut chat, _rx) = make_chatwidget_manual();
+    use std::path::PathBuf;
+
+    // Start a subagent
+    chat.on_subagent_event(SubagentEventPayload {
+        parent_call_id: "call_sub".to_string(),
+        subagent_type: "explorer".to_string(),
+        task_description: "Patching Task".to_string(),
+        delegation_id: Some("del_sub".to_string()),
+        parent_delegation_id: None,
+        depth: Some(0),
+        inner: Box::new(EventMsg::TaskStarted(TaskStartedEvent {
+            model_context_window: None,
+        })),
+    });
+
+    // Send PatchApplyEnd event
+    let mut changes = HashMap::new();
+    changes.insert(
+        PathBuf::from("foo.txt"),
+        codex_core::protocol::FileChange::Add {
+            content: "line1\nline2\n".to_string(),
+        },
+    );
+    changes.insert(
+        PathBuf::from("bar.rs"),
+        codex_core::protocol::FileChange::Delete {
+            content: "old\n".to_string(),
+        },
+    );
+
+    // We need to construct PatchApplyEndEvent.
+    chat.on_subagent_event(SubagentEventPayload {
+        parent_call_id: "call_sub".to_string(),
+        subagent_type: "explorer".to_string(),
+        task_description: "Patching Task".to_string(),
+        delegation_id: Some("del_sub".to_string()),
+        parent_delegation_id: None,
+        depth: Some(0),
+        inner: Box::new(EventMsg::PatchApplyEnd(
+            codex_core::protocol::PatchApplyEndEvent {
+                call_id: "p1".into(),
+                turn_id: "t1".into(),
+                stdout: "".into(),
+                stderr: "".into(),
+                success: true,
+                changes,
+            },
+        )),
+    });
+
+    // Check rendered output
+    let cell = chat.active_subagent_cells.get("call_sub").unwrap();
+    let lines = cell.display_lines(80);
+    let rendered: Vec<String> = lines
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|span| span.content.to_string())
+                .collect::<Vec<_>>()
+                .join("")
+        })
+        .collect();
+
+    // Expect: Edited 2 files (+2 -1)
+    // Note: The actual string might be wrapped or formatted, but "Edited 2 files (+2 -1)" should be present.
+    let found = rendered.iter().any(|s| s.contains("Edited 2 files (+2 -1)"));
+    assert!(
+        found,
+        "Expected summary 'Edited 2 files (+2 -1)', found: {:#?}",
+        rendered
     );
 }

@@ -551,7 +551,7 @@ async fn apply_patch_cli_rejects_path_traversal_outside_workspace(
     let out = harness.apply_patch_output(call_id, model_output).await;
     assert!(
         out.contains(
-            "patch rejected: writing outside of the project; rejected by user approval settings"
+            "patch rejected: sandbox_policy is read-only or write target is outside writable roots; approval_policy is never so escalation is not possible"
         ),
         "expected rejection message for path traversal: {out}"
     );
@@ -602,7 +602,7 @@ async fn apply_patch_cli_rejects_move_path_traversal_outside_workspace(
     let out = harness.apply_patch_output(call_id, model_output).await;
     assert!(
         out.contains(
-            "patch rejected: writing outside of the project; rejected by user approval settings"
+            "patch rejected: sandbox_policy is read-only or write target is outside writable roots; approval_policy is never so escalation is not possible"
         ),
         "expected rejection message for path traversal: {out}"
     );

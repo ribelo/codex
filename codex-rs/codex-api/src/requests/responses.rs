@@ -134,10 +134,10 @@ impl<'a> ResponsesRequestBuilder<'a> {
         let mut body = serde_json::to_value(&req)
             .map_err(|e| ApiError::Stream(format!("failed to encode responses request: {e}")))?;
 
-        if let Some(provider_config) = self.provider {
-            if let Some(obj) = body.as_object_mut() {
-                obj.insert("provider".to_string(), provider_config);
-            }
+        if let Some(provider_config) = self.provider
+            && let Some(obj) = body.as_object_mut()
+        {
+            obj.insert("provider".to_string(), provider_config);
         }
 
         if store && provider.is_azure_responses_endpoint() {

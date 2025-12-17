@@ -89,8 +89,7 @@ pub fn assess_patch_safety(
         }
     } else if policy == AskForApproval::Never {
         SafetyCheck::Reject {
-            reason: "writing outside of the project; rejected by user approval settings"
-                .to_string(),
+            reason: "sandbox_policy is read-only or write target is outside writable roots; approval_policy is never so escalation is not possible".to_string(),
         }
     } else {
         SafetyCheck::AskUser

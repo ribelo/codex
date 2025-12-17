@@ -6,7 +6,6 @@ use std::sync::atomic::AtomicU64;
 
 use crate::AuthManager;
 use crate::SandboxState;
-use crate::client_common::REVIEW_PROMPT;
 use crate::compact;
 use crate::compact::run_inline_auto_compact_task;
 use crate::compact::should_use_remote_compact_task;
@@ -36,7 +35,6 @@ use codex_protocol::protocol::HasLegacyEvent;
 use codex_protocol::protocol::ItemCompletedEvent;
 use codex_protocol::protocol::ItemStartedEvent;
 use codex_protocol::protocol::RawResponseItemEvent;
-use codex_protocol::protocol::ReviewRequest;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::TaskStartedEvent;
@@ -121,7 +119,6 @@ use crate::state::ActiveTurn;
 use crate::state::SessionServices;
 use crate::state::SessionState;
 use crate::tasks::GhostSnapshotTask;
-use crate::tasks::ReviewTask;
 use crate::tasks::SessionTask;
 use crate::tasks::SessionTaskContext;
 use crate::tools::ToolRouter;
@@ -494,6 +491,10 @@ impl Session {
                 .original_config_do_not_use
                 .allowed_subagents
                 .clone(),
+            is_read_only: matches!(
+                session_configuration.sandbox_policy,
+                SandboxPolicy::ReadOnly
+            ),
         });
 
         TurnContext {
@@ -1641,9 +1642,6 @@ async fn submission_loop(sess: Arc<Session>, config: Arc<Config>, rx_sub: Receiv
                     break;
                 }
             }
-            Op::Review { review_request } => {
-                handlers::review(&sess, &config, sub.id.clone(), review_request).await;
-            }
             _ => {} // Ignore unknown ops; enum is non_exhaustive to allow extensions.
         }
     }
@@ -1656,11 +1654,10 @@ mod handlers {
     use crate::codex::SessionSettingsUpdate;
     use crate::codex::TurnContext;
 
-    use crate::codex::spawn_review_thread;
     use crate::config::Config;
     use crate::mcp::auth::compute_auth_statuses;
     use crate::mcp::collect_mcp_snapshot_from_manager;
-    use crate::review_prompts::resolve_review_request;
+
     use crate::tasks::CommandDelegateTask;
     use crate::tasks::CompactTask;
     use crate::tasks::RegularTask;
@@ -1676,7 +1673,7 @@ mod handlers {
     use codex_protocol::protocol::ListCustomPromptsResponseEvent;
     use codex_protocol::protocol::Op;
     use codex_protocol::protocol::ReviewDecision;
-    use codex_protocol::protocol::ReviewRequest;
+
     use codex_protocol::protocol::TurnAbortReason;
     use codex_protocol::protocol::WarningEvent;
 
@@ -2137,146 +2134,6 @@ mod handlers {
         sess.send_event_raw(event).await;
         true
     }
-
-    pub async fn review(
-        sess: &Arc<Session>,
-        config: &Arc<Config>,
-        sub_id: String,
-        review_request: ReviewRequest,
-    ) {
-        let turn_context = sess
-            .new_turn_with_sub_id(sub_id.clone(), SessionSettingsUpdate::default())
-            .await;
-        match resolve_review_request(review_request, config.cwd.as_path()) {
-            Ok(resolved) => {
-                spawn_review_thread(
-                    Arc::clone(sess),
-                    Arc::clone(config),
-                    turn_context.clone(),
-                    sub_id,
-                    resolved,
-                )
-                .await;
-            }
-            Err(err) => {
-                let event = Event {
-                    id: sub_id,
-                    msg: EventMsg::Error(ErrorEvent {
-                        message: err.to_string(),
-                        codex_error_info: Some(CodexErrorInfo::Other),
-                    }),
-                };
-                sess.send_event(&turn_context, event.msg).await;
-            }
-        }
-    }
-}
-
-/// Spawn a review thread using the given prompt.
-async fn spawn_review_thread(
-    sess: Arc<Session>,
-    config: Arc<Config>,
-    parent_turn_context: Arc<TurnContext>,
-    sub_id: String,
-    resolved: crate::review_prompts::ResolvedReviewRequest,
-) {
-    let model = config.review_model.clone();
-    let review_model_family = sess
-        .services
-        .models_manager
-        .construct_model_family(&model, &config)
-        .await;
-    // For reviews, disable web_search and view_image regardless of global settings.
-    let mut review_features = sess.features.clone();
-    review_features
-        .disable(crate::features::Feature::WebSearchRequest)
-        .disable(crate::features::Feature::ViewImageTool);
-    let tools_config = ToolsConfig::new(&ToolsConfigParams {
-        model_family: &review_model_family,
-        features: &review_features,
-        codex_home: &config.codex_home,
-        experimental_tools_enable: &config.experimental_tools_enable,
-        // Review sessions have full access to subagents
-        allowed_subagents: None,
-    });
-
-    let base_instructions = REVIEW_PROMPT.to_string();
-    let review_prompt = resolved.prompt.clone();
-    let provider = parent_turn_context.client.get_provider();
-    let auth_manager = parent_turn_context.client.get_auth_manager();
-    let model_family = review_model_family.clone();
-
-    // Build per‑turn client with the requested model/family.
-    let mut per_turn_config = (*config).clone();
-    per_turn_config.model = Some(model.clone());
-    if config.model_provider_id == "antigravity" {
-        per_turn_config.model_reasoning_effort = config.model_reasoning_effort;
-    } else {
-        per_turn_config.model_reasoning_effort = Some(ReasoningEffortConfig::Low);
-    }
-    per_turn_config.model_reasoning_summary = ReasoningSummaryConfig::Detailed;
-    per_turn_config.features = review_features.clone();
-
-    let otel_event_manager = parent_turn_context
-        .client
-        .get_otel_event_manager()
-        .with_model(
-            config.review_model.as_str(),
-            review_model_family.slug.as_str(),
-        );
-
-    let per_turn_config = Arc::new(per_turn_config);
-    let client = ModelClient::new(
-        per_turn_config.clone(),
-        auth_manager,
-        model_family.clone(),
-        otel_event_manager,
-        provider,
-        per_turn_config.model_reasoning_effort,
-        per_turn_config.model_reasoning_summary,
-        sess.conversation_id,
-        parent_turn_context.client.get_session_source(),
-    );
-
-    let review_turn_context = TurnContext {
-        sub_id: sub_id.to_string(),
-        client,
-        tools_config,
-        developer_instructions: None,
-        user_instructions: None,
-        base_instructions: Some(base_instructions.clone()),
-        compact_prompt: parent_turn_context.compact_prompt.clone(),
-        approval_policy: parent_turn_context.approval_policy,
-        sandbox_policy: parent_turn_context.sandbox_policy.clone(),
-        shell_environment_policy: parent_turn_context.shell_environment_policy.clone(),
-        cwd: parent_turn_context.cwd.clone(),
-        final_output_json_schema: None,
-        codex_linux_sandbox_exe: parent_turn_context.codex_linux_sandbox_exe.clone(),
-        tool_call_gate: Arc::new(ReadinessFlag::new()),
-        exec_policy: parent_turn_context.exec_policy.clone(),
-        truncation_policy: TruncationPolicy::new(&per_turn_config, model_family.truncation_policy),
-        truncation_bias: model_family.truncation_bias,
-        mcp_truncation_policy: TruncationPolicy::new(
-            &per_turn_config,
-            model_family.mcp_truncation_policy,
-        ),
-        mcp_truncation_bias: model_family.mcp_truncation_bias,
-    };
-
-    // Seed the child task with the review prompt as the initial user message.
-    let input: Vec<UserInput> = vec![UserInput::Text {
-        text: review_prompt,
-    }];
-    let tc = Arc::new(review_turn_context);
-    sess.spawn_task(tc.clone(), input, ReviewTask::new()).await;
-
-    // Announce entering review mode so UIs can switch modes.
-    let review_request = ReviewRequest {
-        target: resolved.target,
-        user_facing_hint: Some(resolved.user_facing_hint),
-    };
-    sess.send_event(&tc, EventMsg::EnteredReviewMode(review_request))
-        .await;
 }
 
 fn skill_load_outcome_for_client(
@@ -3436,54 +3293,6 @@ mod tests {
             other => panic!("unexpected event: {other:?}"),
         }
         assert!(rx.try_recv().is_err());
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn abort_review_task_emits_exited_then_aborted_and_records_history() {
-        let (sess, tc, rx) = make_session_and_context_with_rx();
-        let input = vec![UserInput::Text {
-            text: "start review".to_string(),
-        }];
-        sess.spawn_task(Arc::clone(&tc), input, ReviewTask::new())
-            .await;
-
-        sess.abort_all_tasks(TurnAbortReason::Interrupted).await;
-
-        // Drain events until we observe ExitedReviewMode; earlier
-        // RawResponseItem entries (e.g., environment context) may arrive first.
-        loop {
-            let evt = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
-                .await
-                .expect("timeout waiting for first event")
-                .expect("first event");
-            match evt.msg {
-                EventMsg::ExitedReviewMode(ev) => {
-                    assert!(ev.review_output.is_none());
-                    break;
-                }
-                // Ignore any non-critical events before exit.
-                _ => continue,
-            }
-        }
-        loop {
-            let evt = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
-                .await
-                .expect("timeout waiting for next event")
-                .expect("event");
-            match evt.msg {
-                EventMsg::RawResponseItem(_) => continue,
-                EventMsg::ItemStarted(_) | EventMsg::ItemCompleted(_) => continue,
-                EventMsg::AgentMessage(_) => continue,
-                EventMsg::TurnAborted(e) => {
-                    assert_eq!(TurnAbortReason::Interrupted, e.reason);
-                    break;
-                }
-                other => panic!("unexpected second event: {other:?}"),
-            }
-        }
-
-        let history = sess.clone_history().await.get_history();
-        let _ = history;
     }
 
     #[tokio::test]

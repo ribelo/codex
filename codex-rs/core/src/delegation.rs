@@ -1,8 +1,5 @@
 //! Delegation context for tracking nested subagent calls.
 
-use std::sync::Arc;
-use tokio::sync::RwLock;
-
 #[cfg(test)]
 #[path = "delegation_test.rs"]
 mod delegation_test;
@@ -38,43 +35,26 @@ impl DelegationContext {
     }
 }
 
-/// Registry for managing active delegation contexts across a session.
+/// Registry for managing active delegation contexts.
+/// This used to track state, but now acts as a factory/helper.
 #[derive(Debug, Default, Clone)]
-pub struct DelegationRegistry {
-    /// Current delegation context (if any).
-    current: Arc<RwLock<Option<DelegationContext>>>,
-}
+pub struct DelegationRegistry;
 
 impl DelegationRegistry {
     pub fn new() -> Self {
-        Self::default()
+        Self
     }
 
-    /// Get the current delegation context.
-    pub async fn current(&self) -> Option<DelegationContext> {
-        self.current.read().await.clone()
-    }
-
-    /// Set the current delegation context.
-    pub async fn set_current(&self, ctx: Option<DelegationContext>) {
-        *self.current.write().await = ctx;
-    }
-
-    /// Enter a new delegation context (either root or child).
-    pub async fn enter(&self, delegation_id: String) -> DelegationContext {
-        let current = self.current().await;
-        let new_ctx = match current {
-            Some(parent) => parent.new_child(delegation_id),
+    /// Enter a new delegation context with an explicit parent.
+    /// If parent is None, creates a root context.
+    pub async fn enter_with_parent(
+        &self,
+        delegation_id: String,
+        parent: Option<&DelegationContext>,
+    ) -> DelegationContext {
+        match parent {
+            Some(p) => p.new_child(delegation_id),
             None => DelegationContext::new_root(delegation_id),
-        };
-        self.set_current(Some(new_ctx.clone())).await;
-        new_ctx
-    }
-
-    /// Exit the current delegation context, returning to the parent.
-    pub async fn exit(&self) {
-        // For now, just clear the current context
-        // In a full implementation, we might want to track the stack
-        self.set_current(None).await;
+        }
     }
 }

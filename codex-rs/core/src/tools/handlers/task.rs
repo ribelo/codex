@@ -202,7 +202,9 @@ impl ToolHandler for TaskHandler {
         // Create or retrieve delegation context
         let delegation_context = {
             let registry = &invocation.session.services.delegation_registry;
-            registry.enter(invocation.call_id.clone()).await
+            registry
+                .enter_with_parent(invocation.call_id.clone(), None)
+                .await
         };
         let delegation_id = Some(delegation_context.delegation_id.clone());
         let parent_delegation_id = delegation_context.parent_delegation_id.clone();
@@ -458,9 +460,7 @@ impl ToolHandler for TaskHandler {
                         .send_event(invocation.turn.as_ref(), wrapped)
                         .await;
                     // Exit delegation context
-                    {
-                        invocation.session.services.delegation_registry.exit().await;
-                    }
+                    {}
                     break;
                 }
                 EventMsg::TurnAborted(ta) => {
@@ -480,9 +480,7 @@ impl ToolHandler for TaskHandler {
                         .send_event(invocation.turn.as_ref(), wrapped)
                         .await;
                     // Exit delegation context
-                    {
-                        invocation.session.services.delegation_registry.exit().await;
-                    }
+                    {}
                     return Err(FunctionCallError::RespondToModel(reason_str));
                 }
                 EventMsg::ExecCommandBegin(_)

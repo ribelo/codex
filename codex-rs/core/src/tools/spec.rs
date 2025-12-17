@@ -30,6 +30,8 @@ pub(crate) struct ToolsConfig {
     /// - `Some(vec![])`: no access to any subagents (task tool not injected)
     /// - `Some(vec!["agent1", ...])`: access only to listed subagents
     pub allowed_subagents: Option<Vec<String>>,
+    /// Whether the sandbox policy is read-only (disables write tools).
+    pub is_read_only: bool,
 }
 
 pub(crate) struct ToolsConfigParams<'a> {
@@ -40,6 +42,8 @@ pub(crate) struct ToolsConfigParams<'a> {
     /// Controls which subagents this session can delegate to.
     /// Passed through to ToolsConfig.allowed_subagents.
     pub(crate) allowed_subagents: Option<Vec<String>>,
+    /// Whether the sandbox policy is read-only.
+    pub(crate) is_read_only: bool,
 }
 
 impl ToolsConfig {
@@ -50,6 +54,7 @@ impl ToolsConfig {
             codex_home,
             experimental_tools_enable,
             allowed_subagents,
+            is_read_only,
         } = params;
         let include_apply_patch_tool = features.enabled(Feature::ApplyPatchFreeform);
         let include_web_search_request = features.enabled(Feature::WebSearchRequest);
@@ -90,6 +95,7 @@ impl ToolsConfig {
             include_view_image_tool,
             experimental_supported_tools: experimental,
             allowed_subagents: allowed_subagents.clone(),
+            is_read_only: *is_read_only,
         }
     }
 }
@@ -1042,7 +1048,9 @@ pub(crate) fn build_specs(
     builder.push_spec(PLAN_TOOL.clone());
     builder.register_handler("update_plan", plan_handler);
 
-    if let Some(apply_patch_tool_type) = &config.apply_patch_tool_type {
+    // Skip apply_patch when sandbox is read-only.
+    if !config.is_read_only && config.apply_patch_tool_type.is_some() {
+        let apply_patch_tool_type = config.apply_patch_tool_type.as_ref().unwrap();
         match apply_patch_tool_type {
             ApplyPatchToolType::Freeform => {
                 builder.push_spec(create_apply_patch_freeform_tool());
@@ -1252,6 +1260,7 @@ mod tests {
             codex_home: std::path::Path::new("."),
             experimental_tools_enable: &[],
             allowed_subagents: None,
+            is_read_only: false,
         });
         let (tools, _) = build_specs(&config, None).build();
 
@@ -1312,6 +1321,7 @@ mod tests {
             codex_home: std::path::Path::new("."),
             experimental_tools_enable: &[],
             allowed_subagents: None,
+            is_read_only: false,
         });
         let (tools, _) = build_specs(&tools_config, Some(HashMap::new())).build();
         let tool_names = tools.iter().map(|t| t.spec.name()).collect::<Vec<_>>();
@@ -1426,6 +1436,7 @@ mod tests {
             codex_home: std::path::Path::new("."),
             experimental_tools_enable: &[],
             allowed_subagents: None,
+            is_read_only: false,
         });
         let (tools, _) = build_specs(&tools_config, Some(HashMap::new())).build();
 
@@ -1451,6 +1462,7 @@ mod tests {
             codex_home: std::path::Path::new("."),
             experimental_tools_enable: &[],
             allowed_subagents: None,
+            is_read_only: false,
         });
         let (tools, _) = build_specs(&tools_config, None).build();
 
@@ -1475,6 +1487,7 @@ mod tests {
             codex_home: std::path::Path::new("."),
             experimental_tools_enable: &[],
             allowed_subagents: None,
+            is_read_only: false,
         });
         let (tools, _) = build_specs(&tools_config, None).build();
 
@@ -1509,6 +1522,7 @@ mod tests {
             codex_home: std::path::Path::new("."),
             experimental_tools_enable: &[],
             allowed_subagents: None,
+            is_read_only: false,
         });
         let (tools, _) = build_specs(
             &tools_config,
@@ -1606,6 +1620,7 @@ mod tests {
             codex_home: std::path::Path::new("."),
             experimental_tools_enable: &[],
             allowed_subagents: None,
+            is_read_only: false,
         });
 
         // Intentionally construct a map with keys that would sort alphabetically.
@@ -1686,6 +1701,7 @@ mod tests {
             codex_home: std::path::Path::new("."),
             experimental_tools_enable: &[],
             allowed_subagents: None,
+            is_read_only: false,
         });
 
         let (tools, _) = build_specs(
@@ -1746,6 +1762,7 @@ mod tests {
             codex_home: std::path::Path::new("."),
             experimental_tools_enable: &[],
             allowed_subagents: None,
+            is_read_only: false,
         });
 
         let (tools, _) = build_specs(
@@ -1803,6 +1820,7 @@ mod tests {
             codex_home: std::path::Path::new("."),
             experimental_tools_enable: &[],
             allowed_subagents: None,
+            is_read_only: false,
         });
 
         let (tools, _) = build_specs(
@@ -1862,6 +1880,7 @@ mod tests {
             codex_home: std::path::Path::new("."),
             experimental_tools_enable: &[],
             allowed_subagents: None,
+            is_read_only: false,
         });
 
         let (tools, _) = build_specs(
@@ -1947,6 +1966,7 @@ Examples of valid command strings:
             codex_home: std::path::Path::new("."),
             experimental_tools_enable: &[],
             allowed_subagents: None,
+            is_read_only: false,
         });
         let (tools, _) = build_specs(
             &tools_config,
@@ -2119,6 +2139,7 @@ Examples of valid command strings:
             codex_home: std::path::Path::new("."),
             experimental_tools_enable: &[],
             allowed_subagents: None,
+            is_read_only: false,
         });
 
         // Verify read_file is not in the default set
@@ -2135,6 +2156,7 @@ Examples of valid command strings:
             codex_home: std::path::Path::new("."),
             experimental_tools_enable: &["read_file".to_string()],
             allowed_subagents: None,
+            is_read_only: false,
         });
 
         // Verify read_file is now in the set
@@ -2163,6 +2185,7 @@ Examples of valid command strings:
                 "grep_files".to_string(),
             ],
             allowed_subagents: None,
+            is_read_only: false,
         });
 
         // Count occurrences of read_file

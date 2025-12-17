@@ -1167,7 +1167,7 @@ fn scenarios() -> Vec<ScenarioSpec> {
             expectation: Expectation::FileNotCreated {
                 target: TargetPath::OutsideWorkspace("apply_patch_function_never.txt"),
                 message_contains: &[
-                    "patch rejected: writing outside of the project; rejected by user approval settings",
+                    "patch rejected: sandbox_policy is read-only or write target is outside writable roots; approval_policy is never so escalation is not possible",
                 ],
             },
         },

@@ -214,12 +214,40 @@ pub struct SubagentRegistry {
     agents: HashMap<String, SubagentDefinition>,
 }
 
+/// Built-in review agent template (frontmatter + system prompt).
+const BUILTIN_REVIEW_AGENT: &str = include_str!("../templates/subagents/review.md");
+
+/// Ensure built-in agents exist in the agents directory.
+/// Creates the agents directory and any missing built-in agent files.
+pub fn ensure_builtin_agents(codex_home: &Path) {
+    let agents_dir = codex_home.join("agents");
+
+    // Create agents directory if it doesn't exist
+    if let Err(e) = std::fs::create_dir_all(&agents_dir) {
+        warn!("Failed to create agents directory: {e}");
+        return;
+    }
+
+    // Create review.md if it doesn't exist
+    let review_path = agents_dir.join("review.md");
+    if !review_path.exists() {
+        if let Err(e) = std::fs::write(&review_path, BUILTIN_REVIEW_AGENT) {
+            warn!("Failed to create built-in review agent: {e}");
+        } else {
+            info!(path = %review_path.display(), "Created built-in review agent");
+        }
+    }
+}
+
 /// Load and validate all subagents from the agents directory.
 /// Returns both successfully loaded agents and errors for invalid ones.
 pub async fn load_subagents(codex_home: &Path) -> SubagentLoadOutcome {
     let started = std::time::Instant::now();
     let mut outcome = SubagentLoadOutcome::default();
     let agents_dir = codex_home.join("agents");
+
+    // Ensure built-in agents exist before loading
+    ensure_builtin_agents(codex_home);
 
     let entries = match std::fs::read_dir(&agents_dir) {
         Ok(entries) => entries,
@@ -267,11 +295,14 @@ pub async fn load_subagents(codex_home: &Path) -> SubagentLoadOutcome {
 impl SubagentRegistry {
     /// Legacy constructor used by tool specs and handlers.
     /// Synchronously loads agents from `~/.codex/agents`, logging but ignoring
-    /// any invalid definitions.
+    /// any invalid definitions. Ensures built-in agents exist before loading.
     pub fn new(codex_home: &Path) -> Self {
         let started = std::time::Instant::now();
         let mut agents = HashMap::new();
         let agents_dir = codex_home.join("agents");
+
+        // Ensure built-in agents exist before loading
+        ensure_builtin_agents(codex_home);
 
         if let Ok(entries) = std::fs::read_dir(&agents_dir) {
             for entry in entries.flatten() {
@@ -396,8 +427,10 @@ mod tests {
 
         let outcome = load_subagents(codex_home.path()).await;
         assert!(outcome.errors.is_empty(), "Expected no errors");
-        assert_eq!(outcome.agents.len(), 1);
-        assert_eq!(outcome.agents[0].slug, "test-agent");
+        // Includes user agent + built-in review agent
+        assert_eq!(outcome.agents.len(), 2);
+        assert!(outcome.agents.iter().any(|a| a.slug == "test-agent"));
+        assert!(outcome.agents.iter().any(|a| a.slug == "review"));
     }
 
     #[tokio::test]
@@ -412,8 +445,10 @@ mod tests {
 
         let outcome = load_subagents(codex_home.path()).await;
         assert!(outcome.errors.is_empty(), "Expected no errors");
-        assert_eq!(outcome.agents.len(), 1);
-        assert_eq!(outcome.agents[0].slug, "explorer");
+        // Includes user agent + built-in review agent
+        assert_eq!(outcome.agents.len(), 2);
+        assert!(outcome.agents.iter().any(|a| a.slug == "explorer"));
+        assert!(outcome.agents.iter().any(|a| a.slug == "review"));
     }
 
     #[tokio::test]
@@ -427,7 +462,9 @@ mod tests {
         );
 
         let outcome = load_subagents(codex_home.path()).await;
-        assert_eq!(outcome.agents.len(), 0, "Should reject invalid agent");
+        // Built-in review agent should still load successfully
+        assert_eq!(outcome.agents.len(), 1, "Only built-in review should load");
+        assert!(outcome.agents.iter().any(|a| a.slug == "review"));
         assert_eq!(outcome.errors.len(), 1);
         assert_eq!(outcome.errors[0].path, path);
         assert!(
@@ -456,7 +493,9 @@ mod tests {
         );
 
         let outcome = load_subagents(codex_home.path()).await;
-        assert_eq!(outcome.agents.len(), 0);
+        // Built-in review agent should still load successfully
+        assert_eq!(outcome.agents.len(), 1);
+        assert!(outcome.agents.iter().any(|a| a.slug == "review"));
         assert_eq!(outcome.errors.len(), 1);
         assert_eq!(outcome.errors[0].path, path);
         assert!(
@@ -477,7 +516,9 @@ mod tests {
         );
 
         let outcome = load_subagents(codex_home.path()).await;
-        assert_eq!(outcome.agents.len(), 0);
+        // Built-in review agent should still load successfully
+        assert_eq!(outcome.agents.len(), 1);
+        assert!(outcome.agents.iter().any(|a| a.slug == "review"));
         assert_eq!(outcome.errors.len(), 1);
         assert_eq!(outcome.errors[0].path, path);
         // The error message should indicate a YAML parsing issue due to missing required fields.
@@ -501,7 +542,9 @@ mod tests {
         );
 
         let outcome = load_subagents(codex_home.path()).await;
-        assert_eq!(outcome.agents.len(), 0);
+        // Built-in review agent should still load successfully
+        assert_eq!(outcome.agents.len(), 1);
+        assert!(outcome.agents.iter().any(|a| a.slug == "review"));
         assert_eq!(outcome.errors.len(), 1);
         assert_eq!(outcome.errors[0].path, path);
         assert!(
@@ -526,12 +569,18 @@ mod tests {
             "Expected no errors: {:?}",
             outcome.errors
         );
-        assert_eq!(outcome.agents.len(), 1);
-        assert_eq!(outcome.agents[0].slug, "minimal");
+        // Includes user agent + built-in review agent
+        assert_eq!(outcome.agents.len(), 2);
+        let minimal = outcome
+            .agents
+            .iter()
+            .find(|a| a.slug == "minimal")
+            .expect("minimal agent");
         assert!(
-            outcome.agents[0].system_prompt.is_empty(),
+            minimal.system_prompt.is_empty(),
             "Expected empty system_prompt for frontmatter-only agent"
         );
+        assert!(outcome.agents.iter().any(|a| a.slug == "review"));
     }
 
     #[tokio::test]
@@ -539,7 +588,9 @@ mod tests {
         let codex_home = setup_codex_home();
         let outcome = load_subagents(codex_home.path()).await;
         assert!(outcome.errors.is_empty());
-        assert!(outcome.agents.is_empty());
+        // Built-in review agent is auto-created
+        assert_eq!(outcome.agents.len(), 1);
+        assert!(outcome.agents.iter().any(|a| a.slug == "review"));
     }
 
     #[tokio::test]
@@ -548,7 +599,9 @@ mod tests {
         // Don't create agents dir
         let outcome = load_subagents(temp.path()).await;
         assert!(outcome.errors.is_empty());
-        assert!(outcome.agents.is_empty());
+        // Built-in review agent is auto-created (agents dir is also created)
+        assert_eq!(outcome.agents.len(), 1);
+        assert!(outcome.agents.iter().any(|a| a.slug == "review"));
     }
 
     #[test]
