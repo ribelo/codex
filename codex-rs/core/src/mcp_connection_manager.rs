@@ -24,6 +24,8 @@ use codex_async_utils::OrCancelExt;
 use codex_protocol::approvals::ElicitationRequestEvent;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::McpStartupCompleteEvent;
+use codex_protocol::protocol::McpStartupFailure;
 use codex_protocol::protocol::McpStartupStatus;
 use codex_protocol::protocol::McpStartupUpdateEvent;
 use codex_protocol::protocol::SandboxPolicy;
@@ -261,114 +263,120 @@ pub struct SandboxState {
 #[derive(Default)]
 pub struct McpConnectionManager {
     clients: HashMap<String, AsyncManagedClient>,
-    configs: HashMap<String, McpServerConfig>,
-    auth_entries: HashMap<String, McpAuthStatusEntry>,
-    store_mode: OAuthCredentialsStoreMode,
-    tx_event: Option<Sender<Event>>,
-    cancel_token: CancellationToken,
     elicitation_requests: ElicitationRequestManager,
 }
 
 impl McpConnectionManager {
-    pub fn configure(
+    pub async fn initialize(
         &mut self,
         mcp_servers: HashMap<String, McpServerConfig>,
         store_mode: OAuthCredentialsStoreMode,
         auth_entries: HashMap<String, McpAuthStatusEntry>,
         tx_event: Sender<Event>,
         cancel_token: CancellationToken,
+        initial_sandbox_state: SandboxState,
     ) {
-        self.configs = mcp_servers;
-        self.store_mode = store_mode;
-        self.auth_entries = auth_entries;
-        self.tx_event = Some(tx_event);
-        self.cancel_token = cancel_token;
-        self.clients.clear();
-    }
-
-    pub async fn ensure_started(&mut self, server_name: &str) {
-        if self.clients.contains_key(server_name) {
+        if cancel_token.is_cancelled() {
             return;
         }
-
-        let Some(cfg) = self.configs.get(server_name) else {
-            return;
-        };
-
-        if !cfg.enabled {
-            return;
-        }
-
-        let cancel_token = self.cancel_token.child_token();
-        if let Some(tx) = &self.tx_event {
+        let mut clients = HashMap::new();
+        let mut join_set = JoinSet::new();
+        let elicitation_requests = ElicitationRequestManager::default();
+        for (server_name, cfg) in mcp_servers.into_iter().filter(|(_, cfg)| cfg.enabled) {
+            let cancel_token = cancel_token.child_token();
             let _ = emit_update(
-                tx,
+                &tx_event,
                 McpStartupUpdateEvent {
-                    server: server_name.to_string(),
+                    server: server_name.clone(),
                     status: McpStartupStatus::Starting,
                 },
             )
             .await;
-        }
-
-        let async_managed_client = AsyncManagedClient::new(
-            server_name.to_string(),
-            cfg.clone(),
-            self.store_mode,
-            cancel_token.clone(),
-            self.tx_event.clone().expect("tx_event configured"),
-            self.elicitation_requests.clone(),
-        );
-
-        self.clients
-            .insert(server_name.to_string(), async_managed_client.clone());
-
-        let tx_event = self.tx_event.clone();
-        let auth_entry = self.auth_entries.get(server_name).cloned();
-        let server_name_owned = server_name.to_string();
-
-        tokio::spawn(async move {
-            let outcome = async_managed_client.client().await;
-            if cancel_token.is_cancelled() {
-                return;
-            }
-
-            let status = match &outcome {
-                Ok(_) => McpStartupStatus::Ready,
-                Err(error) => {
-                    let error_str =
-                        mcp_init_error_display(&server_name_owned, auth_entry.as_ref(), error);
-                    McpStartupStatus::Failed { error: error_str }
+            let async_managed_client = AsyncManagedClient::new(
+                server_name.clone(),
+                cfg,
+                store_mode,
+                cancel_token.clone(),
+                tx_event.clone(),
+                elicitation_requests.clone(),
+            );
+            clients.insert(server_name.clone(), async_managed_client.clone());
+            let tx_event = tx_event.clone();
+            let auth_entry = auth_entries.get(&server_name).cloned();
+            let sandbox_state = initial_sandbox_state.clone();
+            join_set.spawn(async move {
+                let outcome = async_managed_client.client().await;
+                if cancel_token.is_cancelled() {
+                    return (server_name, Err(StartupOutcomeError::Cancelled));
                 }
-            };
+                let status = match &outcome {
+                    Ok(_) => {
+                        // Send sandbox state notification immediately after Ready
+                        if let Err(e) = async_managed_client
+                            .notify_sandbox_state_change(&sandbox_state)
+                            .await
+                        {
+                            warn!(
+                                "Failed to notify sandbox state to MCP server {server_name}: {e:#}",
+                            );
+                        }
+                        McpStartupStatus::Ready
+                    }
+                    Err(error) => {
+                        let error_str = mcp_init_error_display(
+                            server_name.as_str(),
+                            auth_entry.as_ref(),
+                            error,
+                        );
+                        McpStartupStatus::Failed { error: error_str }
+                    }
+                };
 
-            if let Some(tx) = tx_event {
                 let _ = emit_update(
-                    &tx,
+                    &tx_event,
                     McpStartupUpdateEvent {
-                        server: server_name_owned,
+                        server: server_name.clone(),
                         status,
                     },
                 )
                 .await;
+
+                (server_name, outcome)
+            });
+        }
+        self.clients = clients;
+        self.elicitation_requests = elicitation_requests.clone();
+        tokio::spawn(async move {
+            let outcomes = join_set.join_all().await;
+            let mut summary = McpStartupCompleteEvent::default();
+            for (server_name, outcome) in outcomes {
+                match outcome {
+                    Ok(_) => summary.ready.push(server_name),
+                    Err(StartupOutcomeError::Cancelled) => summary.cancelled.push(server_name),
+                    Err(StartupOutcomeError::Failed { error }) => {
+                        summary.failed.push(McpStartupFailure {
+                            server: server_name,
+                            error,
+                        })
+                    }
+                }
             }
+            let _ = tx_event
+                .send(Event {
+                    id: INITIAL_SUBMIT_ID.to_owned(),
+                    msg: EventMsg::McpStartupComplete(summary),
+                })
+                .await;
         });
     }
 
     async fn client_by_name(&self, name: &str) -> Result<ManagedClient> {
-        let async_client = self
-            .clients
+        self.clients
             .get(name)
-            .ok_or_else(|| anyhow!("unknown MCP server '{name}'"))?;
-
-        match async_client.client().await {
-            Ok(c) => Ok(c),
-            Err(err) => {
-                let auth_entry = self.auth_entries.get(name);
-                let msg = mcp_init_error_display(name, auth_entry, &err);
-                Err(anyhow!(msg))
-            }
-        }
+            .ok_or_else(|| anyhow!("unknown MCP server '{name}'"))?
+            .client()
+            .await
+            .context("failed to get client")
     }
 
     pub async fn resolve_elicitation(
@@ -608,34 +616,6 @@ impl McpConnectionManager {
             .await
             .get(tool_name)
             .map(|tool| (tool.server_name.clone(), tool.tool_name.clone()))
-    }
-
-    pub async fn notify_sandbox_state_change(&self, sandbox_state: &SandboxState) -> Result<()> {
-        let mut join_set = JoinSet::new();
-
-        for async_managed_client in self.clients.values() {
-            let sandbox_state = sandbox_state.clone();
-            let async_managed_client = async_managed_client.clone();
-            join_set.spawn(async move {
-                async_managed_client
-                    .notify_sandbox_state_change(&sandbox_state)
-                    .await
-            });
-        }
-
-        while let Some(join_res) = join_set.join_next().await {
-            match join_res {
-                Ok(Ok(())) => {}
-                Ok(Err(err)) => {
-                    warn!("Failed to notify sandbox state change to MCP server: {err:#}");
-                }
-                Err(err) => {
-                    warn!("Task panic when notifying sandbox state change to MCP server: {err:#}");
-                }
-            }
-        }
-
-        Ok(())
     }
 }
 

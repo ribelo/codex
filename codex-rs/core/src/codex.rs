@@ -704,44 +704,31 @@ impl Session {
         // before the first turn. For subagent sessions we kick off
         // initialization in the background to avoid adding latency to task
         // delegation; most subagents do not depend on MCP.
+        let sandbox_state = SandboxState {
+            sandbox_policy: session_configuration.sandbox_policy.clone(),
+            codex_linux_sandbox_exe: config.codex_linux_sandbox_exe.clone(),
+            sandbox_cwd: session_configuration.cwd.clone(),
+        };
         match session_configuration.session_source {
             SessionSource::SubAgent(_) => {
                 // Subagents share the connection manager from the parent session.
                 // We assume it's already configured/started by the parent.
             }
             _ => {
-                let mut manager = sess.services.mcp_connection_manager.write().await;
-                manager.configure(
-                    config.mcp_servers.clone(),
-                    config.mcp_oauth_credentials_store_mode,
-                    auth_statuses.clone(),
-                    tx_event.clone(),
-                    sess.services.mcp_startup_cancellation_token.clone(),
-                );
-
-                // Trigger startup for enabled servers
-                for (name, cfg) in &config.mcp_servers {
-                    if cfg.enabled {
-                        manager.ensure_started(name).await;
-                    }
-                }
+                sess.services
+                    .mcp_connection_manager
+                    .write()
+                    .await
+                    .initialize(
+                        config.mcp_servers.clone(),
+                        config.mcp_oauth_credentials_store_mode,
+                        auth_statuses.clone(),
+                        tx_event.clone(),
+                        sess.services.mcp_startup_cancellation_token.clone(),
+                        sandbox_state,
+                    )
+                    .await;
             }
-        }
-
-        let sandbox_state = SandboxState {
-            sandbox_policy: session_configuration.sandbox_policy.clone(),
-            codex_linux_sandbox_exe: config.codex_linux_sandbox_exe.clone(),
-            sandbox_cwd: session_configuration.cwd.clone(),
-        };
-        if let Err(e) = sess
-            .services
-            .mcp_connection_manager
-            .read()
-            .await
-            .notify_sandbox_state_change(&sandbox_state)
-            .await
-        {
-            tracing::error!("Failed to notify sandbox state change: {e}");
         }
 
         // record_initial_history can emit events. We record only after the SessionConfiguredEvent is emitted.

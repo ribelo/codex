@@ -1,14 +1,17 @@
 pub mod auth;
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use async_channel::unbounded;
 use codex_protocol::protocol::McpListToolsResponseEvent;
+use codex_protocol::protocol::SandboxPolicy;
 use mcp_types::Tool as McpTool;
 use tokio_util::sync::CancellationToken;
 
 use crate::config::Config;
 use crate::mcp::auth::compute_auth_statuses;
 use crate::mcp_connection_manager::McpConnectionManager;
+use crate::mcp_connection_manager::SandboxState;
 
 const MCP_TOOL_NAME_PREFIX: &str = "mcp";
 pub(crate) const MCP_TOOL_NAME_DELIMITER: &str = "__";
@@ -34,19 +37,23 @@ pub async fn collect_mcp_snapshot(config: &Config) -> McpListToolsResponseEvent 
     drop(rx_event);
     let cancel_token = CancellationToken::new();
 
-    mcp_connection_manager.configure(
-        config.mcp_servers.clone(),
-        config.mcp_oauth_credentials_store_mode,
-        auth_status_entries.clone(),
-        tx_event,
-        cancel_token.clone(),
-    );
+    // Use a permissive sandbox state for standalone MCP tool listing
+    let sandbox_state = SandboxState {
+        sandbox_policy: SandboxPolicy::DangerFullAccess,
+        codex_linux_sandbox_exe: None,
+        sandbox_cwd: PathBuf::from("."),
+    };
 
-    for (name, cfg) in &config.mcp_servers {
-        if cfg.enabled {
-            mcp_connection_manager.ensure_started(name).await;
-        }
-    }
+    mcp_connection_manager
+        .initialize(
+            config.mcp_servers.clone(),
+            config.mcp_oauth_credentials_store_mode,
+            auth_status_entries.clone(),
+            tx_event,
+            cancel_token.clone(),
+            sandbox_state,
+        )
+        .await;
 
     let snapshot =
         collect_mcp_snapshot_from_manager(&mcp_connection_manager, auth_status_entries).await;
