@@ -1,0 +1,14 @@
+---
+source: tui/src/history_cell.rs
+expression: "rendered.join(\"\\n\")"
+---
+• Delegated to @general
+├─ Parent task
+  ├ • Delegated to @finder
+  │ ├─ Task 1
+  │ ├─ ✓ First command
+  │ ├─ ✓ Second command
+  │ └─ Child 1 done
+  └ • Delegated to @finder
+    ├─ Task 2
+    └─ Child 2 done

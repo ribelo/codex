@@ -1,0 +1,14 @@
+---
+source: tui/src/history_cell.rs
+expression: "transcript_rendered.join(\"\\n\")"
+---
+• Delegated to @general
+├─ Run parallel searches
+  ├ • Delegated to @finder
+  │ ├─ Search call 1
+  │ ├─ ✓ Ran rg test
+  │ └─ Found 42 matches
+  ├ • Delegated to @finder
+  │ ├─ Search call 2
+  │ └─ Search complete
+└─ Both searches completed successfully.
