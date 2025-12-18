@@ -5,6 +5,7 @@ use std::env;
 use std::time::Duration;
 
 use codex_otel::otel_event_manager::OtelEventManager;
+use codex_protocol::config_types::ReasoningDisplay;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ReasoningEffort;
@@ -45,6 +46,7 @@ use crate::truncate::approx_token_count;
 use crate::util::backoff;
 use crate::util::try_parse_error_message;
 use codex_client::CodexHttpClient;
+use codex_protocol::models::ReasoningItemContent;
 use uuid::Uuid;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -484,7 +486,7 @@ pub(crate) async fn stream_gemini_messages(
                     stream,
                     tx_event,
                     provider.stream_idle_timeout(),
-                    config.show_raw_agent_reasoning,
+                    config.reasoning_display,
                     otel_event_manager.clone(),
                 ));
                 return Ok(ResponseStream { rx_event });
@@ -1176,7 +1178,7 @@ pub(crate) async fn process_gemini_sse<S, E>(
     stream: S,
     tx_event: mpsc::Sender<Result<ResponseEvent>>,
     idle_timeout: Duration,
-    show_raw_reasoning: bool,
+    _reasoning_display: ReasoningDisplay,
     otel_event_manager: OtelEventManager,
 ) where
     S: futures::Stream<Item = std::result::Result<Bytes, E>> + Unpin + Eventsource,
@@ -1369,7 +1371,7 @@ pub(crate) async fn process_gemini_sse<S, E>(
             })
         });
 
-        if show_raw_reasoning && !has_structured_thoughts {
+        if !has_structured_thoughts {
             let reasoning_chunks = extract_gemini_reasoning_text(&effective_reasoning);
             for text in reasoning_chunks {
                 append_reasoning_delta(
@@ -1404,26 +1406,13 @@ pub(crate) async fn process_gemini_sse<S, E>(
                     for part in parts {
                         if let Some(ref text) = part.text {
                             if is_thought_value(&part.thought) {
-                                if show_raw_reasoning {
-                                    append_reasoning_delta(
-                                        &tx_event,
-                                        &mut reasoning_state,
-                                        &mut emitted_content,
-                                        text,
-                                    )
-                                    .await;
-                                } else {
-                                    // When raw reasoning view is disabled, surface thought text
-                                    // as normal assistant text to match previous behavior.
-                                    append_text_delta(
-                                        &tx_event,
-                                        &mut assistant_state,
-                                        &mut emitted_content,
-                                        text,
-                                        part.thought_signature.clone(),
-                                    )
-                                    .await;
-                                }
+                                append_reasoning_delta(
+                                    &tx_event,
+                                    &mut reasoning_state,
+                                    &mut emitted_content,
+                                    text,
+                                )
+                                .await;
                             } else {
                                 append_text_delta(
                                     &tx_event,
@@ -1509,7 +1498,6 @@ async fn append_reasoning_delta(
     emitted_content: &mut bool,
     text: &str,
 ) {
-    use codex_protocol::models::ReasoningItemReasoningSummary;
     if text.is_empty() {
         return;
     }
@@ -1528,16 +1516,18 @@ async fn append_reasoning_delta(
             *emitted_content = true;
         }
 
-        // Accumulate a summary so a final reasoning item exists for legacy events.
-        if let ResponseItem::Reasoning { summary, .. } = &mut state.item {
-            if let Some(ReasoningItemReasoningSummary::SummaryText { text: existing }) =
-                summary.last_mut()
-            {
-                existing.push_str(text);
-            } else {
-                summary.push(ReasoningItemReasoningSummary::SummaryText {
-                    text: text.to_string(),
-                });
+        // Accumulate as raw content.
+        if let ResponseItem::Reasoning { content, .. } = &mut state.item {
+            if let Some(content_vec) = content {
+                if let Some(ReasoningItemContent::ReasoningText { text: existing }) =
+                    content_vec.last_mut()
+                {
+                    existing.push_str(text);
+                } else {
+                    content_vec.push(ReasoningItemContent::ReasoningText {
+                        text: text.to_string(),
+                    });
+                }
             }
         }
 

@@ -1916,12 +1916,7 @@ impl ChatWidget {
             }
             EventMsg::ExitedReviewMode(review) => self.on_exited_review_mode(review),
             EventMsg::ContextCompacted(_) => self.on_agent_message("Context compacted".to_owned()),
-            EventMsg::RawResponseItem(_)
-            | EventMsg::ItemStarted(_)
-            | EventMsg::ItemCompleted(_)
-            | EventMsg::AgentMessageContentDelta(_)
-            | EventMsg::ReasoningContentDelta(_)
-            | EventMsg::ReasoningRawContentDelta(_) => {}
+            EventMsg::RawResponseItem(_) => {}
             EventMsg::SubagentEvent(ev) => self.on_subagent_event(ev),
         }
     }

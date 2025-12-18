@@ -167,7 +167,7 @@ impl CodexToolCallParam {
             developer_instructions,
             compact_prompt,
             include_apply_patch_tool: None,
-            show_raw_agent_reasoning: None,
+            reasoning_display: None,
             tools_web_search_request: None,
             additional_writable_roots: Vec::new(),
         };

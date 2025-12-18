@@ -86,9 +86,8 @@ pub(crate) async fn handle_output_item_done(
 
             output.last_agent_message = last_agent_message;
         }
-        // The tool request should be answered directly (or was denied); push that response into the transcript.
-        Err(FunctionCallError::RespondToModel(message))
-        | Err(FunctionCallError::Denied(message)) => {
+        // The tool request should be answered directly; push that response into the transcript.
+        Err(FunctionCallError::RespondToModel(message)) => {
             let response = ResponseInputItem::FunctionCallOutput {
                 call_id: String::new(),
                 output: FunctionCallOutputPayload {

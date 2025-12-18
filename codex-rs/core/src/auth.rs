@@ -84,6 +84,7 @@ const GEMINI_ACCESS_TOKEN_LEEWAY_SECONDS: i64 = 300;
 const GEMINI_ONBOARD_MAX_ATTEMPTS: usize = 10;
 const GEMINI_ONBOARD_DELAY_MILLIS: u64 = 500;
 
+#[allow(dead_code)]
 static TEST_AUTH_TEMP_DIRS: Lazy<Mutex<Vec<TempDir>>> = Lazy::new(|| Mutex::new(Vec::new()));
 
 #[derive(Debug, Error)]

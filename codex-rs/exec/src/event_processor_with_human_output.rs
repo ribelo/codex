@@ -23,6 +23,7 @@ use codex_core::protocol::TurnAbortReason;
 use codex_core::protocol::TurnDiffEvent;
 use codex_core::protocol::WarningEvent;
 use codex_core::protocol::WebSearchEndEvent;
+use codex_protocol::config_types::ReasoningDisplay;
 use codex_protocol::num_format::format_with_separators;
 use owo_colors::OwoColorize;
 use owo_colors::Style;
@@ -57,9 +58,7 @@ pub(crate) struct EventProcessorWithHumanOutput {
     cyan: Style,
     yellow: Style,
 
-    /// Whether to include `AgentReasoning` events in the output.
-    show_agent_reasoning: bool,
-    show_raw_agent_reasoning: bool,
+    reasoning_display: ReasoningDisplay,
     last_message_path: Option<PathBuf>,
     last_total_token_usage: Option<codex_core::protocol::TokenUsageInfo>,
     final_message: Option<String>,
@@ -84,8 +83,7 @@ impl EventProcessorWithHumanOutput {
                 green: Style::new().green(),
                 cyan: Style::new().cyan(),
                 yellow: Style::new().yellow(),
-                show_agent_reasoning: !config.hide_agent_reasoning,
-                show_raw_agent_reasoning: config.show_raw_agent_reasoning,
+                reasoning_display: config.reasoning_display,
                 last_message_path,
                 last_total_token_usage: None,
                 final_message: None,
@@ -101,8 +99,7 @@ impl EventProcessorWithHumanOutput {
                 green: Style::new(),
                 cyan: Style::new(),
                 yellow: Style::new(),
-                show_agent_reasoning: !config.hide_agent_reasoning,
-                show_raw_agent_reasoning: config.show_raw_agent_reasoning,
+                reasoning_display: config.reasoning_display,
                 last_message_path,
                 last_total_token_usage: None,
                 final_message: None,
@@ -258,14 +255,16 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                 // Ignore in exec mode.
             }
 
-            EventMsg::AgentReasoningSectionBreak(_) => {
-                if !self.show_agent_reasoning {
+            EventMsg::AgentReasoningSectionBreak(_) => match self.reasoning_display {
+                ReasoningDisplay::None => {
                     return CodexStatus::Running;
                 }
-                eprintln!();
-            }
+                ReasoningDisplay::Auto | ReasoningDisplay::Raw => {
+                    eprintln!();
+                }
+            },
             EventMsg::AgentReasoningRawContent(AgentReasoningRawContentEvent { text }) => {
-                if self.show_raw_agent_reasoning {
+                if matches!(self.reasoning_display, ReasoningDisplay::Raw) {
                     ts_msg!(
                         self,
                         "{}\n{}",
@@ -485,7 +484,7 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                 eprintln!("{unified_diff}");
             }
             EventMsg::AgentReasoning(agent_reasoning_event) => {
-                if self.show_agent_reasoning {
+                if matches!(self.reasoning_display, ReasoningDisplay::Auto) {
                     ts_msg!(
                         self,
                         "{}\n{}",
@@ -582,11 +581,6 @@ impl EventProcessor for EventProcessorWithHumanOutput {
             | EventMsg::AgentMessageDelta(_)
             | EventMsg::AgentReasoningDelta(_)
             | EventMsg::AgentReasoningRawContentDelta(_)
-            | EventMsg::ItemStarted(_)
-            | EventMsg::ItemCompleted(_)
-            | EventMsg::AgentMessageContentDelta(_)
-            | EventMsg::ReasoningContentDelta(_)
-            | EventMsg::ReasoningRawContentDelta(_)
             | EventMsg::UndoCompleted(_)
             | EventMsg::UndoStarted(_)
             | EventMsg::SubagentEvent(_)

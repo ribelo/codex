@@ -33,6 +33,7 @@ impl Default for ActiveTurn {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum TaskKind {
     Regular,
+    #[allow(dead_code)]
     Review,
     Compact,
 }

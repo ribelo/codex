@@ -20,7 +20,9 @@ const SANDBOX_AND_APPROVALS: &str = include_str!("../sandbox_and_approvals.md");
 pub const REVIEW_PROMPT: &str = include_str!("../review_prompt.md");
 
 // Centralized templates for review-related user messages
+#[allow(dead_code)]
 pub const REVIEW_EXIT_SUCCESS_TMPL: &str = include_str!("../templates/review/exit_success.xml");
+#[allow(dead_code)]
 pub const REVIEW_EXIT_INTERRUPTED_TMPL: &str =
     include_str!("../templates/review/exit_interrupted.xml");
 

@@ -80,3 +80,16 @@ pub enum TrustLevel {
     Trusted,
     Untrusted,
 }
+
+/// Controls how reasoning/thinking content is displayed in output.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum ReasoningDisplay {
+    /// Show summarized reasoning if available, fallback to raw if no summary exists
+    #[default]
+    Auto,
+    /// Show raw chain-of-thought content
+    Raw,
+    /// Hide all reasoning content
+    None,
+}

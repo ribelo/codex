@@ -15,7 +15,6 @@ use crate::approvals::ElicitationRequestEvent;
 use crate::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use crate::custom_commands::CustomCommand;
 use crate::custom_prompts::CustomPrompt;
-use crate::items::TurnItem;
 use crate::message_history::HistoryEntry;
 use crate::models::ContentItem;
 use crate::models::ResponseItem;
@@ -613,13 +612,6 @@ pub enum EventMsg {
 
     RawResponseItem(RawResponseItemEvent),
 
-    ItemStarted(ItemStartedEvent),
-    ItemCompleted(ItemCompletedEvent),
-
-    AgentMessageContentDelta(AgentMessageContentDeltaEvent),
-    ReasoningContentDelta(ReasoningContentDeltaEvent),
-    ReasoningRawContentDelta(ReasoningRawContentDeltaEvent),
-
     /// Wrapper event for subagent activity. Contains a nested event from a
     /// delegated task along with the parent tool call context.
     SubagentEvent(SubagentEventPayload),
@@ -662,31 +654,6 @@ pub struct RawResponseItemEvent {
     pub item: ResponseItem,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema)]
-pub struct ItemStartedEvent {
-    pub thread_id: ConversationId,
-    pub turn_id: String,
-    pub item: TurnItem,
-}
-
-impl HasLegacyEvent for ItemStartedEvent {
-    fn as_legacy_events(&self, _: bool) -> Vec<EventMsg> {
-        match &self.item {
-            TurnItem::WebSearch(item) => vec![EventMsg::WebSearchBegin(WebSearchBeginEvent {
-                call_id: item.id.clone(),
-            })],
-            _ => Vec::new(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema)]
-pub struct ItemCompletedEvent {
-    pub thread_id: ConversationId,
-    pub turn_id: String,
-    pub item: TurnItem,
-}
-
 /// Payload for subagent events that wraps an inner event from a delegated task.
 #[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema)]
 pub struct SubagentEventPayload {
@@ -707,90 +674,6 @@ pub struct SubagentEventPayload {
     pub depth: Option<i32>,
     /// The wrapped inner event from the subagent.
     pub inner: Box<EventMsg>,
-}
-
-pub trait HasLegacyEvent {
-    fn as_legacy_events(&self, show_raw_agent_reasoning: bool) -> Vec<EventMsg>;
-}
-
-impl HasLegacyEvent for ItemCompletedEvent {
-    fn as_legacy_events(&self, show_raw_agent_reasoning: bool) -> Vec<EventMsg> {
-        self.item.as_legacy_events(show_raw_agent_reasoning)
-    }
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema)]
-pub struct AgentMessageContentDeltaEvent {
-    pub thread_id: String,
-    pub turn_id: String,
-    pub item_id: String,
-    pub delta: String,
-}
-
-impl HasLegacyEvent for AgentMessageContentDeltaEvent {
-    fn as_legacy_events(&self, _: bool) -> Vec<EventMsg> {
-        vec![EventMsg::AgentMessageDelta(AgentMessageDeltaEvent {
-            delta: self.delta.clone(),
-        })]
-    }
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema)]
-pub struct ReasoningContentDeltaEvent {
-    pub thread_id: String,
-    pub turn_id: String,
-    pub item_id: String,
-    pub delta: String,
-    // load with default value so it's backward compatible with the old format.
-    #[serde(default)]
-    pub summary_index: i64,
-}
-
-impl HasLegacyEvent for ReasoningContentDeltaEvent {
-    fn as_legacy_events(&self, _: bool) -> Vec<EventMsg> {
-        vec![EventMsg::AgentReasoningDelta(AgentReasoningDeltaEvent {
-            delta: self.delta.clone(),
-        })]
-    }
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema)]
-pub struct ReasoningRawContentDeltaEvent {
-    pub thread_id: String,
-    pub turn_id: String,
-    pub item_id: String,
-    pub delta: String,
-    // load with default value so it's backward compatible with the old format.
-    #[serde(default)]
-    pub content_index: i64,
-}
-
-impl HasLegacyEvent for ReasoningRawContentDeltaEvent {
-    fn as_legacy_events(&self, _: bool) -> Vec<EventMsg> {
-        vec![EventMsg::AgentReasoningRawContentDelta(
-            AgentReasoningRawContentDeltaEvent {
-                delta: self.delta.clone(),
-            },
-        )]
-    }
-}
-
-impl HasLegacyEvent for EventMsg {
-    fn as_legacy_events(&self, show_raw_agent_reasoning: bool) -> Vec<EventMsg> {
-        match self {
-            EventMsg::ItemCompleted(event) => event.as_legacy_events(show_raw_agent_reasoning),
-            EventMsg::AgentMessageContentDelta(event) => {
-                event.as_legacy_events(show_raw_agent_reasoning)
-            }
-            EventMsg::ReasoningContentDelta(event) => {
-                event.as_legacy_events(show_raw_agent_reasoning)
-            }
-            EventMsg::ReasoningRawContentDelta(event) => {
-                event.as_legacy_events(show_raw_agent_reasoning)
-            }
-            _ => Vec::new(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]

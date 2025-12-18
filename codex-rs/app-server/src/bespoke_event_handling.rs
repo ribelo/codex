@@ -4,7 +4,6 @@ use crate::codex_message_processor::TurnSummary;
 use crate::codex_message_processor::TurnSummaryStore;
 use crate::outgoing_message::OutgoingMessageSender;
 use codex_app_server_protocol::AccountRateLimitsUpdatedNotification;
-use codex_app_server_protocol::AgentMessageDeltaNotification;
 use codex_app_server_protocol::ApplyPatchApprovalParams;
 use codex_app_server_protocol::ApplyPatchApprovalResponse;
 use codex_app_server_protocol::ApprovalDecision;
@@ -32,8 +31,6 @@ use codex_app_server_protocol::McpToolCallStatus;
 use codex_app_server_protocol::PatchApplyStatus;
 use codex_app_server_protocol::PatchChangeKind as V2PatchChangeKind;
 use codex_app_server_protocol::ReasoningSummaryPartAddedNotification;
-use codex_app_server_protocol::ReasoningSummaryTextDeltaNotification;
-use codex_app_server_protocol::ReasoningTextDeltaNotification;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ServerRequestPayload;
 use codex_app_server_protocol::TerminalInteractionNotification;
@@ -262,17 +259,6 @@ pub(crate) async fn apply_bespoke_event_handling(
                 .send_server_notification(ServerNotification::ItemCompleted(notification))
                 .await;
         }
-        EventMsg::AgentMessageContentDelta(event) => {
-            let notification = AgentMessageDeltaNotification {
-                thread_id: conversation_id.to_string(),
-                turn_id: event_turn_id.clone(),
-                item_id: event.item_id,
-                delta: event.delta,
-            };
-            outgoing
-                .send_server_notification(ServerNotification::AgentMessageDelta(notification))
-                .await;
-        }
         EventMsg::ContextCompacted(..) => {
             let notification = ContextCompactedNotification {
                 thread_id: conversation_id.to_string(),
@@ -280,32 +266,6 @@ pub(crate) async fn apply_bespoke_event_handling(
             };
             outgoing
                 .send_server_notification(ServerNotification::ContextCompacted(notification))
-                .await;
-        }
-        EventMsg::ReasoningContentDelta(event) => {
-            let notification = ReasoningSummaryTextDeltaNotification {
-                thread_id: conversation_id.to_string(),
-                turn_id: event_turn_id.clone(),
-                item_id: event.item_id,
-                delta: event.delta,
-                summary_index: event.summary_index,
-            };
-            outgoing
-                .send_server_notification(ServerNotification::ReasoningSummaryTextDelta(
-                    notification,
-                ))
-                .await;
-        }
-        EventMsg::ReasoningRawContentDelta(event) => {
-            let notification = ReasoningTextDeltaNotification {
-                thread_id: conversation_id.to_string(),
-                turn_id: event_turn_id.clone(),
-                item_id: event.item_id,
-                delta: event.delta,
-                content_index: event.content_index,
-            };
-            outgoing
-                .send_server_notification(ServerNotification::ReasoningTextDelta(notification))
                 .await;
         }
         EventMsg::AgentReasoningSectionBreak(event) => {
@@ -401,28 +361,6 @@ pub(crate) async fn apply_bespoke_event_handling(
             };
             outgoing
                 .send_server_notification(ServerNotification::ItemCompleted(completed))
-                .await;
-        }
-        EventMsg::ItemStarted(item_started_event) => {
-            let item: ThreadItem = item_started_event.item.clone().into();
-            let notification = ItemStartedNotification {
-                thread_id: conversation_id.to_string(),
-                turn_id: event_turn_id.clone(),
-                item,
-            };
-            outgoing
-                .send_server_notification(ServerNotification::ItemStarted(notification))
-                .await;
-        }
-        EventMsg::ItemCompleted(item_completed_event) => {
-            let item: ThreadItem = item_completed_event.item.clone().into();
-            let notification = ItemCompletedNotification {
-                thread_id: conversation_id.to_string(),
-                turn_id: event_turn_id.clone(),
-                item,
-            };
-            outgoing
-                .send_server_notification(ServerNotification::ItemCompleted(notification))
                 .await;
         }
         EventMsg::ExitedReviewMode(review_event) => {

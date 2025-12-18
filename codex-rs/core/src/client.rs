@@ -20,7 +20,9 @@ use codex_api::error::ApiError;
 use codex_app_server_protocol::AuthMode;
 use codex_otel::otel_event_manager::OtelEventManager;
 use codex_protocol::ConversationId;
+use codex_protocol::config_types::ReasoningDisplay;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
+use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use codex_protocol::protocol::SessionSource;
@@ -170,7 +172,7 @@ impl ModelClient {
             WireApi::Chat => {
                 let api_stream = self.stream_chat_completions(prompt).await?;
 
-                if self.config.show_raw_agent_reasoning {
+                if self.config.reasoning_display == ReasoningDisplay::Raw {
                     Ok(map_response_stream(
                         api_stream.streaming_mode(),
                         self.otel_event_manager.clone(),
@@ -621,12 +623,25 @@ impl SseTelemetry for ApiTelemetry {
 fn sanitize_openrouter_input(items: &mut Vec<ResponseItem>) {
     items.retain(|item| match item {
         ResponseItem::Message { role, content, .. }
-            if role == "assistant" && content.is_empty() =>
+            if role == "assistant" && is_empty_content(content) =>
         {
             false
         }
         _ => true,
     });
+}
+
+/// Check if content is effectively empty (no content items or all text items are empty/whitespace)
+fn is_empty_content(content: &[ContentItem]) -> bool {
+    if content.is_empty() {
+        return true;
+    }
+    content.iter().all(|item| match item {
+        ContentItem::InputText { text } | ContentItem::OutputText { text, .. } => {
+            text.trim().is_empty()
+        }
+        ContentItem::InputImage { .. } => false,
+    })
 }
 
 #[cfg(test)]
@@ -677,5 +692,31 @@ mod tests {
         sanitize_openrouter_input(&mut items);
 
         assert_eq!(items.len(), 1);
+    }
+
+    #[test]
+    fn sanitizes_openrouter_input_removes_empty_text_assistant_message() {
+        let mut items = vec![
+            ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: "hello".to_string(),
+                }],
+            },
+            ResponseItem::Message {
+                id: None,
+                role: "assistant".to_string(),
+                content: vec![ContentItem::OutputText {
+                    text: "".to_string(),
+                    signature: None,
+                }],
+            },
+        ];
+
+        sanitize_openrouter_input(&mut items);
+
+        assert_eq!(items.len(), 1);
+        assert!(matches!(&items[0], ResponseItem::Message { role, .. } if role == "user"));
     }
 }

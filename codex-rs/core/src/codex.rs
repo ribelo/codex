@@ -29,11 +29,9 @@ use async_channel::Receiver;
 use async_channel::Sender;
 use codex_protocol::ConversationId;
 use codex_protocol::approvals::ExecPolicyAmendment;
+use codex_protocol::config_types::ReasoningDisplay;
 use codex_protocol::items::TurnItem;
 use codex_protocol::protocol::FileChange;
-use codex_protocol::protocol::HasLegacyEvent;
-use codex_protocol::protocol::ItemCompletedEvent;
-use codex_protocol::protocol::ItemStartedEvent;
 use codex_protocol::protocol::RawResponseItemEvent;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SessionSource;
@@ -80,7 +78,9 @@ use crate::exec_policy::ExecPolicyUpdateError;
 use crate::mcp::auth::compute_auth_statuses;
 use crate::mcp_connection_manager::McpConnectionManager;
 use crate::project_doc::get_user_instructions;
-use crate::protocol::AgentMessageContentDeltaEvent;
+use crate::protocol::AgentMessageDeltaEvent;
+use crate::protocol::AgentReasoningDeltaEvent;
+use crate::protocol::AgentReasoningRawContentDeltaEvent;
 use crate::protocol::AgentReasoningSectionBreakEvent;
 use crate::protocol::ApplyPatchApprovalRequestEvent;
 use crate::protocol::AskForApproval;
@@ -91,8 +91,6 @@ use crate::protocol::EventMsg;
 use crate::protocol::ExecApprovalRequestEvent;
 use crate::protocol::Op;
 use crate::protocol::RateLimitSnapshot;
-use crate::protocol::ReasoningContentDeltaEvent;
-use crate::protocol::ReasoningRawContentDeltaEvent;
 use crate::protocol::ReviewDecision;
 use crate::protocol::SandboxPolicy;
 use crate::protocol::SessionConfiguredEvent;
@@ -106,6 +104,7 @@ use crate::protocol::TokenUsage;
 use crate::protocol::TokenUsageInfo;
 use crate::protocol::TurnDiffEvent;
 use crate::protocol::WarningEvent;
+use crate::protocol::WebSearchBeginEvent;
 use crate::rollout::RolloutRecorder;
 use crate::rollout::RolloutRecorderParams;
 use crate::rollout::map_session_init_error;
@@ -664,7 +663,7 @@ impl Session {
             notifier: UserNotifier::new(config.notify.clone()),
             rollout: Mutex::new(Some(rollout_recorder)),
             user_shell: Arc::new(default_shell),
-            show_raw_agent_reasoning: config.show_raw_agent_reasoning,
+            reasoning_display: config.reasoning_display,
             auth_manager: Arc::clone(&auth_manager),
             otel_event_manager,
             models_manager: Arc::clone(&models_manager),
@@ -906,21 +905,11 @@ impl Session {
 
     /// Persist the event to rollout and send it to clients.
     pub(crate) async fn send_event(&self, turn_context: &TurnContext, msg: EventMsg) {
-        let legacy_source = msg.clone();
         let event = Event {
             id: turn_context.sub_id.clone(),
             msg,
         };
         self.send_event_raw(event).await;
-
-        let show_raw_agent_reasoning = self.show_raw_agent_reasoning();
-        for legacy in legacy_source.as_legacy_events(show_raw_agent_reasoning) {
-            let legacy_event = Event {
-                id: turn_context.sub_id.clone(),
-                msg: legacy,
-            };
-            self.send_event_raw(legacy_event).await;
-        }
     }
 
     pub(crate) async fn send_event_raw(&self, event: Event) {
@@ -933,15 +922,12 @@ impl Session {
     }
 
     pub(crate) async fn emit_turn_item_started(&self, turn_context: &TurnContext, item: &TurnItem) {
-        self.send_event(
-            turn_context,
-            EventMsg::ItemStarted(ItemStartedEvent {
-                thread_id: self.conversation_id,
-                turn_id: turn_context.sub_id.clone(),
-                item: item.clone(),
-            }),
-        )
-        .await;
+        if let TurnItem::WebSearch(ws) = item {
+            let event = EventMsg::WebSearchBegin(WebSearchBeginEvent {
+                call_id: ws.id.clone(),
+            });
+            self.send_event(turn_context, event).await;
+        }
     }
 
     pub(crate) async fn emit_turn_item_completed(
@@ -949,15 +935,10 @@ impl Session {
         turn_context: &TurnContext,
         item: TurnItem,
     ) {
-        self.send_event(
-            turn_context,
-            EventMsg::ItemCompleted(ItemCompletedEvent {
-                thread_id: self.conversation_id,
-                turn_id: turn_context.sub_id.clone(),
-                item,
-            }),
-        )
-        .await;
+        let display = self.reasoning_display();
+        for event in item.as_legacy_events(display) {
+            self.send_event(turn_context, event).await;
+        }
     }
 
     /// Adds an execpolicy amendment to both the in-memory and on-disk policies so future
@@ -1521,8 +1502,8 @@ impl Session {
         Arc::clone(&self.services.user_shell)
     }
 
-    fn show_raw_agent_reasoning(&self) -> bool {
-        self.services.show_raw_agent_reasoning
+    fn reasoning_display(&self) -> ReasoningDisplay {
+        self.services.reasoning_display
     }
 
     async fn cancel_mcp_startup(&self) {
@@ -2604,33 +2585,30 @@ async fn try_run_turn(
             ResponseEvent::OutputTextDelta(delta) => {
                 // In review child threads, suppress assistant text deltas; the
                 // UI will show a selection popup from the final ReviewOutput.
-                if let Some(active) = active_item.as_ref() {
-                    let event = AgentMessageContentDeltaEvent {
-                        thread_id: sess.conversation_id.to_string(),
-                        turn_id: turn_context.sub_id.clone(),
-                        item_id: active.id(),
-                        delta: delta.clone(),
-                    };
-                    sess.send_event(&turn_context, EventMsg::AgentMessageContentDelta(event))
-                        .await;
+                if active_item.is_some() {
+                    sess.send_event(
+                        &turn_context,
+                        EventMsg::AgentMessageDelta(AgentMessageDeltaEvent {
+                            delta: delta.clone(),
+                        }),
+                    )
+                    .await;
                 } else {
                     error_or_panic("OutputTextDelta without active item".to_string());
                 }
             }
             ResponseEvent::ReasoningSummaryDelta {
                 delta,
-                summary_index,
+                summary_index: _,
             } => {
-                if let Some(active) = active_item.as_ref() {
-                    let event = ReasoningContentDeltaEvent {
-                        thread_id: sess.conversation_id.to_string(),
-                        turn_id: turn_context.sub_id.clone(),
-                        item_id: active.id(),
-                        delta,
-                        summary_index,
-                    };
-                    sess.send_event(&turn_context, EventMsg::ReasoningContentDelta(event))
-                        .await;
+                if active_item.is_some() {
+                    sess.send_event(
+                        &turn_context,
+                        EventMsg::AgentReasoningDelta(AgentReasoningDeltaEvent {
+                            delta: delta.clone(),
+                        }),
+                    )
+                    .await;
                 } else {
                     error_or_panic("ReasoningSummaryDelta without active item".to_string());
                 }
@@ -2649,18 +2627,18 @@ async fn try_run_turn(
             }
             ResponseEvent::ReasoningContentDelta {
                 delta,
-                content_index,
+                content_index: _,
             } => {
-                if let Some(active) = active_item.as_ref() {
-                    let event = ReasoningRawContentDeltaEvent {
-                        thread_id: sess.conversation_id.to_string(),
-                        turn_id: turn_context.sub_id.clone(),
-                        item_id: active.id(),
-                        delta,
-                        content_index,
-                    };
-                    sess.send_event(&turn_context, EventMsg::ReasoningRawContentDelta(event))
-                        .await;
+                if active_item.is_some() {
+                    sess.send_event(
+                        &turn_context,
+                        EventMsg::AgentReasoningRawContentDelta(
+                            AgentReasoningRawContentDeltaEvent {
+                                delta: delta.clone(),
+                            },
+                        ),
+                    )
+                    .await;
                 } else {
                     error_or_panic("ReasoningRawContentDelta without active item".to_string());
                 }
@@ -3129,7 +3107,7 @@ mod tests {
             notifier: UserNotifier::new(None),
             rollout: Mutex::new(None),
             user_shell: Arc::new(default_user_shell()),
-            show_raw_agent_reasoning: config.show_raw_agent_reasoning,
+            reasoning_display: config.reasoning_display,
             auth_manager: auth_manager.clone(),
             otel_event_manager: otel_event_manager.clone(),
             models_manager,
@@ -3220,7 +3198,7 @@ mod tests {
             notifier: UserNotifier::new(None),
             rollout: Mutex::new(None),
             user_shell: Arc::new(default_user_shell()),
-            show_raw_agent_reasoning: config.show_raw_agent_reasoning,
+            reasoning_display: config.reasoning_display,
             auth_manager: Arc::clone(&auth_manager),
             otel_event_manager: otel_event_manager.clone(),
             models_manager,

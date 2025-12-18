@@ -1,3 +1,4 @@
+use crate::config_types::ReasoningDisplay;
 use crate::protocol::AgentMessageEvent;
 use crate::protocol::AgentReasoningEvent;
 use crate::protocol::AgentReasoningRawContentEvent;
@@ -111,25 +112,44 @@ impl AgentMessageItem {
 }
 
 impl ReasoningItem {
-    pub fn as_legacy_events(&self, show_raw_agent_reasoning: bool) -> Vec<EventMsg> {
-        let mut events = Vec::new();
-        for summary in &self.summary_text {
-            events.push(EventMsg::AgentReasoning(AgentReasoningEvent {
-                text: summary.clone(),
-            }));
-        }
-
-        if show_raw_agent_reasoning {
-            for entry in &self.raw_content {
-                events.push(EventMsg::AgentReasoningRawContent(
-                    AgentReasoningRawContentEvent {
-                        text: entry.clone(),
-                    },
-                ));
+    pub fn as_legacy_events(&self, display: ReasoningDisplay) -> Vec<EventMsg> {
+        match display {
+            ReasoningDisplay::None => Vec::new(),
+            ReasoningDisplay::Raw => {
+                // Only emit raw content
+                self.raw_content
+                    .iter()
+                    .map(|entry| {
+                        EventMsg::AgentReasoningRawContent(AgentReasoningRawContentEvent {
+                            text: entry.clone(),
+                        })
+                    })
+                    .collect()
+            }
+            ReasoningDisplay::Auto => {
+                // Emit summary if available, otherwise fallback to raw
+                if !self.summary_text.is_empty() {
+                    self.summary_text
+                        .iter()
+                        .map(|summary| {
+                            EventMsg::AgentReasoning(AgentReasoningEvent {
+                                text: summary.clone(),
+                            })
+                        })
+                        .collect()
+                } else {
+                    // Fallback to raw content as summary
+                    self.raw_content
+                        .iter()
+                        .map(|entry| {
+                            EventMsg::AgentReasoning(AgentReasoningEvent {
+                                text: entry.clone(),
+                            })
+                        })
+                        .collect()
+                }
             }
         }
-
-        events
     }
 }
 
@@ -152,12 +172,12 @@ impl TurnItem {
         }
     }
 
-    pub fn as_legacy_events(&self, show_raw_agent_reasoning: bool) -> Vec<EventMsg> {
+    pub fn as_legacy_events(&self, display: ReasoningDisplay) -> Vec<EventMsg> {
         match self {
             TurnItem::UserMessage(item) => vec![item.as_legacy_event()],
             TurnItem::AgentMessage(item) => item.as_legacy_events(),
             TurnItem::WebSearch(item) => vec![item.as_legacy_event()],
-            TurnItem::Reasoning(item) => item.as_legacy_events(show_raw_agent_reasoning),
+            TurnItem::Reasoning(item) => item.as_legacy_events(display),
         }
     }
 }
