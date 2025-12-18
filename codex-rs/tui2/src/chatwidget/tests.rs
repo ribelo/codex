@@ -354,6 +354,7 @@ async fn helpers_are_available_and_do_not_panic() {
     let conversation_manager = Arc::new(ConversationManager::with_models_provider(
         CodexAuth::from_api_key("test"),
         cfg.model_provider.clone(),
+        PathBuf::from("/tmp"),
     ));
     let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("test"));
     let init = ChatWidgetInit {
@@ -968,7 +969,7 @@ fn active_blob(chat: &ChatWidget) -> String {
 fn get_available_model(chat: &ChatWidget, model: &str) -> ModelPreset {
     let models = chat
         .models_manager
-        .try_list_models()
+        .try_list_models(&chat.config)
         .expect("models lock available");
     models
         .iter()
@@ -1950,6 +1951,7 @@ fn single_reasoning_option_skips_selection() {
         is_default: false,
         upgrade: None,
         show_in_picker: true,
+        supported_in_api: true,
     };
     chat.open_reasoning_popup(preset);
 

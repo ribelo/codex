@@ -441,7 +441,6 @@ fn subagent_patch_activity_display() {
         .any(|s| s.contains("Edited 2 files (+2 -1)"));
     assert!(
         found,
-        "Expected summary 'Edited 2 files (+2 -1)', found: {:#?}",
-        rendered
+        "Expected summary 'Edited 2 files (+2 -1)', found: {rendered:#?}"
     );
 }

@@ -1355,7 +1355,7 @@ impl HistoryCell for SubagentTaskCell {
             if !trimmed.is_empty() {
                 let single_line = trimmed.replace('\n', " ");
                 lines.push(Line::from(vec![
-                    content_indent.clone().into(),
+                    content_indent.into(),
                     "< ".dim(),
                     truncate_text(&single_line, wrap_width.saturating_sub(2)).dim(),
                 ]));

@@ -280,6 +280,7 @@ impl App {
         let conversation_manager = Arc::new(ConversationManager::new(
             auth_manager.clone(),
             SessionSource::Cli,
+            config.codex_home.clone(),
         ));
         let mut model = conversation_manager
             .get_models_manager()
@@ -1194,6 +1195,7 @@ mod tests {
         let server = Arc::new(ConversationManager::with_models_provider(
             CodexAuth::from_api_key("Test API Key"),
             config.model_provider.clone(),
+            PathBuf::from("/tmp"),
         ));
         let auth_manager =
             AuthManager::from_auth_for_testing(CodexAuth::from_api_key("Test API Key"));
@@ -1234,6 +1236,7 @@ mod tests {
         let server = Arc::new(ConversationManager::with_models_provider(
             CodexAuth::from_api_key("Test API Key"),
             config.model_provider.clone(),
+            PathBuf::from("/tmp"),
         ));
         let auth_manager =
             AuthManager::from_auth_for_testing(CodexAuth::from_api_key("Test API Key"));
