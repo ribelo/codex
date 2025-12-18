@@ -52,6 +52,7 @@ impl MessageProcessor {
         let conversation_manager = Arc::new(ConversationManager::new(
             auth_manager.clone(),
             SessionSource::VSCode,
+            config.codex_home.clone(),
         ));
         let codex_message_processor = CodexMessageProcessor::new(
             auth_manager,

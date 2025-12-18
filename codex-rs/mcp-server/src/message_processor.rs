@@ -58,8 +58,11 @@ impl MessageProcessor {
             false,
             config.cli_auth_credentials_store_mode,
         );
-        let conversation_manager =
-            Arc::new(ConversationManager::new(auth_manager, SessionSource::Mcp));
+        let conversation_manager = Arc::new(ConversationManager::new(
+            auth_manager,
+            SessionSource::Mcp,
+            config.codex_home.clone(),
+        ));
         Self {
             outgoing,
             initialized: false,
