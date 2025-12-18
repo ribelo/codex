@@ -1136,6 +1136,7 @@ pub(crate) struct SubagentState {
 #[derive(Debug, Clone)]
 pub(crate) struct SubagentTaskCell {
     /// The tool_call_id of the parent "task" tool invocation.
+    #[allow(dead_code)]
     parent_call_id: String,
     /// The subagent type (slug) that is handling this task.
     subagent_type: String,
@@ -1144,7 +1145,6 @@ pub(crate) struct SubagentTaskCell {
     /// Unique identifier for this delegation.
     delegation_id: Option<String>,
     /// Parent delegation ID if this is a nested delegation.
-    #[allow(dead_code)]
     parent_delegation_id: Option<String>,
     /// Nesting depth (0 = top-level, 1 = first nested, etc.)
     depth: i32,
@@ -1211,45 +1211,14 @@ impl SubagentTaskCell {
         &self.children
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn parent_call_id(&self) -> &str {
-        &self.parent_call_id
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn delegation_id(&self) -> Option<&str> {
-        self.delegation_id.as_deref()
-    }
-
     pub(crate) fn parent_delegation_id(&self) -> Option<&str> {
         self.parent_delegation_id.as_deref()
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn add_activity(&self, summary: String, success: Option<bool>) {
-        if let Ok(mut state) = self.state.lock() {
-            state
-                .activities
-                .push(SubagentActivityItem { summary, success });
-        }
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn mark_completed(&self) {
-        if let Ok(mut state) = self.state.lock() {
-            state.status = SubagentTaskStatus::Completed;
-        }
     }
 
     pub(crate) fn mark_failed(&self) {
         if let Ok(mut state) = self.state.lock() {
             state.status = SubagentTaskStatus::Failed;
         }
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn state(&self) -> Arc<Mutex<SubagentState>> {
-        Arc::clone(&self.state)
     }
 }
 
