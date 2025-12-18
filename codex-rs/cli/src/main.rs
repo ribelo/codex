@@ -466,6 +466,10 @@ async fn cli_main(codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()
                 &mut exec_cli.config_overrides,
                 root_config_overrides.clone(),
             );
+            // Forward top-level --profile to exec if exec doesn't have its own
+            if exec_cli.config_profile.is_none() {
+                exec_cli.config_profile = interactive.config_profile.clone();
+            }
             codex_exec::run_main(exec_cli, codex_linux_sandbox_exe).await?;
         }
         Some(Subcommand::Review(review_args)) => {
