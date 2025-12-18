@@ -289,7 +289,15 @@ impl ModelClient {
         };
 
         let text = create_text_param_for_request(verbosity, &prompt.output_schema);
-        let api_prompt = build_api_prompt(prompt, instructions.clone(), tools_json);
+        let mut api_prompt = build_api_prompt(prompt, instructions.clone(), tools_json);
+
+        // OpenRouter models (e.g. xiaomi/mimo-v2-flash:free) return 400 if an assistant
+        // message has empty content (which happens when we serialize a tool-use turn
+        // where the assistant message was empty/null).
+        if self.provider.provider_kind == ProviderKind::OpenRouter {
+            sanitize_openrouter_input(&mut api_prompt.input);
+        }
+
         let conversation_id = self.conversation_id.to_string();
         let session_source = self.session_source.clone();
 
@@ -607,5 +615,67 @@ impl SseTelemetry for ApiTelemetry {
         duration: Duration,
     ) {
         self.otel_event_manager.log_sse_event(result, duration);
+    }
+}
+
+fn sanitize_openrouter_input(items: &mut Vec<ResponseItem>) {
+    items.retain(|item| match item {
+        ResponseItem::Message { role, content, .. }
+            if role == "assistant" && content.is_empty() =>
+        {
+            false
+        }
+        _ => true,
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use codex_protocol::models::ContentItem;
+
+    #[test]
+    fn sanitizes_openrouter_input_removes_empty_assistant_message() {
+        let mut items = vec![
+            ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: "hello".to_string(),
+                }],
+            },
+            ResponseItem::Message {
+                id: None,
+                role: "assistant".to_string(),
+                content: vec![],
+            },
+            ResponseItem::FunctionCall {
+                id: None,
+                name: "shell".to_string(),
+                arguments: "{}".to_string(),
+                call_id: "call_1".to_string(),
+            },
+        ];
+
+        sanitize_openrouter_input(&mut items);
+
+        assert_eq!(items.len(), 2);
+        assert!(matches!(items[0], ResponseItem::Message { .. }));
+        assert!(matches!(items[1], ResponseItem::FunctionCall { .. }));
+    }
+
+    #[test]
+    fn sanitizes_openrouter_input_keeps_non_empty_assistant_message() {
+        let mut items = vec![ResponseItem::Message {
+            id: None,
+            role: "assistant".to_string(),
+            content: vec![ContentItem::InputText {
+                text: "thinking...".to_string(),
+            }],
+        }];
+
+        sanitize_openrouter_input(&mut items);
+
+        assert_eq!(items.len(), 1);
     }
 }
