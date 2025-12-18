@@ -69,22 +69,28 @@ impl SessionTask for GhostSnapshotTask {
             });
 
             let ctx_for_task = ctx.clone();
+            let ghost_snapshot_config = session.session.config().await.ghost_snapshot.clone();
+
             let cancelled = tokio::select! {
                 _ = cancellation_token.cancelled() => true,
                 _ = async {
                     let repo_path = ctx_for_task.cwd.clone();
+                    let ghost_snapshot_config_for_report = ghost_snapshot_config.clone();
                     // First, compute a snapshot report so we can warn about
                     // large untracked directories before running the heavier
                     // snapshot logic.
                     if let Ok(Ok(report)) = tokio::task::spawn_blocking({
                         let repo_path = repo_path.clone();
                         move || {
-                            let options = CreateGhostCommitOptions::new(&repo_path);
+                            let options = CreateGhostCommitOptions::new(&repo_path)
+                                .ghost_snapshot(ghost_snapshot_config_for_report);
                             capture_ghost_snapshot_report(&options)
                         }
                     })
                     .await
-                        && let Some(message) = format_large_untracked_warning(&report) {
+                        && let Some(message) =
+                            format_large_untracked_warning(&report, &ghost_snapshot_config)
+                    {
                                 session
                                     .session
                                     .send_event(
@@ -96,9 +102,10 @@ impl SessionTask for GhostSnapshotTask {
 
                     // Required to run in a dedicated blocking pool.
                     match tokio::task::spawn_blocking(move || {
-                        let options = CreateGhostCommitOptions::new(&repo_path);
+                        let options = CreateGhostCommitOptions::new(&repo_path)
+                            .ghost_snapshot(ghost_snapshot_config);
                         create_ghost_commit(&options)
-                    })
+                   })
                     .await
                     {
                         Ok(Ok(ghost_commit)) => {
@@ -161,21 +168,51 @@ impl GhostSnapshotTask {
     }
 }
 
-fn format_large_untracked_warning(report: &GhostSnapshotReport) -> Option<String> {
-    if report.large_untracked_dirs.is_empty() {
+fn format_large_untracked_warning(
+    report: &GhostSnapshotReport,
+    config: &codex_git::GhostSnapshotConfig,
+) -> Option<String> {
+    if config.disable_warnings {
         return None;
     }
-    const MAX_DIRS: usize = 3;
-    let mut parts: Vec<String> = Vec::new();
-    for dir in report.large_untracked_dirs.iter().take(MAX_DIRS) {
-        parts.push(format!("{} ({} files)", dir.path.display(), dir.file_count));
+
+    let mut messages = Vec::new();
+
+    if !report.large_untracked_dirs.is_empty() {
+        const MAX_DIRS: usize = 3;
+        let mut parts: Vec<String> = Vec::new();
+        for dir in report.large_untracked_dirs.iter().take(MAX_DIRS) {
+            parts.push(format!("{} ({} files)", dir.path.display(), dir.file_count));
+        }
+        if report.large_untracked_dirs.len() > MAX_DIRS {
+            let remaining = report.large_untracked_dirs.len() - MAX_DIRS;
+            parts.push(format!("{remaining} more"));
+        }
+        messages.push(format!(
+            "Repository snapshot encountered large untracked directories: {}. This can slow Codex; consider adding these paths to .gitignore or disabling undo in your config.",
+            parts.join(", ")
+        ));
     }
-    if report.large_untracked_dirs.len() > MAX_DIRS {
-        let remaining = report.large_untracked_dirs.len() - MAX_DIRS;
-        parts.push(format!("{remaining} more"));
+
+    if !report.ignored_untracked_files.is_empty() {
+        const MAX_FILES: usize = 3;
+        let mut parts: Vec<String> = Vec::new();
+        for file in report.ignored_untracked_files.iter().take(MAX_FILES) {
+            let size_mb = file.byte_size as f64 / (1024.0 * 1024.0);
+            parts.push(format!("{} ({:.1}MB)", file.path.display(), size_mb));
+        }
+        if report.ignored_untracked_files.len() > MAX_FILES {
+            let remaining = report.ignored_untracked_files.len() - MAX_FILES;
+            parts.push(format!("{remaining} more"));
+        }
+        messages.push(format!(
+            "Large untracked files were excluded from the snapshot: {}. These files will be preserved during undo but not captured in the snapshot tree.",
+            parts.join(", ")
+        ));
     }
-    Some(format!(
-        "Repository snapshot encountered large untracked directories: {}. This can slow Codex; consider adding these paths to .gitignore or disabling undo in your config.",
-        parts.join(", ")
-    ))
+
+    if messages.is_empty() {
+        return None;
+    }
+    Some(messages.join("\n\n"))
 }
