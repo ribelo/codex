@@ -1,11 +1,16 @@
 pub mod injection;
 pub mod loader;
+pub mod manager;
 pub mod model;
 pub mod render;
 
 pub(crate) use injection::SkillInjections;
 pub(crate) use injection::build_skill_injections;
 pub use loader::load_skills;
+pub(crate) use loader::load_skills_from_roots;
+pub(crate) use loader::repo_skills_root;
+pub(crate) use loader::user_skills_root;
+pub use manager::SkillsManager;
 pub use model::SkillError;
 pub use model::SkillLoadOutcome;
 pub use model::SkillMetadata;

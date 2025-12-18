@@ -1,3 +1,4 @@
+use codex_protocol::protocol::SkillScope;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -5,6 +6,7 @@ pub struct SkillMetadata {
     pub name: String,
     pub description: String,
     pub path: PathBuf,
+    pub scope: SkillScope,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

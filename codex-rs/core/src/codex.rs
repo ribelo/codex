@@ -113,8 +113,8 @@ use crate::shell;
 use crate::shell_snapshot::ShellSnapshot;
 use crate::skills::SkillInjections;
 use crate::skills::SkillLoadOutcome;
+use crate::skills::SkillsManager;
 use crate::skills::build_skill_injections;
-use crate::skills::load_skills;
 use crate::state::ActiveTurn;
 use crate::state::SessionServices;
 use crate::state::SessionState;
@@ -175,12 +175,13 @@ impl Codex {
         conversation_history: InitialHistory,
         session_source: SessionSource,
         mcp_connection_manager: Option<Arc<RwLock<McpConnectionManager>>>,
+        skills_manager: Arc<SkillsManager>,
     ) -> CodexResult<CodexSpawnOk> {
         let (tx_sub, rx_sub) = async_channel::bounded(SUBMISSION_CHANNEL_CAPACITY);
         let (tx_event, rx_event) = async_channel::unbounded();
 
         let loaded_skills = if config.features.enabled(Feature::Skills) {
-            Some(load_skills(&config))
+            Some(skills_manager.skills_for_cwd(&config.cwd))
         } else {
             None
         };
@@ -247,6 +248,7 @@ impl Codex {
             session_source_clone,
             skills_outcome.clone(),
             mcp_connection_manager,
+            skills_manager,
         )
         .await
         .map_err(|e| {
@@ -450,6 +452,15 @@ impl Session {
         per_turn_config
     }
 
+    pub(crate) async fn config(&self) -> Arc<Config> {
+        self.state
+            .lock()
+            .await
+            .session_configuration
+            .original_config_do_not_use
+            .clone()
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn make_turn_context(
         auth_manager: Option<Arc<AuthManager>>,
@@ -537,6 +548,7 @@ impl Session {
         session_source: SessionSource,
         skills: Option<SkillLoadOutcome>,
         mcp_connection_manager: Option<Arc<RwLock<McpConnectionManager>>>,
+        skills_manager: Arc<SkillsManager>,
     ) -> anyhow::Result<Arc<Self>> {
         debug!(
             "Configuring session: model={}; provider={:?}",
@@ -660,6 +672,7 @@ impl Session {
             subagent_sessions: Mutex::new(std::collections::HashMap::new()),
             delegation_registry: crate::delegation::DelegationRegistry::new(),
             skills: skills.clone(),
+            skills_manager: Arc::clone(&skills_manager),
         };
 
         let sess = Arc::new(Session {
@@ -1624,6 +1637,9 @@ async fn submission_loop(sess: Arc<Session>, config: Arc<Config>, rx_sub: Receiv
                 )
                 .await;
             }
+            Op::ListSkills { cwds } => {
+                handlers::list_skills(&sess, sub.id.clone(), cwds).await;
+            }
             Op::Shutdown => {
                 if handlers::shutdown(&sess, sub.id.clone()).await {
                     break;
@@ -2121,6 +2137,65 @@ mod handlers {
         sess.send_event_raw(event).await;
         true
     }
+
+    pub(super) async fn list_skills(
+        sess: &Arc<Session>,
+        submit_id: String,
+        cwds: Vec<std::path::PathBuf>,
+    ) {
+        use codex_protocol::protocol::ListSkillsResponseEvent;
+        use codex_protocol::protocol::SkillErrorInfo;
+        use codex_protocol::protocol::SkillInfo;
+        use codex_protocol::protocol::SkillsListEntry;
+
+        let skills_manager = &sess.services.skills_manager;
+
+        // Use provided cwds, or fall back to session cwd
+        let cwds_to_check: Vec<std::path::PathBuf> = if cwds.is_empty() {
+            vec![sess.config().await.cwd.clone()]
+        } else {
+            cwds
+        };
+
+        let mut entries = Vec::new();
+        for cwd in cwds_to_check {
+            let outcome = skills_manager.skills_for_cwd(&cwd);
+
+            // Convert SkillMetadata to SkillInfo
+            let skills: Vec<_> = outcome
+                .skills
+                .iter()
+                .map(|s| SkillInfo {
+                    name: s.name.clone(),
+                    description: s.description.clone(),
+                    path: s.path.clone(),
+                    scope: s.scope,
+                })
+                .collect();
+
+            // Convert errors
+            let errors: Vec<_> = outcome
+                .errors
+                .iter()
+                .map(|e| SkillErrorInfo {
+                    path: e.path.clone(),
+                    message: e.message.clone(),
+                })
+                .collect();
+
+            entries.push(SkillsListEntry {
+                cwd,
+                skills,
+                errors,
+            });
+        }
+
+        let event = Event {
+            id: submit_id,
+            msg: EventMsg::ListSkillsResponse(ListSkillsResponseEvent { skills: entries }),
+        };
+        sess.send_event_raw(event).await;
+    }
 }
 
 fn skill_load_outcome_for_client(
@@ -2134,6 +2209,7 @@ fn skill_load_outcome_for_client(
                 name: skill.name.clone(),
                 description: skill.description.clone(),
                 path: skill.path.clone(),
+                scope: skill.scope,
             })
             .collect(),
         errors: outcome
@@ -2461,6 +2537,7 @@ async fn try_run_turn(
     let mut needs_follow_up = false;
     let mut last_agent_message: Option<String> = None;
     let mut active_item: Option<TurnItem> = None;
+    let mut should_emit_turn_diff = false;
     let outcome: CodexResult<TurnRunResult> = loop {
         let event = match stream.next().or_cancel(&cancellation_token).await {
             Ok(event) => event,
@@ -2517,14 +2594,7 @@ async fn try_run_turn(
             } => {
                 sess.update_token_usage_info(&turn_context, token_usage.as_ref())
                     .await;
-                let unified_diff = {
-                    let mut tracker = turn_diff_tracker.lock().await;
-                    tracker.get_unified_diff()
-                };
-                if let Ok(Some(unified_diff)) = unified_diff {
-                    let msg = EventMsg::TurnDiff(TurnDiffEvent { unified_diff });
-                    sess.send_event(&turn_context, msg).await;
-                }
+                should_emit_turn_diff = true;
 
                 break Ok(TurnRunResult {
                     needs_follow_up,
@@ -2598,7 +2668,18 @@ async fn try_run_turn(
         }
     };
 
-    drain_in_flight(&mut in_flight, sess, turn_context).await?;
+    drain_in_flight(&mut in_flight, sess.clone(), turn_context.clone()).await?;
+
+    if should_emit_turn_diff {
+        let unified_diff = {
+            let mut tracker = turn_diff_tracker.lock().await;
+            tracker.get_unified_diff()
+        };
+        if let Ok(Some(unified_diff)) = unified_diff {
+            let msg = EventMsg::TurnDiff(TurnDiffEvent { unified_diff });
+            sess.send_event(&turn_context, msg).await;
+        }
+    }
 
     outcome
 }
@@ -3037,6 +3118,8 @@ mod tests {
         let otel_event_manager =
             otel_event_manager(conversation_id, config.as_ref(), &model_family);
 
+        let skills_manager = Arc::new(SkillsManager::new(codex_home.path().to_path_buf()));
+
         let state = SessionState::new(session_configuration.clone());
 
         let services = SessionServices {
@@ -3054,6 +3137,7 @@ mod tests {
             subagent_sessions: Mutex::new(std::collections::HashMap::new()),
             delegation_registry: crate::delegation::DelegationRegistry::new(),
             skills: None,
+            skills_manager,
         };
 
         let turn_context = Session::make_turn_context(
@@ -3125,6 +3209,8 @@ mod tests {
         let otel_event_manager =
             otel_event_manager(conversation_id, config.as_ref(), &model_family);
 
+        let skills_manager = Arc::new(SkillsManager::new(codex_home.path().to_path_buf()));
+
         let state = SessionState::new(session_configuration.clone());
 
         let services = SessionServices {
@@ -3142,6 +3228,7 @@ mod tests {
             subagent_sessions: Mutex::new(std::collections::HashMap::new()),
             delegation_registry: crate::delegation::DelegationRegistry::new(),
             skills: None,
+            skills_manager,
         };
 
         let turn_context = Arc::new(Session::make_turn_context(

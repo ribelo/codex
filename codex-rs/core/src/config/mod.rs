@@ -1,5 +1,6 @@
 use crate::auth::AuthCredentialsStoreMode;
 use crate::config::types::DEFAULT_OTEL_ENVIRONMENT;
+use crate::config::types::GhostSnapshotToml;
 use crate::config::types::History;
 use crate::config::types::McpServerConfig;
 use crate::config::types::Notice;
@@ -31,6 +32,7 @@ use crate::protocol::SandboxPolicy;
 use crate::util::resolve_path;
 use codex_app_server_protocol::Tools;
 use codex_app_server_protocol::UserSavedConfig;
+use codex_git::GhostSnapshotConfig;
 use codex_protocol::config_types::ForcedLoginMethod;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::config_types::SandboxMode;
@@ -214,6 +216,9 @@ pub struct Config {
 
     /// Settings that govern if and what will be written to `~/.codex/history.jsonl`.
     pub history: History,
+
+    /// Configuration for ghost snapshots.
+    pub ghost_snapshot: GhostSnapshotConfig,
 
     /// Optional URI-based file opener. If set, citations to files in the model
     /// output will be hyperlinked using the specified URI scheme.
@@ -646,6 +651,10 @@ pub struct ConfigToml {
     #[serde(default)]
     pub history: Option<History>,
 
+    /// Configuration for ghost snapshots.
+    #[serde(default)]
+    pub ghost_snapshot: Option<GhostSnapshotToml>,
+
     /// Optional URI-based file opener. If set, citations to files in the model
     /// output will be hyperlinked using the specified URI scheme.
     pub file_opener: Option<UriBasedFileOpener>,
@@ -1071,6 +1080,18 @@ impl Config {
 
         let history = cfg.history.unwrap_or_default();
 
+        let ghost_snapshot_toml = cfg.ghost_snapshot.unwrap_or_default();
+        let default_ghost_snapshot = GhostSnapshotConfig::default();
+        let ghost_snapshot = GhostSnapshotConfig {
+            ignore_large_untracked_files: ghost_snapshot_toml
+                .ignore_large_untracked_files
+                .or(default_ghost_snapshot.ignore_large_untracked_files),
+            ignore_large_untracked_dirs: ghost_snapshot_toml
+                .ignore_large_untracked_dirs
+                .or(default_ghost_snapshot.ignore_large_untracked_dirs),
+            disable_warnings: ghost_snapshot_toml.disable_warnings,
+        };
+
         let include_apply_patch_tool_flag = features.enabled(Feature::ApplyPatchFreeform);
         let tools_web_search_request = features.enabled(Feature::WebSearchRequest);
         let use_experimental_unified_exec_tool = features.enabled(Feature::UnifiedExec);
@@ -1192,6 +1213,7 @@ impl Config {
             tool_output_token_limit: cfg.tool_output_token_limit,
             codex_home,
             history,
+            ghost_snapshot,
             file_opener: cfg.file_opener.unwrap_or(UriBasedFileOpener::VsCode),
             codex_linux_sandbox_exe,
 
@@ -2990,6 +3012,7 @@ model_verbosity = "high"
                 animations: true,
                 show_tooltips: true,
                 otel: OtelConfig::default(),
+                ghost_snapshot: GhostSnapshotConfig::default(),
             },
             o3_profile_config
         );
@@ -3067,6 +3090,7 @@ model_verbosity = "high"
             animations: true,
             show_tooltips: true,
             otel: OtelConfig::default(),
+            ghost_snapshot: GhostSnapshotConfig::default(),
         };
 
         assert_eq!(expected_gpt3_profile_config, gpt3_profile_config);
@@ -3159,6 +3183,7 @@ model_verbosity = "high"
             animations: true,
             show_tooltips: true,
             otel: OtelConfig::default(),
+            ghost_snapshot: GhostSnapshotConfig::default(),
         };
 
         assert_eq!(expected_zdr_profile_config, zdr_profile_config);
@@ -3237,6 +3262,7 @@ model_verbosity = "high"
             animations: true,
             show_tooltips: true,
             otel: OtelConfig::default(),
+            ghost_snapshot: GhostSnapshotConfig::default(),
         };
 
         assert_eq!(expected_gpt5_profile_config, gpt5_profile_config);

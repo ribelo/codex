@@ -246,41 +246,192 @@ For example: `bd create --help` shows `--parent`, `--deps`, `--assignee`, etc.
 
 For more details, see README.md and QUICKSTART.md.
 
-## Fork Maintenance & Synchronization
 
-This repository is a long-lived fork of `openai/codex` with significant custom enhancements. Because the upstream is very active, we prioritize maintainability over a linear history.
+## Fork Philosophy
 
-### Philosophy
-- **Canonical Upstream**: `upstream/main` is the source of truth.
-- **Merge Strategy**: We use `git merge upstream/main` to synchronize. This minimizes conflict resolution effort compared to rebasing.
-- **Feature Isolation**: Custom enhancements should be kept in separate feature branches where possible, to keep the main branch reasonably clean for merges.
+This is a **personal fork** of `openai/codex`. It exists to:
+- Remove complexity we don't need
+- Add features upstream doesn't have (OpenRouter, Anthropic, Gemini providers)
+- Keep the codebase lean and understandable
 
-### Synchronization Workflow
-1.  **Fetch Upstream**: Ensure you have the latest upstream changes (`git fetch upstream`).
-2.  **Merge Upstream**: Run `git merge upstream/main`.
-    - This resolves conflicts once for the entire batch of changes, rather than per-commit.
-    - If you encounter repeated conflicts across merges, enable `git config --global rerere.enabled true`.
-3.  **Conflict Resolution**:
-    - Default to the upstream implementation unless it breaks a specific feature of this fork.
-    - Be careful not to accidentally revert our custom features (e.g., TUI, specific backends).
+We will **never contribute back** to upstream. We don't care about staying "close" to upstream. We only want to **selectively port bug fixes and features** that are useful to us.
 
-### Handling Fork-Specific Changes
-- Avoid committing directly to the synchronization branch if possible.
-- Use feature branches for new development.
-- If a specific feature needs to be contributed back upstream, cherry-pick those specific commits to a clean branch based on `upstream/main`.
+### Why not merge or cherry-pick?
 
+- **Merge is a nightmare**: Upstream adds complexity we deliberately removed. Every merge tries to reintroduce abstractions, feature flags, and code we don't want.
+- **Cherry-pick rarely works**: Our codebase has diverged structurally. Cherry-picks conflict constantly because the surrounding code is different.
+- **Manual porting is the only sane option**: Read what upstream changed, understand it, adapt it to our structure.
+
+## Porting Changes from Upstream
+
+**IMPORTANT**: When porting features from upstream, always port the associated tests as well. This includes new test files, new test functions, and test helper utilities. Features without tests are incomplete ports.
+
+
+When the user asks to sync with upstream or port changes, follow this workflow:
+
+### Step 1: Find the merge-base
+
+```bash
+git fetch upstream
+merge_base=$(git merge-base HEAD upstream/main)
+echo "Last common point: $merge_base"
+git rev-list --count $merge_base..upstream/main  # How many commits behind
+```
+
+### Step 2: List upstream commits since merge-base
+
+```bash
+# All commits
+git log --oneline $merge_base..upstream/main --reverse
+
+# Filter to likely-interesting (skip deps, CI, docs, Windows)
+git log --oneline $merge_base..upstream/main --reverse | \
+  grep -v "chore(deps)" | \
+  grep -v "chore(ci)" | \
+  grep -v "windows" -i | \
+  grep -v "docs:" | \
+  grep -iE "(fix|feat)"
+```
+
+### Step 3: See what files upstream changed (that we also have)
+
+```bash
+# Files upstream modified that exist in our fork
+git diff --name-only $merge_base..upstream/main | grep "codex-rs/core/src" | while read f; do
+  if git cat-file -e HEAD:"$f" 2>/dev/null; then
+    echo "$f"
+  fi
+done
+```
+
+### Step 4: View upstream's changes to a specific file
+
+```bash
+# Show what upstream changed (not the diff to our version)
+cd /path/to/repo
+git diff $merge_base upstream/main -- codex-rs/core/src/codex.rs | head -200
+```
+
+### Step 5: View a specific commit
+
+```bash
+git show <sha> --stat                    # Overview
+git show <sha> -- path/to/file.rs        # Just the relevant file
+```
+
+### Step 6: Port the change manually
+
+Read the upstream diff, understand what it does, and apply the same logic to our codebase. Don't copy-paste blindly - our structure may be different.
+
+Commit with a reference:
+```bash
+git commit -m "fix: description (ported from upstream abc1234)"
+```
+
+## What to Port vs Skip
+
+### Port (HIGH priority)
+- Bug fixes in core logic (tool handling, streaming, truncation)
+- Race condition fixes
+- TUI fixes (if we use that component)
+- Security fixes
+
+### Port (MEDIUM priority - ask user)
+- New features that seem useful
+- Performance improvements
+- Test improvements for code we have
+
+### Skip (we removed this intentionally)
+- `execpolicy-legacy` - we removed legacy execpolicy
+- `ollama`/`lmstudio` crates - we have our own provider system
+- `AbsolutePathBuf` refactors - structural change we don't need
+- Config loading rewrites (`config/service.rs`, `ConfigLayerName`) - unnecessary complexity
+- Feature flag additions for things we always enable
+- `unified_exec` complexity (they keep adding/reverting it)
+- Windows-specific code (unless user asks)
+- Elevated sandbox complexity
+
+### Skip (noise)
+- Dependency bumps (`chore(deps)`)
+- CI changes
+- Documentation-only changes
+- Snapshot updates for code we don't have
 
 ## Fork Simplifications
 
-This fork deliberately simplifies complexity from upstream. When merging, be aware of these differences:
+This fork deliberately removes complexity from upstream:
 
-### Simplified Features
 - **Parallel instructions**: Always enabled by default (via `PARALLEL_INSTRUCTIONS` constant appended to base instructions). No `Feature::ParallelToolCalls` toggle or `parallel_tool_calls` field in `Prompt` struct needed.
 - **Shell tools**: We use `ShellCommand` as the default/only shell tool. Do not add `ShellHandler`, `ToolPayload::LocalShell`, `ShellToolCallParams`, or `ConfigShellToolType::Local`.
 - **Model info**: `openai_model_info.rs` was removed. Model info (context_window, auto_compact) is handled by `ModelFamily` struct directly.
+- **Providers**: We have our own provider system (`ProviderKind`) with OpenRouter, Anthropic, Gemini support. Don't port upstream's provider abstractions.
+- **Config loading**: We use simpler config loading. Don't port `config/service.rs` or the `ConfigLayerName` refactors.
 
-### Philosophy
-- **Complexity is the enemy**: Prefer simpler code over feature-complete code.
-- **Default-on over toggles**: If a feature should always be on, don't add a toggle for it.
-- **Legacy code removal**: If upstream adds abstractions we don't need, don't merge them.
-- **When in doubt, simplify**: If a feature isn't actively used in our fork, remove it during merge.
+## Fork-Specific Features (NEVER remove)
+
+These features exist only in our fork:
+- **OpenRouter provider**: Full OpenRouter support with routing configuration
+- **Anthropic provider**: Direct Anthropic API support
+- **Gemini provider**: Direct Gemini API support
+- **Antigravity provider**: Custom provider support
+- **Subagent tree rendering**: TUI shows subagent hierarchy
+- **Provider extensions**: Extra fields in `ModelProviderInfo` for non-OpenAI providers
+- **Simplified parallel tool handling**: Always-on, no feature flag
+
+## Filtering Out Deleted Code
+
+When comparing with upstream, you'll see diffs for files/code we intentionally deleted. To see only changes in files that **exist in our fork**:
+
+### Files upstream modified that we still have
+
+```bash
+merge_base=$(git merge-base HEAD upstream/main)
+
+# List files that: 1) upstream changed, 2) still exist in our fork
+git diff --name-only $merge_base..upstream/main | while read f; do
+  if git cat-file -e HEAD:"$f" 2>/dev/null; then
+    echo "$f"
+  fi
+done
+```
+
+### View upstream changes only for files we have
+
+```bash
+merge_base=$(git merge-base HEAD upstream/main)
+
+# For a specific directory (e.g., core/src)
+git diff --name-only $merge_base..upstream/main | grep "codex-rs/core/src" | while read f; do
+  if git cat-file -e HEAD:"$f" 2>/dev/null; then
+    echo "=== $f ==="
+    git diff $merge_base upstream/main -- "$f" | head -50
+  fi
+done
+```
+
+### New files in upstream (that we don't have)
+
+These are files upstream added that we might want to port:
+
+```bash
+git diff HEAD upstream/main --name-status | grep "^A" | grep "codex-rs/"
+```
+
+Filter out noise (tests, fixtures, snapshots):
+
+```bash
+git diff HEAD upstream/main --name-status | grep "^A" | grep "codex-rs/" | \
+  grep -v "tests/" | grep -v "\.snap" | grep -v "fixtures/"
+```
+
+### Ignore files we deleted on purpose
+
+When upstream shows changes to files like these, **skip them**:
+- `codex-rs/core/src/anthropic_messages.rs` - we have our own provider
+- `codex-rs/core/src/config/provider_profile.rs` - removed
+- `codex-rs/core/src/delegation.rs` - we have our own delegation
+- `codex-rs/core/src/custom_commands.rs` - removed
+- `codex-rs/ollama/` - we don't use this
+- `codex-rs/lmstudio/` - we don't use this
+- `codex-rs/execpolicy-legacy/` - we removed legacy execpolicy
+- Any `*_test.rs` files for code we don't have

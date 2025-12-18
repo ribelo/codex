@@ -235,6 +235,14 @@ pub enum Op {
 
     /// Request the list of available models.
     ListModels,
+
+    /// Request the list of skills for the provided `cwd` values or the session default.
+    ListSkills {
+        /// Working directories to scope repo skills discovery.
+        /// When empty, the session default working directory is used.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        cwds: Vec<PathBuf>,
+    },
 }
 
 /// Determines the conditions under which the user is consulted to approve
@@ -615,6 +623,9 @@ pub enum EventMsg {
     /// Wrapper event for subagent activity. Contains a nested event from a
     /// delegated task along with the parent tool call context.
     SubagentEvent(SubagentEventPayload),
+
+    /// List of skills available to the agent.
+    ListSkillsResponse(ListSkillsResponseEvent),
 }
 
 /// Codex errors that we expose to clients.
@@ -1725,11 +1736,34 @@ pub struct ListCommandsResponseEvent {
     pub commands: Vec<CustomCommand>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum SkillScope {
+    User,
+    Repo,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
 pub struct SkillInfo {
     pub name: String,
     pub description: String,
     pub path: PathBuf,
+    pub scope: SkillScope,
+}
+
+/// Entry in skills list response, one per requested cwd.
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
+pub struct SkillsListEntry {
+    pub cwd: PathBuf,
+    pub skills: Vec<SkillInfo>,
+    pub errors: Vec<SkillErrorInfo>,
+}
+
+/// Response payload for Op::ListSkills.
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
+pub struct ListSkillsResponseEvent {
+    pub skills: Vec<SkillsListEntry>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]

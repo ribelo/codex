@@ -251,6 +251,20 @@ impl UriBasedFileOpener {
     }
 }
 
+/// Settings for ghost snapshots.
+#[derive(Deserialize, Debug, Clone, PartialEq, Default)]
+pub struct GhostSnapshotToml {
+    /// Files larger than this size (in bytes) will be treated as untracked.
+    pub ignore_large_untracked_files: Option<i64>,
+
+    /// Directories with more than this number of untracked files will be treated as untracked.
+    pub ignore_large_untracked_dirs: Option<i64>,
+
+    /// If true, warnings about large untracked files/dirs will be suppressed.
+    #[serde(default)]
+    pub disable_warnings: bool,
+}
+
 /// Settings that govern if and what will be written to `~/.codex/history.jsonl`.
 #[derive(Deserialize, Debug, Clone, PartialEq, Default)]
 pub struct History {
