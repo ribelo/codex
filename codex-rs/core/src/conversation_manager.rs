@@ -1,4 +1,5 @@
 use crate::AuthManager;
+#[cfg(any(test, feature = "test-support"))]
 use crate::CodexAuth;
 #[cfg(any(test, feature = "test-support"))]
 use crate::ModelProviderInfo;
@@ -14,6 +15,7 @@ use crate::protocol::Event;
 use crate::protocol::EventMsg;
 use crate::protocol::SessionConfiguredEvent;
 use crate::rollout::RolloutRecorder;
+use crate::skills::SkillsManager;
 use codex_protocol::ConversationId;
 use codex_protocol::items::TurnItem;
 use codex_protocol::models::ResponseItem;
@@ -44,23 +46,33 @@ pub struct ConversationManager {
     models_manager: Arc<ModelsManager>,
     session_source: SessionSource,
     mcp_connection_manager: Arc<RwLock<McpConnectionManager>>,
+    skills_manager: Arc<SkillsManager>,
 }
 
 impl ConversationManager {
-    pub fn new(auth_manager: Arc<AuthManager>, session_source: SessionSource) -> Self {
+    pub fn new(
+        auth_manager: Arc<AuthManager>,
+        session_source: SessionSource,
+        codex_home: PathBuf,
+    ) -> Self {
         Self {
             conversations: Arc::new(RwLock::new(HashMap::new())),
             auth_manager: auth_manager.clone(),
             session_source,
             models_manager: Arc::new(ModelsManager::new(auth_manager)),
             mcp_connection_manager: Arc::new(RwLock::new(McpConnectionManager::default())),
+            skills_manager: Arc::new(SkillsManager::new(codex_home)),
         }
     }
 
     #[cfg(any(test, feature = "test-support"))]
     /// Construct with a dummy AuthManager containing the provided CodexAuth.
     /// Used for integration tests: should not be used by ordinary business logic.
-    pub fn with_models_provider(auth: CodexAuth, provider: ModelProviderInfo) -> Self {
+    pub fn with_models_provider(
+        auth: CodexAuth,
+        provider: ModelProviderInfo,
+        codex_home: PathBuf,
+    ) -> Self {
         let auth_manager = crate::AuthManager::from_auth_for_testing(auth);
         Self {
             conversations: Arc::new(RwLock::new(HashMap::new())),
@@ -68,11 +80,16 @@ impl ConversationManager {
             session_source: SessionSource::Exec,
             models_manager: Arc::new(ModelsManager::with_provider(auth_manager, provider)),
             mcp_connection_manager: Arc::new(RwLock::new(McpConnectionManager::default())),
+            skills_manager: Arc::new(SkillsManager::new(codex_home)),
         }
     }
 
     pub fn session_source(&self) -> SessionSource {
         self.session_source.clone()
+    }
+
+    pub fn skills_manager(&self) -> Arc<SkillsManager> {
+        Arc::clone(&self.skills_manager)
     }
 
     pub async fn new_conversation(&self, config: Config) -> CodexResult<NewConversation> {
@@ -100,6 +117,7 @@ impl ConversationManager {
             InitialHistory::New,
             self.session_source.clone(),
             Some(self.mcp_connection_manager.clone()),
+            self.skills_manager.clone(),
         )
         .await?;
         self.finalize_spawn(codex, conversation_id).await
@@ -178,6 +196,7 @@ impl ConversationManager {
             initial_history,
             self.session_source.clone(),
             Some(self.mcp_connection_manager.clone()),
+            self.skills_manager.clone(),
         )
         .await?;
         self.finalize_spawn(codex, conversation_id).await
@@ -220,6 +239,7 @@ impl ConversationManager {
             history,
             self.session_source.clone(),
             Some(self.mcp_connection_manager.clone()),
+            self.skills_manager.clone(),
         )
         .await?;
 

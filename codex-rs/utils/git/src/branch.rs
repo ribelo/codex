@@ -147,6 +147,7 @@ mod tests {
     fn init_test_repo(repo_path: &Path) {
         run_git_in(repo_path, &["init", "--initial-branch=main"]);
         run_git_in(repo_path, &["config", "core.autocrlf", "false"]);
+        run_git_in(repo_path, &["config", "commit.gpgsign", "false"]);
     }
 
     fn commit(repo_path: &Path, message: &str) {
@@ -204,6 +205,7 @@ mod tests {
         run_git_in(&remote, &["init", "--bare"]);
         run_git_in(&repo, &["init", "--initial-branch=main"]);
         run_git_in(&repo, &["config", "core.autocrlf", "false"]);
+        run_git_in(&repo, &["config", "commit.gpgsign", "false"]);
 
         std::fs::write(repo.join("base.txt"), "base\n")?;
         run_git_in(&repo, &["add", "base.txt"]);

@@ -3,6 +3,7 @@ use codex_core::CodexAuth;
 use codex_core::ConversationManager;
 use codex_core::built_in_model_providers;
 use codex_protocol::openai_models::ModelPreset;
+use codex_protocol::openai_models::ModelUpgrade;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::openai_models::ReasoningEffortPreset;
 use core_test_support::load_default_config_for_test;
@@ -16,6 +17,7 @@ async fn list_models_returns_api_key_models() -> Result<()> {
     let manager = ConversationManager::with_models_provider(
         CodexAuth::from_api_key("sk-test"),
         built_in_model_providers()["openai"].clone(),
+        codex_home.path().to_path_buf(),
     );
     let models = manager.list_models(&config).await;
 
@@ -32,6 +34,7 @@ async fn list_models_returns_chatgpt_models() -> Result<()> {
     let manager = ConversationManager::with_models_provider(
         CodexAuth::create_dummy_chatgpt_auth_for_testing(),
         built_in_model_providers()["openai"].clone(),
+        codex_home.path().to_path_buf(),
     );
     let models = manager.list_models(&config).await;
 
@@ -42,8 +45,11 @@ async fn list_models_returns_chatgpt_models() -> Result<()> {
 }
 
 fn expected_models_for_api_key() -> Vec<ModelPreset> {
+    let mut max = gpt_5_1_codex_max();
+    max.is_default = true;
+
     vec![
-        gpt_5_1_codex_max(),
+        max,
         gpt_5_1_codex(),
         gpt_5_1_codex_mini(),
         gpt_5_2(),
@@ -53,12 +59,45 @@ fn expected_models_for_api_key() -> Vec<ModelPreset> {
 
 fn expected_models_for_chatgpt() -> Vec<ModelPreset> {
     vec![
+        caribou(),
         gpt_5_1_codex_max(),
         gpt_5_1_codex(),
         gpt_5_1_codex_mini(),
         gpt_5_2(),
         gpt_5_1(),
     ]
+}
+
+fn caribou() -> ModelPreset {
+    ModelPreset {
+        id: "caribou".to_string(),
+        model: "caribou".to_string(),
+        display_name: "caribou".to_string(),
+        description: "Latest Codex-optimized flagship for deep and fast reasoning.".to_string(),
+        default_reasoning_effort: ReasoningEffort::Medium,
+        supported_reasoning_efforts: vec![
+            effort(
+                ReasoningEffort::Low,
+                "Fast responses with lighter reasoning",
+            ),
+            effort(
+                ReasoningEffort::Medium,
+                "Balances speed and reasoning depth for everyday tasks",
+            ),
+            effort(
+                ReasoningEffort::High,
+                "Greater reasoning depth for complex problems",
+            ),
+            effort(
+                ReasoningEffort::XHigh,
+                "Extra high reasoning depth for complex problems",
+            ),
+        ],
+        is_default: true,
+        upgrade: None,
+        show_in_picker: true,
+        supported_in_api: false,
+    }
 }
 
 fn gpt_5_1_codex_max() -> ModelPreset {
@@ -86,9 +125,14 @@ fn gpt_5_1_codex_max() -> ModelPreset {
                 "Extra high reasoning depth for complex problems",
             ),
         ],
-        is_default: true,
-        upgrade: None,
+        is_default: false,
+        upgrade: Some(ModelUpgrade {
+            id: "caribou".to_string(),
+            reasoning_effort_mapping: None,
+            migration_config_key: "hide_gpt-5.1-codex-max_migration_prompt".to_string(),
+        }),
         show_in_picker: true,
+        supported_in_api: true,
     }
 }
 
@@ -114,8 +158,13 @@ fn gpt_5_1_codex() -> ModelPreset {
             ),
         ],
         is_default: false,
-        upgrade: None,
+        upgrade: Some(ModelUpgrade {
+            id: "caribou".to_string(),
+            reasoning_effort_mapping: None,
+            migration_config_key: "hide_gpt-5.1-codex-max_migration_prompt".to_string(),
+        }),
         show_in_picker: true,
+        supported_in_api: true,
     }
 }
 
@@ -139,6 +188,7 @@ fn gpt_5_1_codex_mini() -> ModelPreset {
         is_default: false,
         upgrade: None,
         show_in_picker: true,
+        supported_in_api: true,
     }
 }
 
@@ -170,8 +220,13 @@ fn gpt_5_2() -> ModelPreset {
             ),
         ],
         is_default: false,
-        upgrade: None,
+        upgrade: Some(ModelUpgrade {
+            id: "caribou".to_string(),
+            reasoning_effort_mapping: None,
+            migration_config_key: "hide_gpt5_1_migration_prompt".to_string(),
+        }),
         show_in_picker: true,
+        supported_in_api: true,
     }
 }
 
@@ -197,8 +252,13 @@ fn gpt_5_1() -> ModelPreset {
             ),
         ],
         is_default: false,
-        upgrade: None,
+        upgrade: Some(ModelUpgrade {
+            id: "caribou".to_string(),
+            reasoning_effort_mapping: None,
+            migration_config_key: "hide_gpt5_1_migration_prompt".to_string(),
+        }),
         show_in_picker: true,
+        supported_in_api: true,
     }
 }
 

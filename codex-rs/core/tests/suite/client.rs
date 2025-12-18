@@ -261,6 +261,7 @@ async fn resume_includes_initial_messages_and_sends_prior_items() {
     let conversation_manager = ConversationManager::with_models_provider(
         CodexAuth::from_api_key("Test API Key"),
         config.model_provider.clone(),
+        codex_home.path().to_path_buf(),
     );
     let auth_manager =
         codex_core::AuthManager::from_auth_for_testing(CodexAuth::from_api_key("Test API Key"));
@@ -347,6 +348,7 @@ async fn includes_conversation_id_and_model_headers_in_request() {
     let conversation_manager = ConversationManager::with_models_provider(
         CodexAuth::from_api_key("Test API Key"),
         config.model_provider.clone(),
+        codex_home.path().to_path_buf(),
     );
     let NewConversation {
         conversation: codex,
@@ -408,6 +410,7 @@ async fn includes_base_instructions_override_in_request() {
     let conversation_manager = ConversationManager::with_models_provider(
         CodexAuth::from_api_key("Test API Key"),
         config.model_provider.clone(),
+        codex_home.path().to_path_buf(),
     );
     let codex = conversation_manager
         .new_conversation(config)
@@ -468,6 +471,7 @@ async fn chatgpt_auth_sends_correct_request() {
     let conversation_manager = ConversationManager::with_models_provider(
         create_dummy_codex_auth(),
         config.model_provider.clone(),
+        codex_home.path().to_path_buf(),
     );
     let NewConversation {
         conversation: codex,
@@ -563,7 +567,11 @@ async fn prefers_apikey_when_config_prefers_apikey_even_with_chatgpt_tokens() {
             Ok(None) => panic!("No CodexAuth found in codex_home"),
             Err(e) => panic!("Failed to load CodexAuth: {e}"),
         };
-    let conversation_manager = ConversationManager::new(auth_manager, SessionSource::Exec);
+    let conversation_manager = ConversationManager::new(
+        auth_manager,
+        SessionSource::Exec,
+        codex_home.path().to_path_buf(),
+    );
     let NewConversation {
         conversation: codex,
         ..
@@ -604,6 +612,7 @@ async fn includes_user_instructions_message_in_request() {
     let conversation_manager = ConversationManager::with_models_provider(
         CodexAuth::from_api_key("Test API Key"),
         config.model_provider.clone(),
+        codex_home.path().to_path_buf(),
     );
     let codex = conversation_manager
         .new_conversation(config)
@@ -673,6 +682,7 @@ async fn skills_append_to_instructions_when_feature_enabled() {
     let conversation_manager = ConversationManager::with_models_provider(
         CodexAuth::from_api_key("Test API Key"),
         config.model_provider.clone(),
+        codex_home.path().to_path_buf(),
     );
     let codex = conversation_manager
         .new_conversation(config)
@@ -1029,6 +1039,7 @@ async fn includes_developer_instructions_message_in_request() {
     let conversation_manager = ConversationManager::with_models_provider(
         CodexAuth::from_api_key("Test API Key"),
         config.model_provider.clone(),
+        codex_home.path().to_path_buf(),
     );
     let codex = conversation_manager
         .new_conversation(config)
@@ -1246,6 +1257,7 @@ async fn token_count_includes_rate_limits_snapshot() {
     let conversation_manager = ConversationManager::with_models_provider(
         CodexAuth::from_api_key("test"),
         config.model_provider.clone(),
+        home.path().to_path_buf(),
     );
     let codex = conversation_manager
         .new_conversation(config)
@@ -1601,6 +1613,7 @@ async fn azure_overrides_assign_properties_used_for_responses_url() {
     let conversation_manager = ConversationManager::with_models_provider(
         create_dummy_codex_auth(),
         config.model_provider.clone(),
+        codex_home.path().to_path_buf(),
     );
     let codex = conversation_manager
         .new_conversation(config)
@@ -1683,6 +1696,7 @@ async fn env_var_overrides_loaded_auth() {
     let conversation_manager = ConversationManager::with_models_provider(
         create_dummy_codex_auth(),
         config.model_provider.clone(),
+        codex_home.path().to_path_buf(),
     );
     let codex = conversation_manager
         .new_conversation(config)
@@ -1764,6 +1778,7 @@ async fn history_dedupes_streamed_and_final_messages_across_turns() {
     let conversation_manager = ConversationManager::with_models_provider(
         CodexAuth::from_api_key("Test API Key"),
         config.model_provider.clone(),
+        codex_home.path().to_path_buf(),
     );
     let NewConversation {
         conversation: codex,

@@ -22,3 +22,5 @@ walkdir = { workspace = true }
 wiremock = { workspace = true }
 shlex = { workspace = true }
 which = { workspace = true }
+pretty_assertions = { workspace = true }
+reqwest = { workspace = true }

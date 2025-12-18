@@ -55,6 +55,7 @@ async fn emits_warning_when_resumed_model_differs() {
     let conversation_manager = ConversationManager::with_models_provider(
         CodexAuth::from_api_key("test"),
         config.model_provider.clone(),
+        home.path().to_path_buf(),
     );
     let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("test"));
 

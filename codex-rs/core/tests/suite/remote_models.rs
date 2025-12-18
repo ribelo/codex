@@ -337,7 +337,11 @@ where
 
     mutate_config(&mut config);
 
-    let conversation_manager = Arc::new(ConversationManager::with_models_provider(auth, provider));
+    let conversation_manager = Arc::new(ConversationManager::with_models_provider(
+        auth,
+        provider,
+        home.path().to_path_buf(),
+    ));
 
     let new_conversation = conversation_manager
         .new_conversation(config.clone())

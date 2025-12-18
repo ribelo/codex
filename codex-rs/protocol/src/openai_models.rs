@@ -73,6 +73,8 @@ pub struct ModelPreset {
     pub upgrade: Option<ModelUpgrade>,
     /// Whether this preset should appear in the picker UI.
     pub show_in_picker: bool,
+    /// whether this model is supported in the api
+    pub supported_in_api: bool,
 }
 
 /// Visibility of a model in the picker or APIs.
@@ -169,6 +171,7 @@ impl From<ModelInfo> for ModelPreset {
                 migration_config_key: info.slug.clone(),
             }),
             show_in_picker: info.visibility == ModelVisibility::List,
+            supported_in_api: info.supported_in_api,
         }
     }
 }

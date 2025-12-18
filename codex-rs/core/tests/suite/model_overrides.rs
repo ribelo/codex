@@ -25,6 +25,7 @@ async fn override_turn_context_does_not_persist_when_config_exists() {
     let conversation_manager = ConversationManager::with_models_provider(
         CodexAuth::from_api_key("Test API Key"),
         config.model_provider.clone(),
+        codex_home.path().to_path_buf(),
     );
     let codex = conversation_manager
         .new_conversation(config)
@@ -67,6 +68,7 @@ async fn override_turn_context_does_not_create_config_file() {
     let conversation_manager = ConversationManager::with_models_provider(
         CodexAuth::from_api_key("Test API Key"),
         config.model_provider.clone(),
+        codex_home.path().to_path_buf(),
     );
     let codex = conversation_manager
         .new_conversation(config)

@@ -45,6 +45,7 @@ async fn user_shell_cmd_ls_and_cat_in_temp_dir() {
     let conversation_manager = ConversationManager::with_models_provider(
         codex_core::CodexAuth::from_api_key("dummy"),
         config.model_provider.clone(),
+        codex_home.path().to_path_buf(),
     );
     let NewConversation {
         conversation: codex,
@@ -104,6 +105,7 @@ async fn user_shell_cmd_can_be_interrupted() {
     let conversation_manager = ConversationManager::with_models_provider(
         codex_core::CodexAuth::from_api_key("dummy"),
         config.model_provider.clone(),
+        codex_home.path().to_path_buf(),
     );
     let NewConversation {
         conversation: codex,

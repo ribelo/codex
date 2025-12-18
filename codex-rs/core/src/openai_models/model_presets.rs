@@ -1,5 +1,6 @@
 use codex_app_server_protocol::AuthMode;
 use codex_protocol::openai_models::ModelPreset;
+use codex_protocol::openai_models::ModelUpgrade;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::openai_models::ReasoningEffortPreset;
 use once_cell::sync::Lazy;
@@ -10,6 +11,35 @@ pub const HIDE_GPT_5_1_CODEX_MAX_MIGRATION_PROMPT_CONFIG: &str =
 
 static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
     vec![
+        ModelPreset {
+            id: "caribou".to_string(),
+            model: "caribou".to_string(),
+            display_name: "caribou".to_string(),
+            description: "Latest Codex-optimized flagship for deep and fast reasoning.".to_string(),
+            default_reasoning_effort: ReasoningEffort::Medium,
+            supported_reasoning_efforts: vec![
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::Low,
+                    description: "Fast responses with lighter reasoning".to_string(),
+                },
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::Medium,
+                    description: "Balances speed and reasoning depth for everyday tasks".to_string(),
+                },
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::High,
+                    description: "Greater reasoning depth for complex problems".to_string(),
+                },
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::XHigh,
+                    description: "Extra high reasoning depth for complex problems".to_string(),
+                },
+            ],
+            is_default: true,
+            upgrade: None,
+            show_in_picker: true,
+            supported_in_api: false,
+        },
         ModelPreset {
             id: "gpt-5.1-codex-max".to_string(),
             model: "gpt-5.1-codex-max".to_string(),
@@ -34,9 +64,14 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
                     description: "Extra high reasoning depth for complex problems".to_string(),
                 },
             ],
-            is_default: true,
-            upgrade: None,
+            is_default: false,
+            upgrade: Some(ModelUpgrade {
+                id: "caribou".to_string(),
+                reasoning_effort_mapping: None,
+                migration_config_key: HIDE_GPT_5_1_CODEX_MAX_MIGRATION_PROMPT_CONFIG.to_string(),
+            }),
             show_in_picker: true,
+            supported_in_api: true,
         },
         ModelPreset {
             id: "gpt-5.1-codex".to_string(),
@@ -60,8 +95,13 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
                 },
             ],
             is_default: false,
-            upgrade: None,
+            upgrade: Some(ModelUpgrade {
+                id: "caribou".to_string(),
+                reasoning_effort_mapping: None,
+                migration_config_key: HIDE_GPT_5_1_CODEX_MAX_MIGRATION_PROMPT_CONFIG.to_string(),
+            }),
             show_in_picker: true,
+            supported_in_api: true,
         },
         ModelPreset {
             id: "gpt-5.1-codex-mini".to_string(),
@@ -83,6 +123,7 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
             is_default: false,
             upgrade: None,
             show_in_picker: true,
+            supported_in_api: true,
         },
         ModelPreset {
             id: "gpt-5.2".to_string(),
@@ -109,8 +150,13 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
                 },
             ],
             is_default: false,
-            upgrade: None,
+            upgrade: Some(ModelUpgrade {
+                id: "caribou".to_string(),
+                reasoning_effort_mapping: None,
+                migration_config_key: HIDE_GPT5_1_MIGRATION_PROMPT_CONFIG.to_string(),
+            }),
             show_in_picker: true,
+            supported_in_api: true,
         },
         ModelPreset {
             id: "gpt-5.1".to_string(),
@@ -133,18 +179,31 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
                 },
             ],
             is_default: false,
-            upgrade: None,
+            upgrade: Some(ModelUpgrade {
+                id: "caribou".to_string(),
+                reasoning_effort_mapping: None,
+                migration_config_key: HIDE_GPT5_1_MIGRATION_PROMPT_CONFIG.to_string(),
+            }),
             show_in_picker: true,
+            supported_in_api: true,
         },
     ]
 });
 
-pub(crate) fn builtin_model_presets(_auth_mode: Option<AuthMode>) -> Vec<ModelPreset> {
-    PRESETS
+pub(crate) fn builtin_model_presets(auth_mode: Option<AuthMode>) -> Vec<ModelPreset> {
+    let mut presets: Vec<ModelPreset> = PRESETS
         .iter()
         .filter(|preset| preset.show_in_picker)
         .cloned()
-        .collect()
+        .collect();
+
+    if let Some(AuthMode::ApiKey) = auth_mode {
+        for preset in &mut presets {
+            preset.is_default = preset.id == "gpt-5.1-codex-max";
+        }
+    }
+
+    presets
 }
 
 // todo(aibrahim): remove this once we migrate tests

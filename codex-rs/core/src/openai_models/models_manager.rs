@@ -28,7 +28,8 @@ use crate::openai_models::model_presets::builtin_model_presets;
 
 const MODEL_CACHE_FILE: &str = "models_cache.json";
 const DEFAULT_MODEL_CACHE_TTL: Duration = Duration::from_secs(300);
-const OPENAI_DEFAULT_MODEL: &str = "gpt-5.1-codex-max";
+const OPENAI_DEFAULT_API_MODEL: &str = "gpt-5.1-codex-max";
+const OPENAI_DEFAULT_CHATGPT_MODEL: &str = "caribou";
 const CODEX_AUTO_BALANCED_MODEL: &str = "codex-auto-balanced";
 
 /// Coordinates remote model discovery plus cached metadata on disk.
@@ -107,13 +108,41 @@ impl ModelsManager {
         if let Err(err) = self.refresh_available_models(config).await {
             error!("failed to refresh available models: {err}");
         }
-        self.available_models.read().await.clone()
+        self.filter_visible_models(self.available_models.read().await.clone())
     }
 
-    pub fn try_list_models(&self) -> Result<Vec<ModelPreset>, TryLockError> {
+    pub fn try_list_models(&self, _config: &Config) -> Result<Vec<ModelPreset>, TryLockError> {
         self.available_models
             .try_read()
-            .map(|models| models.clone())
+            .map(|models| self.filter_visible_models(models.clone()))
+    }
+
+    pub async fn remote_models(&self, config: &Config) -> Vec<ModelPreset> {
+        if !config.features.enabled(Feature::RemoteModels) {
+            return Vec::new();
+        }
+        self.list_models(config).await
+    }
+
+    pub fn try_get_remote_models(&self, config: &Config) -> Result<Vec<ModelPreset>, TryLockError> {
+        if !config.features.enabled(Feature::RemoteModels) {
+            return Ok(Vec::new());
+        }
+        self.try_list_models(config)
+    }
+
+    fn filter_visible_models(&self, models: Vec<ModelPreset>) -> Vec<ModelPreset> {
+        let is_chatgpt_mode = self.auth_manager.get_auth_mode() == Some(AuthMode::ChatGPT);
+        models
+            .into_iter()
+            .filter(|model| {
+                if is_chatgpt_mode {
+                    true
+                } else {
+                    model.supported_in_api
+                }
+            })
+            .collect()
     }
 
     fn find_family_for_model(slug: &str) -> ModelFamily {
@@ -146,12 +175,20 @@ impl ModelsManager {
         {
             return CODEX_AUTO_BALANCED_MODEL.to_string();
         }
-        OPENAI_DEFAULT_MODEL.to_string()
+        self.get_default_model()
+    }
+
+    fn get_default_model(&self) -> String {
+        if self.auth_manager.get_auth_mode() == Some(AuthMode::ChatGPT) {
+            OPENAI_DEFAULT_CHATGPT_MODEL.to_string()
+        } else {
+            OPENAI_DEFAULT_API_MODEL.to_string()
+        }
     }
 
     #[cfg(any(test, feature = "test-support"))]
     pub fn get_model_offline(model: Option<&str>) -> String {
-        model.unwrap_or(OPENAI_DEFAULT_MODEL).to_string()
+        model.unwrap_or(OPENAI_DEFAULT_API_MODEL).to_string()
     }
 
     #[cfg(any(test, feature = "test-support"))]

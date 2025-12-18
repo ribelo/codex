@@ -138,6 +138,7 @@ async fn summarize_context_three_requests_and_instructions() {
     let conversation_manager = ConversationManager::with_models_provider(
         CodexAuth::from_api_key("dummy"),
         config.model_provider.clone(),
+        home.path().to_path_buf(),
     );
     let NewConversation {
         conversation: codex,
@@ -338,6 +339,7 @@ async fn manual_compact_uses_custom_prompt() {
     let conversation_manager = ConversationManager::with_models_provider(
         CodexAuth::from_api_key("dummy"),
         config.model_provider.clone(),
+        home.path().to_path_buf(),
     );
     let codex = conversation_manager
         .new_conversation(config)
@@ -421,6 +423,7 @@ async fn manual_compact_emits_api_and_local_token_usage_events() {
     let conversation_manager = ConversationManager::with_models_provider(
         CodexAuth::from_api_key("dummy"),
         config.model_provider.clone(),
+        home.path().to_path_buf(),
     );
     let NewConversation {
         conversation: codex,
@@ -1066,6 +1069,7 @@ async fn auto_compact_runs_after_token_limit_hit() {
     let conversation_manager = ConversationManager::with_models_provider(
         CodexAuth::from_api_key("dummy"),
         config.model_provider.clone(),
+        home.path().to_path_buf(),
     );
     let codex = conversation_manager
         .new_conversation(config)
@@ -1314,6 +1318,7 @@ async fn auto_compact_persists_rollout_entries() {
     let conversation_manager = ConversationManager::with_models_provider(
         CodexAuth::from_api_key("dummy"),
         config.model_provider.clone(),
+        home.path().to_path_buf(),
     );
     let NewConversation {
         conversation: codex,
@@ -1419,6 +1424,7 @@ async fn manual_compact_retries_after_context_window_error() {
     let codex = ConversationManager::with_models_provider(
         CodexAuth::from_api_key("dummy"),
         config.model_provider.clone(),
+        home.path().to_path_buf(),
     )
     .new_conversation(config)
     .await
@@ -1554,6 +1560,7 @@ async fn manual_compact_twice_preserves_latest_user_messages() {
     let codex = ConversationManager::with_models_provider(
         CodexAuth::from_api_key("dummy"),
         config.model_provider.clone(),
+        home.path().to_path_buf(),
     )
     .new_conversation(config)
     .await
@@ -1759,6 +1766,7 @@ async fn auto_compact_allows_multiple_attempts_when_interleaved_with_other_turn_
     let conversation_manager = ConversationManager::with_models_provider(
         CodexAuth::from_api_key("dummy"),
         config.model_provider.clone(),
+        home.path().to_path_buf(),
     );
     let codex = conversation_manager
         .new_conversation(config)
@@ -1874,6 +1882,7 @@ async fn auto_compact_triggers_after_function_call_over_95_percent_usage() {
     let codex = ConversationManager::with_models_provider(
         CodexAuth::from_api_key("dummy"),
         config.model_provider.clone(),
+        home.path().to_path_buf(),
     )
     .new_conversation(config)
     .await

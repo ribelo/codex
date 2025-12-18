@@ -875,6 +875,7 @@ async fn start_test_conversation(
     let manager = ConversationManager::with_models_provider(
         CodexAuth::from_api_key("dummy"),
         config.model_provider.clone(),
+        home.path().to_path_buf(),
     );
     let NewConversation { conversation, .. } = manager
         .new_conversation(config.clone())
