@@ -64,7 +64,6 @@ fn make_chatwidget_manual() -> (ChatWidget, tokio::sync::mpsc::UnboundedReceiver
         interrupts: InterruptManager::new(),
         reasoning_buffer: String::new(),
         full_reasoning_buffer: String::new(),
-        reasoning_final_emitted: false,
         current_status_header: String::from("Working"),
         retry_status_header: None,
         conversation_id: None,

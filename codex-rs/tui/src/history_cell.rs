@@ -1121,12 +1121,18 @@ pub(crate) struct SubagentActivityItem {
     pub success: Option<bool>,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) enum SubagentLogEntry {
+    Activity(SubagentActivityItem),
+    Child(usize),
+}
+
 use std::sync::Arc;
 use std::sync::Mutex;
 
 #[derive(Debug, Clone)]
 pub(crate) struct SubagentState {
-    pub(crate) activities: Vec<SubagentActivityItem>,
+    pub(crate) items: Vec<SubagentLogEntry>,
     pub(crate) status: SubagentTaskStatus,
     pub(crate) final_message: Option<String>,
 }
@@ -1184,10 +1190,6 @@ impl SubagentTaskCell {
         }
     }
 
-    pub(crate) fn add_child(&mut self, child: SubagentTaskCell) {
-        self.children.push(child);
-    }
-
     pub(crate) fn find_child_mut(&mut self, delegation_id: &str) -> Option<&mut SubagentTaskCell> {
         if let Some(id) = &self.delegation_id
             && id == delegation_id
@@ -1220,10 +1222,25 @@ impl SubagentTaskCell {
             state.status = SubagentTaskStatus::Failed;
         }
     }
+
+    pub(crate) fn add_child(&mut self, child: SubagentTaskCell) {
+        if let Ok(mut state) = self.state.lock() {
+            state
+                .items
+                .push(SubagentLogEntry::Child(self.children.len()));
+        }
+        self.children.push(child);
+    }
 }
 
 impl HistoryCell for SubagentTaskCell {
     fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
+        // If width is u16::MAX (indicating unbounded/unknown width), cap it to a reasonable
+        // maximum for a summary view. This prevents generating extremely long lines
+        // that would cause excessive vertical space claims if wrapped later in a
+        // narrower container.
+        let width = if width == u16::MAX { 80 } else { width };
+
         let mut lines: Vec<Line<'static>> = Vec::new();
 
         // Indentation based on depth
@@ -1231,10 +1248,10 @@ impl HistoryCell for SubagentTaskCell {
         let content_indent = format!("{indent}  ");
 
         // Lock state
-        let (status, activities, final_message) = if let Ok(state) = self.state.lock() {
+        let (status, items, final_message) = if let Ok(state) = self.state.lock() {
             (
                 state.status,
-                state.activities.clone(),
+                state.items.clone(),
                 state.final_message.clone(),
             )
         } else {
@@ -1282,50 +1299,82 @@ impl HistoryCell for SubagentTaskCell {
             .saturating_sub(content_indent.len() + 2)
             .max(1);
 
-        // Task description with › prefix
+        // Task description with └ prefix
         lines.push(Line::from(vec![
             content_indent.clone().into(),
-            "› ".dim(),
+            "└ ".dim(),
             truncate_text(&self.task_description, wrap_width.saturating_sub(2)).dim(),
         ]));
 
-        // Activities (last 5)
-        if !activities.is_empty() {
-            let skip = activities.len().saturating_sub(5);
-            if skip > 0 {
-                lines.push(Line::from(vec![
-                    content_indent.clone().into(),
-                    format!("... +{skip} more").dim().italic(),
-                ]));
-            }
-            for activity in activities.iter().skip(skip) {
-                let indicator: Span<'static> = match activity.success {
-                    Some(true) => "✓".green(),
-                    Some(false) => "✗".red(),
-                    None => "·".dim(),
-                };
-                lines.push(Line::from(vec![
-                    content_indent.clone().into(),
-                    indicator,
-                    " ".into(),
-                    truncate_text(&activity.summary, wrap_width.saturating_sub(2)).dim(),
-                ]));
+        // Items (Interleaved)
+        let total_activities = items
+            .iter()
+            .filter(|i| matches!(i, SubagentLogEntry::Activity(_)))
+            .count();
+        let skip_activities = total_activities.saturating_sub(5);
+
+        let mut activity_counter = 0;
+        let mut skipped_block_count = 0;
+
+        for item in items {
+            match item {
+                SubagentLogEntry::Activity(activity) => {
+                    activity_counter += 1;
+                    if activity_counter <= skip_activities {
+                        skipped_block_count += 1;
+                        continue;
+                    }
+
+                    if skipped_block_count > 0 {
+                        lines.push(Line::from(vec![
+                            content_indent.clone().into(),
+                            format!("... +{skipped_block_count} more").dim().italic(),
+                        ]));
+                        skipped_block_count = 0;
+                    }
+
+                    let indicator: Span<'static> = match activity.success {
+                        Some(true) => "✓".green(),
+                        Some(false) => "✗".red(),
+                        None => "·".dim(),
+                    };
+                    lines.push(Line::from(vec![
+                        content_indent.clone().into(),
+                        indicator,
+                        " ".into(),
+                        truncate_text(&activity.summary, wrap_width.saturating_sub(2)).dim(),
+                    ]));
+                }
+                SubagentLogEntry::Child(idx) => {
+                    if skipped_block_count > 0 {
+                        lines.push(Line::from(vec![
+                            content_indent.clone().into(),
+                            format!("... +{skipped_block_count} more").dim().italic(),
+                        ]));
+                        skipped_block_count = 0;
+                    }
+                    if let Some(child) = self.children.get(idx) {
+                        lines.extend(child.display_lines(width));
+                    }
+                }
             }
         }
 
-        // Children
-        for child in &self.children {
-            lines.extend(child.display_lines(width));
+        if skipped_block_count > 0 {
+            lines.push(Line::from(vec![
+                content_indent.clone().into(),
+                format!("... +{skipped_block_count} more").dim().italic(),
+            ]));
         }
 
-        // Final message with = prefix
+        // Final message with ↩ prefix
         if let Some(ref msg) = final_message {
             let trimmed = msg.trim();
             if !trimmed.is_empty() {
                 let single_line = trimmed.replace('\n', " ");
                 lines.push(Line::from(vec![
                     content_indent.into(),
-                    "< ".dim(),
+                    "↩ ".dim(),
                     truncate_text(&single_line, wrap_width.saturating_sub(2)).dim(),
                 ]));
             }
@@ -1342,10 +1391,10 @@ impl HistoryCell for SubagentTaskCell {
         let content_indent = format!("{indent}  ");
 
         // Lock state
-        let (status, activities, final_message) = if let Ok(state) = self.state.lock() {
+        let (status, items, final_message) = if let Ok(state) = self.state.lock() {
             (
                 state.status,
-                state.activities.clone(),
+                state.items.clone(),
                 state.final_message.clone(),
             )
         } else {
@@ -1393,7 +1442,7 @@ impl HistoryCell for SubagentTaskCell {
             .saturating_sub(content_indent.len() + 2)
             .max(1);
 
-        // Task description with › prefix (wrapped)
+        // Task description with └ prefix (wrapped)
         let desc_wrap_width = wrap_width.saturating_sub(2);
         for (idx, segment) in textwrap::wrap(&self.task_description, desc_wrap_width)
             .iter()
@@ -1402,7 +1451,7 @@ impl HistoryCell for SubagentTaskCell {
             if idx == 0 {
                 lines.push(Line::from(vec![
                     content_indent.clone().into(),
-                    "› ".dim(),
+                    "└ ".dim(),
                     segment.to_string().dim(),
                 ]));
             } else {
@@ -1414,40 +1463,45 @@ impl HistoryCell for SubagentTaskCell {
             }
         }
 
-        // All activities (wrapped)
-        for activity in &activities {
-            let indicator: Span<'static> = match activity.success {
-                Some(true) => "✓".green(),
-                Some(false) => "✗".red(),
-                None => "·".dim(),
-            };
-            for (idx, segment) in textwrap::wrap(&activity.summary, wrap_width.saturating_sub(2))
-                .iter()
-                .enumerate()
-            {
-                if idx == 0 {
-                    lines.push(Line::from(vec![
-                        content_indent.clone().into(),
-                        indicator.clone(),
-                        " ".into(),
-                        segment.to_string().dim(),
-                    ]));
-                } else {
-                    lines.push(Line::from(vec![
-                        content_indent.clone().into(),
-                        "  ".into(),
-                        segment.to_string().dim(),
-                    ]));
+        // Items (Interleaved)
+        for item in items {
+            match item {
+                SubagentLogEntry::Activity(activity) => {
+                    let indicator: Span<'static> = match activity.success {
+                        Some(true) => "✓".green(),
+                        Some(false) => "✗".red(),
+                        None => "·".dim(),
+                    };
+                    for (idx, segment) in
+                        textwrap::wrap(&activity.summary, wrap_width.saturating_sub(2))
+                            .iter()
+                            .enumerate()
+                    {
+                        if idx == 0 {
+                            lines.push(Line::from(vec![
+                                content_indent.clone().into(),
+                                indicator.clone(),
+                                " ".into(),
+                                segment.to_string().dim(),
+                            ]));
+                        } else {
+                            lines.push(Line::from(vec![
+                                content_indent.clone().into(),
+                                "  ".into(),
+                                segment.to_string().dim(),
+                            ]));
+                        }
+                    }
+                }
+                SubagentLogEntry::Child(idx) => {
+                    if let Some(child) = self.children.get(idx) {
+                        lines.extend(child.transcript_lines(width));
+                    }
                 }
             }
         }
 
-        // Children
-        for child in &self.children {
-            lines.extend(child.transcript_lines(width));
-        }
-
-        // Final message with = prefix (wrapped)
+        // Final message with ↩ prefix (wrapped)
         if let Some(ref msg) = final_message {
             let trimmed = msg.trim();
             if !trimmed.is_empty() {
@@ -1456,7 +1510,7 @@ impl HistoryCell for SubagentTaskCell {
                     if idx == 0 {
                         lines.push(Line::from(vec![
                             content_indent.clone().into(),
-                            "< ".dim(),
+                            "↩ ".dim(),
                             segment.to_string().dim(),
                         ]));
                     } else {
@@ -2918,7 +2972,7 @@ mod tests {
     #[test]
     fn subagent_task_cell_root_level_rendering() {
         let state = Arc::new(Mutex::new(SubagentState {
-            activities: vec![],
+            items: vec![],
             status: SubagentTaskStatus::Completed,
             final_message: None,
         }));
@@ -2939,14 +2993,14 @@ mod tests {
 
         insta::assert_snapshot!(rendered.join("\n"), @r"
         • Delegated to @explorer
-          › Find all test files
+          └ Find all test files
         ");
     }
 
     #[test]
     fn profile_task_cell_root_level_rendering() {
         let state = Arc::new(Mutex::new(SubagentState {
-            activities: vec![],
+            items: vec![],
             status: SubagentTaskStatus::Completed,
             final_message: None,
         }));
@@ -2967,14 +3021,14 @@ mod tests {
 
         insta::assert_snapshot!(rendered.join("\n"), @r"
         • Ran with profile: kimi
-          › Find current Bitcoin (BTC) price
+          └ Find current Bitcoin (BTC) price
         ");
     }
 
     #[test]
     fn subagent_task_cell_nested_level_rendering() {
         let state = Arc::new(Mutex::new(SubagentState {
-            activities: vec![],
+            items: vec![],
             status: SubagentTaskStatus::Completed,
             final_message: None,
         }));
@@ -2995,17 +3049,17 @@ mod tests {
 
         insta::assert_snapshot!(rendered.join("\n"), @r"
         • Delegated to @explorer
-          › Search for API endpoints
+          └ Search for API endpoints
         ");
     }
 
     #[test]
     fn subagent_task_cell_deeply_nested_rendering() {
         let state = Arc::new(Mutex::new(SubagentState {
-            activities: vec![SubagentActivityItem {
+            items: vec![SubagentLogEntry::Activity(SubagentActivityItem {
                 summary: "Run ls -la".to_string(),
                 success: Some(true),
-            }],
+            })],
             status: SubagentTaskStatus::Completed,
             final_message: None,
         }));
@@ -3026,7 +3080,7 @@ mod tests {
 
         insta::assert_snapshot!(rendered.join("\n"), @r"
         • Delegated to @explorer
-          › List directory contents
+          └ List directory contents
           ✓ Run ls -la
         ");
     }
@@ -3034,7 +3088,7 @@ mod tests {
     #[test]
     fn subagent_task_cell_transcript_expands_long_description() {
         let state = Arc::new(Mutex::new(SubagentState {
-            activities: vec![],
+            items: vec![],
             status: SubagentTaskStatus::Completed,
             final_message: None,
         }));
@@ -3077,15 +3131,17 @@ mod tests {
 
     #[test]
     fn subagent_task_cell_transcript_shows_all_activities() {
-        let activities: Vec<SubagentActivityItem> = (1..=10)
-            .map(|i| SubagentActivityItem {
-                summary: format!("Ran command {i}"),
-                success: Some(true),
+        let items: Vec<SubagentLogEntry> = (1..=10)
+            .map(|i| {
+                SubagentLogEntry::Activity(SubagentActivityItem {
+                    summary: format!("Ran command {i}"),
+                    success: Some(true),
+                })
             })
             .collect();
 
         let state = Arc::new(Mutex::new(SubagentState {
-            activities,
+            items,
             status: SubagentTaskStatus::Completed,
             final_message: None,
         }));
@@ -3129,10 +3185,10 @@ mod tests {
     #[test]
     fn subagent_task_cell_transcript_wraps_long_activities() {
         let state = Arc::new(Mutex::new(SubagentState {
-            activities: vec![SubagentActivityItem {
+            items: vec![SubagentLogEntry::Activity(SubagentActivityItem {
                 summary: "Ran very long command with many arguments: git commit --message 'This is a very long commit message that should wrap'".to_string(),
                 success: Some(true),
-            }],
+            })],
             status: SubagentTaskStatus::Completed,
             final_message: None,
         }));
@@ -3167,7 +3223,7 @@ mod tests {
     #[test]
     fn subagent_task_cell_renders_final_message() {
         let state = Arc::new(Mutex::new(SubagentState {
-            activities: vec![],
+            items: vec![],
             status: SubagentTaskStatus::Completed,
             final_message: Some("This is the final message.".to_string()),
         }));
@@ -3222,12 +3278,12 @@ mod tests {
     fn subagent_with_children_and_final_message_ordering() {
         // Create child states
         let child1_state = Arc::new(Mutex::new(SubagentState {
-            activities: vec![],
+            items: vec![],
             status: SubagentTaskStatus::Completed,
             final_message: Some("Child 1 result".to_string()),
         }));
         let child2_state = Arc::new(Mutex::new(SubagentState {
-            activities: vec![],
+            items: vec![],
             status: SubagentTaskStatus::Completed,
             final_message: Some("Child 2 result".to_string()),
         }));
@@ -3256,7 +3312,7 @@ mod tests {
 
         // Create parent state and cell
         let parent_state = Arc::new(Mutex::new(SubagentState {
-            activities: vec![],
+            items: vec![],
             status: SubagentTaskStatus::Completed,
             final_message: Some("Parent completed both calls.".to_string()),
         }));

@@ -319,8 +319,6 @@ pub(crate) struct ChatWidget {
     reasoning_buffer: String,
     // Accumulates full reasoning content for transcript-only recording
     full_reasoning_buffer: String,
-    // Tracks whether we've already flushed a reasoning block into history this turn.
-    reasoning_final_emitted: bool,
     // Current status header shown in the status indicator.
     current_status_header: String,
     // Previous status header to restore after a transient stream retry.
@@ -505,11 +503,10 @@ impl ChatWidget {
     fn on_agent_message(&mut self, message: String) {
         // If we have a stream_controller, then the final agent message is redundant and will be a
         // duplicate of what has already been streamed.
-        if !self.reasoning_final_emitted
-            && (self.reasoning_stream_controller.is_some()
-                || !self.reasoning_buffer.is_empty()
-                || !self.full_reasoning_buffer.is_empty())
-        {
+
+        // Check for active reasoning components. Note: We do NOT check full_reasoning_buffer
+        // here because it persists for the whole turn and would trigger false positives.
+        if self.reasoning_stream_controller.is_some() || !self.reasoning_buffer.is_empty() {
             // Ensure any pending reasoning is flushed before the final message lands.
             self.on_agent_reasoning_final();
         }
@@ -522,14 +519,6 @@ impl ChatWidget {
     }
 
     fn on_agent_message_delta(&mut self, delta: String) {
-        if !self.reasoning_final_emitted
-            && (self.reasoning_stream_controller.is_some()
-                || !self.reasoning_buffer.is_empty()
-                || !self.full_reasoning_buffer.is_empty())
-        {
-            // Flush reasoning as soon as the first assistant text arrives to preserve ordering.
-            self.on_agent_reasoning_final();
-        }
         self.handle_streaming_delta(delta);
     }
 
@@ -552,19 +541,24 @@ impl ChatWidget {
 
     fn on_agent_reasoning_final(&mut self) {
         let streamed_reasoning = self.finalize_reasoning_stream();
-        self.reasoning_final_emitted = true;
         let reasoning_summary_format = self.get_model_family().reasoning_summary_format;
+
         // At the end of a reasoning block, record transcript-only content.
         self.full_reasoning_buffer.push_str(&self.reasoning_buffer);
-        if !streamed_reasoning && !self.full_reasoning_buffer.is_empty() {
+
+        // Use the current block (reasoning_buffer) for the summary to avoid duplication
+        // of previous blocks in the UI history.
+        if !streamed_reasoning && !self.reasoning_buffer.is_empty() {
             let cell = history_cell::new_reasoning_summary_block(
-                self.full_reasoning_buffer.clone(),
+                self.reasoning_buffer.clone(),
                 reasoning_summary_format,
             );
             self.add_boxed_history(cell);
         }
         self.reasoning_buffer.clear();
-        self.full_reasoning_buffer.clear();
+
+        // Do NOT clear full_reasoning_buffer here; it must accumulate the entire turn's reasoning.
+
         // If both streams are finished, stop commit animation promptly.
         if self.stream_controller.is_none()
             && self.reasoning_stream_controller.is_none()
@@ -593,17 +587,13 @@ impl ChatWidget {
         self.set_status_header(String::from("Working"));
         self.full_reasoning_buffer.clear();
         self.reasoning_buffer.clear();
-        self.reasoning_final_emitted = false;
         self.reasoning_stream_controller = None;
         self.request_redraw();
     }
 
     fn on_task_complete(&mut self, last_agent_message: Option<String>) {
-        if !self.reasoning_final_emitted
-            && (self.reasoning_stream_controller.is_some()
-                || !self.reasoning_buffer.is_empty()
-                || !self.full_reasoning_buffer.is_empty())
-        {
+        // Check only for active components (controller/buffer), not history (full buffer)
+        if self.reasoning_stream_controller.is_some() || !self.reasoning_buffer.is_empty() {
             self.on_agent_reasoning_final();
         }
         // If a stream is currently active, finalize it.
@@ -1121,6 +1111,11 @@ impl ChatWidget {
 
     #[inline]
     fn handle_streaming_delta(&mut self, delta: String) {
+        // Mutual exclusion: Close active reasoning stream if present.
+        if self.reasoning_stream_controller.is_some() || !self.reasoning_buffer.is_empty() {
+            self.on_agent_reasoning_final();
+        }
+
         // Before streaming agent content, flush any active exec cell group.
         self.flush_active_cell();
 
@@ -1148,6 +1143,11 @@ impl ChatWidget {
 
     #[inline]
     fn handle_reasoning_streaming_delta(&mut self, delta: &str) {
+        // Mutual exclusion: Close active text stream if present.
+        if self.stream_controller.is_some() {
+            self.flush_answer_stream_with_separator();
+        }
+
         self.flush_active_cell();
 
         if self.reasoning_stream_controller.is_none() {
@@ -1458,7 +1458,6 @@ impl ChatWidget {
             interrupts: InterruptManager::new(),
             reasoning_buffer: String::new(),
             full_reasoning_buffer: String::new(),
-            reasoning_final_emitted: false,
             current_status_header: String::from("Working"),
             retry_status_header: None,
             conversation_id: None,
@@ -1552,7 +1551,6 @@ impl ChatWidget {
             interrupts: InterruptManager::new(),
             reasoning_buffer: String::new(),
             full_reasoning_buffer: String::new(),
-            reasoning_final_emitted: false,
             current_status_header: String::from("Working"),
             retry_status_header: None,
             conversation_id: None,
@@ -2151,7 +2149,7 @@ impl ChatWidget {
             .or_insert_with(|| {
                 is_new = true;
                 Arc::new(std::sync::Mutex::new(history_cell::SubagentState {
-                    activities: Vec::new(),
+                    items: Vec::new(),
                     status: history_cell::SubagentTaskStatus::Running,
                     final_message: None,
                 }))
@@ -2298,34 +2296,52 @@ impl ChatWidget {
                         cmd_display
                     }
                 };
-                guard.activities.push(history_cell::SubagentActivityItem {
-                    summary: format!("Run {cmd_summary}"),
-                    success: None,
-                });
+                guard.items.push(history_cell::SubagentLogEntry::Activity(
+                    history_cell::SubagentActivityItem {
+                        summary: format!("Run {cmd_summary}"),
+                        success: None,
+                    },
+                ));
             }
             EventMsg::ExecCommandEnd(ev) => {
                 let success = ev.exit_code == 0;
                 // Update the last "Run" activity to "Ran" with success status
                 // instead of adding a separate "Completed" entry
-                if let Some(last) = guard.activities.last_mut() {
+                let last_activity = guard.items.iter_mut().rev().find_map(|item| match item {
+                    history_cell::SubagentLogEntry::Activity(a) => Some(a),
+                    _ => None,
+                });
+
+                if let Some(last) = last_activity {
                     if last.summary.starts_with("Run ") {
                         last.summary = last.summary.replacen("Run ", "Ran ", 1);
                         last.success = Some(success);
                     } else {
                         // Fallback if we can't find the matching Run activity
-                        guard.activities.push(history_cell::SubagentActivityItem {
+                        guard.items.push(history_cell::SubagentLogEntry::Activity(
+                            history_cell::SubagentActivityItem {
+                                summary: format!("Completed (exit {})", ev.exit_code),
+                                success: Some(success),
+                            },
+                        ));
+                    }
+                } else {
+                    guard.items.push(history_cell::SubagentLogEntry::Activity(
+                        history_cell::SubagentActivityItem {
                             summary: format!("Completed (exit {})", ev.exit_code),
                             success: Some(success),
-                        });
-                    }
+                        },
+                    ));
                 }
             }
             EventMsg::McpToolCallBegin(ev) => {
                 let summary = format!("Called {}::{}", ev.invocation.server, ev.invocation.tool);
-                guard.activities.push(history_cell::SubagentActivityItem {
-                    summary,
-                    success: None,
-                });
+                guard.items.push(history_cell::SubagentLogEntry::Activity(
+                    history_cell::SubagentActivityItem {
+                        summary,
+                        success: None,
+                    },
+                ));
             }
             EventMsg::McpToolCallEnd(ev) => {
                 let success = ev
@@ -2333,10 +2349,12 @@ impl ChatWidget {
                     .as_ref()
                     .ok()
                     .map(|r| !r.is_error.unwrap_or(false));
-                guard.activities.push(history_cell::SubagentActivityItem {
-                    summary: "MCP call completed".to_string(),
-                    success,
-                });
+                guard.items.push(history_cell::SubagentLogEntry::Activity(
+                    history_cell::SubagentActivityItem {
+                        summary: "MCP call completed".to_string(),
+                        success,
+                    },
+                ));
             }
             EventMsg::PatchApplyBegin(_) => {
                 // Don't add an activity yet. Wait for PatchApplyEnd to add the summary.
@@ -2376,10 +2394,12 @@ impl ChatWidget {
                     format!("Edited {} files (+{added} -{removed})", ev.changes.len())
                 };
 
-                guard.activities.push(history_cell::SubagentActivityItem {
-                    summary,
-                    success: Some(success),
-                });
+                guard.items.push(history_cell::SubagentLogEntry::Activity(
+                    history_cell::SubagentActivityItem {
+                        summary,
+                        success: Some(success),
+                    },
+                ));
             }
             EventMsg::AgentMessage(_) | EventMsg::AgentMessageDelta(_) => {
                 // Don't add individual message deltas as activities
@@ -3865,8 +3885,16 @@ impl ChatWidget {
         let mut sorted_cells: Vec<_> = self.active_subagent_cells.values().collect();
         sorted_cells.sort_by_key(|cell| cell.start_time());
 
+        // Use last_rendered_width for truncation if available, otherwise fallback to u16::MAX.
+        // We subtract 2 for padding safety.
+        let display_width = self
+            .last_rendered_width
+            .get()
+            .map(|w| w.saturating_sub(2) as u16)
+            .unwrap_or(u16::MAX);
+
         for cell in sorted_cells {
-            let lines = cell.display_lines(u16::MAX);
+            let lines = cell.display_lines(display_width);
             if !lines.is_empty() {
                 let history_cell: Box<dyn HistoryCell> = Box::new(PlainHistoryCell::new(lines));
                 flex.push(
@@ -4091,7 +4119,7 @@ fn skills_from_outcome(outcome: &SkillLoadOutcomeInfo) -> Vec<SkillMetadata> {
             name: skill.name.clone(),
             description: skill.description.clone(),
             path: skill.path.clone(),
-            scope: skill.scope.clone(),
+            scope: skill.scope,
         })
         .collect()
 }
