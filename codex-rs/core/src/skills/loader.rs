@@ -12,6 +12,7 @@ use std::fmt;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
+use std::time::SystemTime;
 use tracing::error;
 
 #[derive(Debug, Deserialize)]
@@ -49,13 +50,16 @@ pub(crate) fn repo_skills_root(cwd: &Path) -> Option<SkillRoot> {
     }
 }
 
-pub(crate) fn load_skills_from_roots<I>(roots: I) -> SkillLoadOutcome
+pub(crate) fn load_skills_from_roots<I>(
+    roots: I,
+) -> (SkillLoadOutcome, Vec<(PathBuf, Option<SystemTime>)>)
 where
     I: IntoIterator<Item = SkillRoot>,
 {
     let mut outcome = SkillLoadOutcome::default();
+    let mut visited_dirs = Vec::new();
     for root in roots {
-        discover_skills_under_root(&root.path, root.scope, &mut outcome);
+        discover_skills_under_root(&root.path, root.scope, &mut outcome, &mut visited_dirs);
     }
     // Deduplicate by name (first one wins)
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -63,7 +67,7 @@ where
         .skills
         .retain(|skill| seen.insert(skill.name.clone()));
     outcome.skills.sort_by(|a, b| a.name.cmp(&b.name));
-    outcome
+    (outcome, visited_dirs)
 }
 
 const SKILLS_FILENAME: &str = "SKILL.md";
@@ -104,10 +108,15 @@ pub fn load_skills(config: &Config) -> SkillLoadOutcome {
     if let Some(repo_root) = repo_skills_root(&config.cwd) {
         roots.insert(0, repo_root); // Repo skills take precedence
     }
-    load_skills_from_roots(roots)
+    load_skills_from_roots(roots).0
 }
 
-fn discover_skills_under_root(root: &Path, scope: SkillScope, outcome: &mut SkillLoadOutcome) {
+fn discover_skills_under_root(
+    root: &Path,
+    scope: SkillScope,
+    outcome: &mut SkillLoadOutcome,
+    visited_dirs: &mut Vec<(PathBuf, Option<SystemTime>)>,
+) {
     let Ok(root) = normalize_path(root) else {
         return;
     };
@@ -118,6 +127,10 @@ fn discover_skills_under_root(root: &Path, scope: SkillScope, outcome: &mut Skil
 
     let mut queue: VecDeque<PathBuf> = VecDeque::from([root]);
     while let Some(dir) = queue.pop_front() {
+        if let Ok(metadata) = fs::metadata(&dir) {
+            visited_dirs.push((dir.clone(), metadata.modified().ok()));
+        }
+
         let entries = match fs::read_dir(&dir) {
             Ok(entries) => entries,
             Err(e) => {

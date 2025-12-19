@@ -13,13 +13,16 @@ use super::user_skills_root;
 struct CachedSkills {
     outcome: SkillLoadOutcome,
     /// (root_path, mtime) for each source directory
-    sources: Vec<(PathBuf, Option<SystemTime>)>,
+    root_states: Vec<(PathBuf, Option<SystemTime>)>,
+    /// (dir_path, mtime) for all directories visited during discovery
+    visited_dir_states: Vec<(PathBuf, Option<SystemTime>)>,
+    /// (skill_file_path, mtime) for each SKILL.md loaded
+    file_states: Vec<(PathBuf, Option<SystemTime>)>,
 }
 
 /// Manages skill discovery and caching across sessions.
 ///
 /// Skills are cached by working directory to avoid repeated filesystem scans.
-/// The cache can be invalidated by calling `invalidate_cache`.
 pub struct SkillsManager {
     codex_home: PathBuf,
     cache_by_cwd: RwLock<HashMap<PathBuf, CachedSkills>>,
@@ -46,7 +49,7 @@ impl SkillsManager {
         roots.push(user_skills_root(&self.codex_home));
 
         // Get current mtimes
-        let current_sources: Vec<(PathBuf, Option<SystemTime>)> = roots
+        let current_root_states: Vec<(PathBuf, Option<SystemTime>)> = roots
             .iter()
             .map(|p| {
                 (
@@ -62,18 +65,59 @@ impl SkillsManager {
             Err(err) => err.into_inner().get(cwd).cloned(),
         };
 
-        if let Some(cached) = cached_entry
-            && cached.sources == current_sources
-        {
-            return cached.outcome;
+        if let Some(cached) = cached_entry {
+            // Check roots first (fast fail for structural changes)
+            if cached.root_states == current_root_states {
+                // Check all visited directories
+                let mut dirs_valid = true;
+                for (path, cached_mtime) in &cached.visited_dir_states {
+                    let current_mtime = std::fs::metadata(path).and_then(|m| m.modified()).ok();
+                    if current_mtime != *cached_mtime {
+                        dirs_valid = false;
+                        break;
+                    }
+                }
+
+                if dirs_valid {
+                    // Check individual files (detect content edits)
+                    let mut files_valid = true;
+                    for (path, cached_mtime) in &cached.file_states {
+                        let current_mtime = std::fs::metadata(path).and_then(|m| m.modified()).ok();
+                        if current_mtime != *cached_mtime {
+                            files_valid = false;
+                            break;
+                        }
+                    }
+
+                    if files_valid {
+                        return cached.outcome;
+                    }
+                }
+            }
         }
 
         // Load skills from roots (ownership transferred)
-        let outcome = load_skills_from_roots(roots);
+        let (outcome, visited_dir_states) = load_skills_from_roots(roots);
+
+        // Collect mtimes for loaded skills to detect future edits
+        let file_states: Vec<(PathBuf, Option<SystemTime>)> = outcome
+            .skills
+            .iter()
+            .map(|skill| {
+                (
+                    skill.path.clone(),
+                    std::fs::metadata(&skill.path)
+                        .and_then(|m| m.modified())
+                        .ok(),
+                )
+            })
+            .collect();
 
         let new_entry = CachedSkills {
             outcome: outcome.clone(),
-            sources: current_sources,
+            root_states: current_root_states,
+            visited_dir_states,
+            file_states,
         };
 
         // Cache the result
@@ -88,34 +132,13 @@ impl SkillsManager {
 
         outcome
     }
-
-    /// Invalidates the entire cache, forcing skills to be reloaded on next access.
-    #[allow(dead_code)]
-    pub fn invalidate_cache(&self) {
-        match self.cache_by_cwd.write() {
-            Ok(mut cache) => cache.clear(),
-            Err(err) => err.into_inner().clear(),
-        }
-    }
-
-    /// Invalidates cache for a specific working directory.
-    #[allow(dead_code)]
-    pub fn invalidate_cwd(&self, cwd: &Path) {
-        match self.cache_by_cwd.write() {
-            Ok(mut cache) => {
-                cache.remove(cwd);
-            }
-            Err(err) => {
-                err.into_inner().remove(cwd);
-            }
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
+    use std::process::Command;
     use tempfile::tempdir;
 
     fn write_skill(root: &Path, dir: &str, name: &str, description: &str) {
@@ -147,7 +170,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cache_hit_ignoring_content_change() {
+    fn test_cache_invalidation_on_content_change() {
         let home = tempdir().unwrap();
         let manager = SkillsManager::new(home.path().to_path_buf());
         let cwd = home.path();
@@ -165,16 +188,142 @@ mod tests {
         let new_content = "---\nname: skill1\ndescription: CHANGED\n---\nBody";
         fs::write(&skill_file, new_content).unwrap();
 
-        // Reload - expected to hit cache because root "skills" dir mtime hasn't changed
-        let outcome = manager.skills_for_cwd(cwd);
-        assert_eq!(outcome.skills[0].description, "original");
-
-        // Now force invalidation by modifying the root directory (adding a dummy file)
-        // This updates the mtime of "skills" directory
-        std::thread::sleep(std::time::Duration::from_millis(50));
-        fs::write(home.path().join("skills/dummy"), "").unwrap();
-
+        // Reload - expected to invalidate cache because file mtime changed
         let outcome = manager.skills_for_cwd(cwd);
         assert_eq!(outcome.skills[0].description, "CHANGED");
+    }
+
+    #[test]
+    fn test_cache_invalidation_on_skill_removal() {
+        let home = tempdir().unwrap();
+        let manager = SkillsManager::new(home.path().to_path_buf());
+        let cwd = home.path();
+
+        // 1. Initial load with two skills
+        write_skill(home.path(), "skill1", "skill1", "desc1");
+        write_skill(home.path(), "skill2", "skill2", "desc2");
+        let outcome = manager.skills_for_cwd(cwd);
+        assert_eq!(outcome.skills.len(), 2);
+
+        // 2. Remove one skill directory
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::fs::remove_dir_all(home.path().join("skills/skill2")).unwrap();
+
+        // 3. Reload - should detect removal
+        let outcome = manager.skills_for_cwd(cwd);
+        assert_eq!(outcome.skills.len(), 1);
+        assert_eq!(outcome.skills[0].name, "skill1");
+    }
+
+    #[test]
+    fn test_repo_skills_override_user_skills() {
+        let home = tempdir().unwrap();
+        let repo = tempdir().unwrap();
+
+        // Initialize git repo
+        Command::new("git")
+            .args(["init"])
+            .current_dir(repo.path())
+            .output()
+            .unwrap();
+
+        let manager = SkillsManager::new(home.path().to_path_buf());
+
+        // Create user skill
+        write_skill(home.path(), "shared-skill", "shared-skill", "from-user");
+
+        // Create repo skill with same name
+        let repo_skills = repo.path().join(".codex/skills/shared-skill");
+        fs::create_dir_all(&repo_skills).unwrap();
+        fs::write(
+            repo_skills.join("SKILL.md"),
+            "---\nname: shared-skill\ndescription: from-repo\n---\nBody",
+        )
+        .unwrap();
+
+        // Load skills with repo as cwd
+        let outcome = manager.skills_for_cwd(repo.path());
+
+        // Should have only one skill (deduplicated by name)
+        // and it should be the repo version
+        let shared = outcome.skills.iter().find(|s| s.name == "shared-skill");
+        assert!(shared.is_some(), "shared-skill should exist");
+        assert_eq!(
+            shared.unwrap().description,
+            "from-repo",
+            "repo skill should override user skill"
+        );
+    }
+
+    #[test]
+    fn test_cache_isolation_between_cwds() {
+        let home = tempdir().unwrap();
+        let project_a = tempdir().unwrap();
+        let project_b = tempdir().unwrap();
+
+        // Initialize git repos
+        Command::new("git")
+            .args(["init"])
+            .current_dir(project_a.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["init"])
+            .current_dir(project_b.path())
+            .output()
+            .unwrap();
+
+        let manager = SkillsManager::new(home.path().to_path_buf());
+
+        // Create skill in project A
+        let skill_a = project_a.path().join(".codex/skills/skill-a");
+        fs::create_dir_all(&skill_a).unwrap();
+        fs::write(
+            skill_a.join("SKILL.md"),
+            "---\nname: skill-a\ndescription: from-a\n---\nBody",
+        )
+        .unwrap();
+
+        // Create skill in project B
+        let skill_b = project_b.path().join(".codex/skills/skill-b");
+        fs::create_dir_all(&skill_b).unwrap();
+        fs::write(
+            skill_b.join("SKILL.md"),
+            "---\nname: skill-b\ndescription: from-b\n---\nBody",
+        )
+        .unwrap();
+
+        // Load skills for project A
+        let outcome_a = manager.skills_for_cwd(project_a.path());
+        assert!(outcome_a.skills.iter().any(|s| s.name == "skill-a"));
+        assert!(!outcome_a.skills.iter().any(|s| s.name == "skill-b"));
+
+        // Load skills for project B
+        let outcome_b = manager.skills_for_cwd(project_b.path());
+        assert!(outcome_b.skills.iter().any(|s| s.name == "skill-b"));
+        assert!(!outcome_b.skills.iter().any(|s| s.name == "skill-a"));
+    }
+
+    #[test]
+    fn test_nested_skill_invalidation() {
+        let home = tempdir().unwrap();
+        let manager = SkillsManager::new(home.path().to_path_buf());
+        let cwd = home.path();
+
+        // 1. Initial load with a nested skill
+        // skills/category/skill1/SKILL.md
+        write_skill(home.path(), "category/skill1", "skill1", "desc1");
+
+        let outcome = manager.skills_for_cwd(cwd);
+        assert_eq!(outcome.skills.len(), 1);
+
+        // 2. Add another skill in the same nested category
+        // skills/category/skill2/SKILL.md
+        // This updates mtime of "skills/category", but not "skills"
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        write_skill(home.path(), "category/skill2", "skill2", "desc2");
+
+        let outcome = manager.skills_for_cwd(cwd);
+        assert_eq!(outcome.skills.len(), 2, "Should detect new nested skill");
     }
 }
