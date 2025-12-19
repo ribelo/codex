@@ -73,8 +73,8 @@ where
 const SKILLS_FILENAME: &str = "SKILL.md";
 const SKILLS_DIR_NAME: &str = "skills";
 const REPO_ROOT_CONFIG_DIR_NAME: &str = ".codex";
-const MAX_NAME_LEN: usize = 100;
-const MAX_DESCRIPTION_LEN: usize = 1000;
+const MAX_NAME_LEN: usize = 64;
+const MAX_DESCRIPTION_LEN: usize = 1024;
 
 #[derive(Debug)]
 enum SkillParseError {
@@ -187,7 +187,7 @@ fn parse_skill_file(path: &Path, scope: SkillScope) -> Result<SkillMetadata, Ski
     let name = sanitize_single_line(&parsed.name);
     let description = sanitize_single_line(&parsed.description);
 
-    validate_field(&name, MAX_NAME_LEN, "name")?;
+    validate_name(&name)?;
     validate_field(&description, MAX_DESCRIPTION_LEN, "description")?;
 
     let resolved_path = normalize_path(path).unwrap_or_else(|_| path.to_path_buf());
@@ -202,6 +202,44 @@ fn parse_skill_file(path: &Path, scope: SkillScope) -> Result<SkillMetadata, Ski
 
 fn sanitize_single_line(raw: &str) -> String {
     raw.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn validate_name(name: &str) -> Result<(), SkillParseError> {
+    if name.is_empty() {
+        return Err(SkillParseError::MissingField("name"));
+    }
+    if name.len() > MAX_NAME_LEN {
+        return Err(SkillParseError::InvalidField {
+            field: "name",
+            reason: format!("must be 1-{MAX_NAME_LEN} characters"),
+        });
+    }
+
+    if name.starts_with('-') || name.ends_with('-') {
+        return Err(SkillParseError::InvalidField {
+            field: "name",
+            reason: "must not start or end with hyphen".to_string(),
+        });
+    }
+
+    if name.contains("--") {
+        return Err(SkillParseError::InvalidField {
+            field: "name",
+            reason: "must not contain consecutive hyphens".to_string(),
+        });
+    }
+
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    {
+        return Err(SkillParseError::InvalidField {
+            field: "name",
+            reason: "must contain only lowercase letters, digits, and hyphens".to_string(),
+        });
+    }
+
+    Ok(())
 }
 
 fn validate_field(
@@ -349,6 +387,31 @@ mod tests {
         );
     }
 
+    #[test]
+    fn validates_name_format() {
+        let cases = vec![
+            ("Upper", "lowercase"),
+            ("-start", "start or end"),
+            ("end-", "start or end"),
+            ("double--dash", "consecutive"),
+            ("space in", "lowercase"),
+        ];
+
+        for (name, error_fragment) in cases {
+            let codex_home = tempfile::tempdir().expect("tempdir");
+            write_skill(&codex_home, "bad", name, "desc");
+            let cfg = make_config(&codex_home);
+
+            let outcome = load_skills(&cfg);
+            assert_eq!(outcome.skills.len(), 0, "accepted bad name: {name}");
+            assert_eq!(outcome.errors.len(), 1);
+            assert!(
+                outcome.errors[0].message.contains(error_fragment),
+                "expected error containing '{error_fragment}' for name '{name}', got '{}'",
+                outcome.errors[0].message
+            );
+        }
+    }
     #[test]
     fn loads_skills_from_repo_root() {
         let codex_home = tempfile::tempdir().expect("tempdir");

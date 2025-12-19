@@ -1850,7 +1850,7 @@ mod tests {
             stream,
             tx,
             Duration::from_millis(10_000),
-            true, // show_raw_reasoning
+            ReasoningDisplay::Raw, // show_raw_reasoning
             otel(),
         ));
 
@@ -1922,7 +1922,7 @@ mod tests {
             stream,
             tx,
             Duration::from_millis(10_000),
-            true,
+            ReasoningDisplay::Raw,
             otel(),
         ));
 
@@ -2009,7 +2009,7 @@ mod tests {
             stream,
             tx,
             Duration::from_millis(10_000),
-            true,
+            ReasoningDisplay::Raw,
             otel(),
         ));
 
