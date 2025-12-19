@@ -1049,8 +1049,9 @@ pub(crate) fn build_specs(
     builder.register_handler("update_plan", plan_handler);
 
     // Skip apply_patch when sandbox is read-only.
-    if !config.is_read_only && config.apply_patch_tool_type.is_some() {
-        let apply_patch_tool_type = config.apply_patch_tool_type.as_ref().unwrap();
+    if let (false, Some(apply_patch_tool_type)) =
+        (config.is_read_only, config.apply_patch_tool_type.as_ref())
+    {
         match apply_patch_tool_type {
             ApplyPatchToolType::Freeform => {
                 builder.push_spec(create_apply_patch_freeform_tool());

@@ -25,14 +25,14 @@ pub enum TruncationBias {
 }
 
 impl TruncationBias {
-    pub fn head_ratio(&self) -> f64 {
+    pub fn head_ratio(self) -> f64 {
         match self {
             TruncationBias::Balanced => 0.5,
             TruncationBias::TailHeavy => 0.2,
         }
     }
 
-    pub fn tail_ratio(&self) -> f64 {
+    pub fn tail_ratio(self) -> f64 {
         1.0 - self.head_ratio()
     }
 }

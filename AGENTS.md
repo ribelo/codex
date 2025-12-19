@@ -2,6 +2,7 @@
 
 In the codex-rs folder where the rust code lives:
 
+- This project uses **Rust Edition 2024** (rustc 1.90+). Modern Rust features like `let_chains` (`if let ... && let ...`) are stable and should be used.
 - Crate names are prefixed with `codex-`. For example, the `core` folder's crate is named `codex-core`
 - When using format! and you can inline variables into {}, always do that.
 - Install any commands the repo relies on (for example `just`, `rg`, or `cargo-insta`) if they aren't already available before running instructions here.
