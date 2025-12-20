@@ -21,6 +21,7 @@ pub(crate) struct GenericDisplayRow {
     pub match_indices: Option<Vec<usize>>, // indices to bold (char positions)
     pub description: Option<String>,       // optional grey text after the name
     pub wrap_indent: Option<usize>,        // optional indent for wrapped lines
+    pub badge: Option<Span<'static>>,      // optional badge before the name
 }
 
 /// Compute a shared description-column start based on the widest visible name
@@ -37,7 +38,14 @@ fn compute_desc_col(
         .iter()
         .enumerate()
         .filter(|(i, _)| visible_range.contains(i))
-        .map(|(_, r)| Line::from(r.name.clone()).width())
+        .map(|(_, r)| {
+            let badge_w = r
+                .badge
+                .as_ref()
+                .map(ratatui::prelude::Span::width)
+                .unwrap_or(0);
+            badge_w + Line::from(r.name.clone()).width()
+        })
         .max()
         .unwrap_or(0);
     let mut desc_col = max_name_width.saturating_add(2);
@@ -72,8 +80,17 @@ fn build_full_line(row: &GenericDisplayRow, desc_col: usize) -> Line<'static> {
         .map(|_| desc_col.saturating_sub(2))
         .unwrap_or(usize::MAX);
 
-    let mut name_spans: Vec<Span> = Vec::with_capacity(row.name.len());
-    let mut used_width = 0usize;
+    let badge_width = row
+        .badge
+        .as_ref()
+        .map(ratatui::prelude::Span::width)
+        .unwrap_or(0);
+    let mut name_spans: Vec<Span> = Vec::with_capacity(row.name.len() + 1);
+    if let Some(badge) = &row.badge {
+        name_spans.push(badge.clone());
+    }
+
+    let mut used_width = badge_width;
     let mut truncated = false;
 
     if let Some(idxs) = row.match_indices.as_ref() {

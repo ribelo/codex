@@ -35,6 +35,8 @@ fn make_chatwidget_manual() -> (ChatWidget, tokio::sync::mpsc::UnboundedReceiver
         disable_paste_burst: false,
         animations_enabled: false,
         skills: None,
+        available_profiles: Vec::new(),
+        available_agents: Vec::new(),
     });
     let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("test"));
     let widget = ChatWidget {
@@ -80,6 +82,7 @@ fn make_chatwidget_manual() -> (ChatWidget, tokio::sync::mpsc::UnboundedReceiver
         feedback: codex_feedback::CodexFeedback::new(),
         current_rollout_path: None,
         available_profiles: Vec::new(),
+        available_agents: Vec::new(),
         subagent_states: HashMap::new(),
         active_subagent_cells: HashMap::new(),
     };

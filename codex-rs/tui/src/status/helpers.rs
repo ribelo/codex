@@ -10,6 +10,7 @@ use codex_protocol::account::PlanType;
 use std::path::Path;
 use unicode_width::UnicodeWidthStr;
 
+use super::account::ChatGptAccountInfo;
 use super::account::StatusAccountDisplay;
 
 fn normalize_agents_display_path(path: &Path) -> String {
@@ -87,20 +88,51 @@ pub(crate) fn compose_agents_summary(config: &Config) -> String {
 pub(crate) fn compose_account_display(
     auth_manager: &AuthManager,
     plan: Option<PlanType>,
-) -> Option<StatusAccountDisplay> {
-    let auth = auth_manager.auth()?;
+) -> StatusAccountDisplay {
+    let auth = auth_manager.auth();
 
-    match auth.mode {
-        AuthMode::ChatGPT => {
-            let email = auth.get_account_email();
-            let plan = plan
-                .map(|plan_type| title_case(format!("{plan_type:?}").as_str()))
-                .or_else(|| Some("Unknown".to_string()));
-            Some(StatusAccountDisplay::ChatGpt { email, plan })
+    // Check for ChatGPT OAuth login
+    let chatgpt = auth.as_ref().and_then(|a| {
+        // ChatGPT login exists if we have tokens (not just API key)
+        if a.get_account_email().is_some() {
+            let plan_str = plan
+                .map(|pt| title_case(format!("{pt:?}").as_str()))
+                .unwrap_or_else(|| "Unknown".to_string());
+            Some(ChatGptAccountInfo {
+                email: a.get_account_email(),
+                plan: Some(plan_str),
+            })
+        } else {
+            None
         }
-        AuthMode::ApiKey | AuthMode::Gemini | AuthMode::Antigravity => {
-            Some(StatusAccountDisplay::ApiKey)
-        }
+    });
+
+    // Get Gemini OAuth accounts
+    let gemini_accounts = auth
+        .as_ref()
+        .map(codex_core::CodexAuth::gemini_account_emails)
+        .unwrap_or_default();
+
+    // Get Antigravity OAuth accounts
+    let antigravity_accounts = auth
+        .as_ref()
+        .map(codex_core::CodexAuth::antigravity_account_emails)
+        .unwrap_or_default();
+
+    // Check if GEMINI_API_KEY env var is set
+    let gemini_api_key_set = std::env::var("GEMINI_API_KEY").is_ok();
+
+    // Check if OpenAI API key is configured (either via env or auth.json)
+    let openai_api_key_set = auth.as_ref().is_some_and(|a| a.mode == AuthMode::ApiKey)
+        || std::env::var("OPENAI_API_KEY").is_ok()
+        || std::env::var("CODEX_API_KEY").is_ok();
+
+    StatusAccountDisplay {
+        chatgpt,
+        gemini_accounts,
+        antigravity_accounts,
+        gemini_api_key_set,
+        openai_api_key_set,
     }
 }
 

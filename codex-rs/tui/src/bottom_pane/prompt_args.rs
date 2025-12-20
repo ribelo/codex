@@ -78,6 +78,26 @@ pub fn parse_slash_name(line: &str) -> Option<(&str, &str)> {
     Some((name, rest))
 }
 
+/// Parse a first-line agent mention of the form `@name <rest>`.
+/// Returns `(name, rest_after_name)` if the line begins with `@` and contains
+/// a non-empty name; otherwise returns `None`.
+pub fn parse_agent_mention(line: &str) -> Option<(&str, &str)> {
+    let stripped = line.strip_prefix('@')?;
+    let mut name_end = stripped.len();
+    for (idx, ch) in stripped.char_indices() {
+        if ch.is_whitespace() {
+            name_end = idx;
+            break;
+        }
+    }
+    let name = &stripped[..name_end];
+    if name.is_empty() {
+        return None;
+    }
+    let rest = stripped[name_end..].trim_start();
+    Some((name, rest))
+}
+
 /// Parse positional arguments using shlex semantics (supports quoted tokens).
 pub fn parse_positional_args(rest: &str) -> Vec<String> {
     Shlex::new(rest).collect()
@@ -538,5 +558,14 @@ mod tests {
         let out =
             expand_custom_command("/commands:my-cmd USER=Alice BRANCH=main", &commands).unwrap();
         assert_eq!(out, Some("Review Alice changes on main".to_string()));
+    }
+
+    #[test]
+    fn parse_agent_mention_basic() {
+        assert_eq!(parse_agent_mention("@foo bar"), Some(("foo", "bar")));
+        assert_eq!(parse_agent_mention("@foo"), Some(("foo", "")));
+        assert_eq!(parse_agent_mention("@ foo"), None); // Space after @ is invalid
+        assert_eq!(parse_agent_mention("foo bar"), None);
+        assert_eq!(parse_agent_mention("@foo  bar  "), Some(("foo", "bar  ")));
     }
 }

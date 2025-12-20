@@ -10,13 +10,21 @@ expression: sanitized
 │ Visit https://chatgpt.com/codex/settings/usage for up-to-date              │
 │ information on rate limits and credits                                     │
 │                                                                            │
+│ Session                                                                    │
 │  Model:            gpt-5.1-codex-max (reasoning none, summaries auto)      │
 │  Directory: [[workspace]]                                                  │
 │  Approval:         on-request                                              │
 │  Sandbox:          read-only                                               │
 │  Agents.md:        <none>                                                  │
 │                                                                            │
+│ Authentication                                                             │
+│  Gemini API:       GEMINI_API_KEY                                          │
+│  OpenAI API:       OPENAI_API_KEY / CODEX_API_KEY                          │
+│                                                                            │
+│ Usage                                                                      │
 │  Token usage:      1.2K total  (800 input + 400 output)                    │
 │  Context window:   100% left (1.2K used / 272K)                            │
+│                                                                            │
+│ Rate Limits                                                                │
 │  Monthly limit:    [██████████████████░░] 88% left (resets 07:08 on 7 May) │
 ╰────────────────────────────────────────────────────────────────────────────╯

@@ -159,6 +159,14 @@ pub async fn run_main(
     // Extract available profile names for the /profile command.
     let available_profiles: Vec<String> = config_toml.profiles.keys().cloned().collect();
 
+    // Load available subagents for @ mentions
+    let subagent_outcome = codex_core::subagents::load_subagents(&codex_home).await;
+    let available_agents: Vec<String> = subagent_outcome
+        .agents
+        .into_iter()
+        .map(|a| a.slug)
+        .collect();
+
     // Use model from CLI if provided.
     let model = cli.model.clone();
 
@@ -280,6 +288,7 @@ pub async fn run_main(
         cli_kv_overrides,
         active_profile,
         available_profiles,
+        available_agents,
         feedback,
     )
     .await
@@ -293,6 +302,7 @@ async fn run_ratatui_app(
     cli_kv_overrides: Vec<(String, toml::Value)>,
     active_profile: Option<String>,
     available_profiles: Vec<String>,
+    available_agents: Vec<String>,
     feedback: codex_feedback::CodexFeedback,
 ) -> color_eyre::Result<AppExitInfo> {
     color_eyre::install()?;
@@ -453,6 +463,7 @@ async fn run_ratatui_app(
         config,
         active_profile,
         available_profiles,
+        available_agents,
         overrides,
         cli_kv_overrides,
         prompt,

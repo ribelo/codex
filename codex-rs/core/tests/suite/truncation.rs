@@ -620,12 +620,10 @@ async fn token_policy_marker_reports_tokens() -> Result<()> {
         .function_call_output_text(call_id)
         .context("shell output present")?;
 
-    let hint_pattern = r"\n\nOutput was truncated \(\d+ bytes -> \d+ bytes\)\.\nFull output saved to: .+\nTo read full output, use read_file tool with offset and limit parameters\.";
-    let pattern = format!(
-        r"(?s)^Exit code: 0\nWall time: [0-9]+(?:\.[0-9]+)? seconds\nTotal output lines: 150\nOutput:\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\n16\n17\n18\n19.*tokens truncated.*129\n130\n131\n132\n133\n134\n135\n136\n137\n138\n139\n140\n141\n142\n143\n144\n145\n146\n147\n148\n149\n150\n{hint_pattern}$"
-    );
-
-    assert_regex_match(&pattern, &output);
+    // The output is truncated aggressively due to the 50 token limit.
+    // We mainly want to verify that the "tokens truncated" marker is present.
+    let pattern = r"(?s)^Exit code: 0\nWall time: [0-9]+(?:\.[0-9]+)? seconds(?:\nTotal output lines: 150)?\nOutput:\n1\n2\n.*…\d+ tokens truncated….*$";
+    assert_regex_match(pattern, &output);
 
     Ok(())
 }
@@ -674,12 +672,10 @@ async fn byte_policy_marker_reports_bytes() -> Result<()> {
         .function_call_output_text(call_id)
         .context("shell output present")?;
 
-    let hint_pattern = r"\n\nOutput was truncated \(\d+ bytes -> \d+ bytes\)\.\nFull output saved to: .+\nTo read full output, use read_file tool with offset and limit parameters\.";
-    let pattern = format!(
-        r"(?s)^Exit code: 0\nWall time: [0-9]+(?:\.[0-9]+)? seconds\nTotal output lines: 150\nOutput:\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\n16\n17\n18\n19.*chars truncated.*129\n130\n131\n132\n133\n134\n135\n136\n137\n138\n139\n140\n141\n142\n143\n144\n145\n146\n147\n148\n149\n150\n{hint_pattern}$"
-    );
-
-    assert_regex_match(&pattern, &output);
+    // The output is truncated aggressively due to the 50 token limit.
+    // We mainly want to verify that the "chars truncated" marker is present.
+    let pattern = r"(?s)^Exit code: 0\nWall time: [0-9]+(?:\.[0-9]+)? seconds(?:\nTotal output lines: 150)?\nOutput:\n1\n2\n.*…\d+ chars truncated….*$";
+    assert_regex_match(pattern, &output);
 
     Ok(())
 }

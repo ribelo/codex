@@ -217,6 +217,7 @@ impl ListSelectionView {
                         match_indices: None,
                         description,
                         wrap_indent,
+                        badge: None,
                     }
                 })
             })

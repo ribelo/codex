@@ -61,7 +61,7 @@ struct StatusHistoryCell {
     approval: String,
     sandbox: String,
     agents_summary: String,
-    account: Option<StatusAccountDisplay>,
+    account: StatusAccountDisplay,
     session_id: Option<String>,
     token_usage: StatusTokenUsageData,
     rate_limits: StatusRateLimitData,
@@ -311,18 +311,26 @@ impl HistoryCell for StatusHistoryCell {
             return Vec::new();
         }
 
-        let account_value = self.account.as_ref().map(|account| match account {
-            StatusAccountDisplay::ChatGpt { email, plan } => match (email, plan) {
-                (Some(email), Some(plan)) => format!("{email} ({plan})"),
-                (Some(email), None) => email.clone(),
-                (None, Some(plan)) => plan.clone(),
-                (None, None) => "ChatGPT".to_string(),
-            },
-            StatusAccountDisplay::ApiKey => {
-                "API key configured (run codex login to use ChatGPT)".to_string()
-            }
-        });
+        let account = &self.account;
 
+        // Determine which sections to show
+        let show_auth = account.chatgpt.is_some()
+            || !account.gemini_accounts.is_empty()
+            || !account.antigravity_accounts.is_empty()
+            || account.gemini_api_key_set
+            || account.openai_api_key_set;
+
+        let show_token_usage = account.chatgpt.is_none();
+        let show_context_window = self.token_usage.context_window.is_some();
+        let show_usage = show_token_usage || show_context_window;
+
+        let show_rate_limits = match &self.rate_limits {
+            StatusRateLimitData::Available(rows) => !rows.is_empty(),
+            StatusRateLimitData::Stale(rows) => !rows.is_empty(),
+            StatusRateLimitData::Missing => true,
+        };
+
+        // Collect labels
         let mut labels: Vec<String> =
             vec!["Model", "Directory", "Approval", "Sandbox", "Agents.md"]
                 .into_iter()
@@ -330,17 +338,40 @@ impl HistoryCell for StatusHistoryCell {
                 .collect();
         let mut seen: BTreeSet<String> = labels.iter().cloned().collect();
 
-        if account_value.is_some() {
-            push_label(&mut labels, &mut seen, "Account");
-        }
         if self.session_id.is_some() {
             push_label(&mut labels, &mut seen, "Session");
         }
-        push_label(&mut labels, &mut seen, "Token usage");
-        if self.token_usage.context_window.is_some() {
-            push_label(&mut labels, &mut seen, "Context window");
+
+        if show_auth {
+            if account.chatgpt.is_some() {
+                push_label(&mut labels, &mut seen, "ChatGPT");
+            }
+            if !account.gemini_accounts.is_empty() {
+                push_label(&mut labels, &mut seen, "Gemini");
+            }
+            if account.gemini_api_key_set {
+                push_label(&mut labels, &mut seen, "Gemini API");
+            }
+            if !account.antigravity_accounts.is_empty() {
+                push_label(&mut labels, &mut seen, "Antigravity");
+            }
+            if account.openai_api_key_set {
+                push_label(&mut labels, &mut seen, "OpenAI API");
+            }
         }
-        self.collect_rate_limit_labels(&mut seen, &mut labels);
+
+        if show_usage {
+            if show_token_usage {
+                push_label(&mut labels, &mut seen, "Token usage");
+            }
+            if show_context_window {
+                push_label(&mut labels, &mut seen, "Context window");
+            }
+        }
+
+        if show_rate_limits {
+            self.collect_rate_limit_labels(&mut seen, &mut labels);
+        }
 
         let formatter = FieldFormatter::from_labels(labels.iter().map(String::as_str));
         let value_width = formatter.value_width(available_inner_width);
@@ -360,7 +391,10 @@ impl HistoryCell for StatusHistoryCell {
             RtOptions::new(available_inner_width),
         );
         lines.extend(note_lines);
-        lines.push(Line::from(Vec::<Span<'static>>::new()));
+
+        // Session Section
+        lines.push(Line::from(""));
+        lines.push(Line::from("Session".bold()));
 
         let mut model_spans = vec![Span::from(self.model_name.clone())];
         if !self.model_details.is_empty() {
@@ -376,26 +410,63 @@ impl HistoryCell for StatusHistoryCell {
         lines.push(formatter.line("Approval", vec![Span::from(self.approval.clone())]));
         lines.push(formatter.line("Sandbox", vec![Span::from(self.sandbox.clone())]));
         lines.push(formatter.line("Agents.md", vec![Span::from(self.agents_summary.clone())]));
-
-        if let Some(account_value) = account_value {
-            lines.push(formatter.line("Account", vec![Span::from(account_value)]));
-        }
-
         if let Some(session) = self.session_id.as_ref() {
             lines.push(formatter.line("Session", vec![Span::from(session.clone())]));
         }
 
-        lines.push(Line::from(Vec::<Span<'static>>::new()));
-        // Hide token usage only for ChatGPT subscribers
-        if !matches!(self.account, Some(StatusAccountDisplay::ChatGpt { .. })) {
-            lines.push(formatter.line("Token usage", self.token_usage_spans()));
+        // Authentication Section
+        if show_auth {
+            lines.push(Line::from(""));
+            lines.push(Line::from("Authentication".bold()));
+
+            if let Some(chatgpt) = &account.chatgpt {
+                let value = match (&chatgpt.email, &chatgpt.plan) {
+                    (Some(email), Some(plan)) => format!("{email} ({plan})"),
+                    (Some(email), None) => email.clone(),
+                    (None, Some(plan)) => plan.clone(),
+                    (None, None) => "logged in".to_string(),
+                };
+                lines.push(formatter.line("ChatGPT", vec![Span::from(value)]));
+            }
+            if !account.gemini_accounts.is_empty() {
+                let emails = account.gemini_accounts.join(", ");
+                lines.push(formatter.line("Gemini", vec![Span::from(emails)]));
+            }
+            if account.gemini_api_key_set {
+                lines.push(formatter.line("Gemini API", vec![Span::from("GEMINI_API_KEY").dim()]));
+            }
+            if !account.antigravity_accounts.is_empty() {
+                let emails = account.antigravity_accounts.join(", ");
+                lines.push(formatter.line("Antigravity", vec![Span::from(emails)]));
+            }
+            if account.openai_api_key_set {
+                lines.push(formatter.line(
+                    "OpenAI API",
+                    vec![Span::from("OPENAI_API_KEY / CODEX_API_KEY").dim()],
+                ));
+            }
         }
 
-        if let Some(spans) = self.context_window_spans() {
-            lines.push(formatter.line("Context window", spans));
+        // Usage Section
+        if show_usage {
+            lines.push(Line::from(""));
+            lines.push(Line::from("Usage".bold()));
+
+            if show_token_usage {
+                lines.push(formatter.line("Token usage", self.token_usage_spans()));
+            }
+
+            if let Some(spans) = self.context_window_spans() {
+                lines.push(formatter.line("Context window", spans));
+            }
         }
 
-        lines.extend(self.rate_limit_lines(available_inner_width, &formatter));
+        // Rate Limits Section
+        if show_rate_limits {
+            lines.push(Line::from(""));
+            lines.push(Line::from("Rate Limits".bold()));
+            lines.extend(self.rate_limit_lines(available_inner_width, &formatter));
+        }
 
         let content_width = lines.iter().map(line_display_width).max().unwrap_or(0);
         let inner_width = content_width.min(available_inner_width);

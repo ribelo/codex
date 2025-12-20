@@ -276,6 +276,7 @@ pub(crate) struct ChatWidgetInit {
     pub(crate) feedback: codex_feedback::CodexFeedback,
     pub(crate) is_first_run: bool,
     pub(crate) available_profiles: Vec<String>,
+    pub(crate) available_agents: Vec<String>,
     pub(crate) model_family: ModelFamily,
 }
 
@@ -350,6 +351,8 @@ pub(crate) struct ChatWidget {
     current_rollout_path: Option<PathBuf>,
     // Available profiles for /profile command
     available_profiles: Vec<String>,
+    // Available subagents for @ mentions
+    available_agents: Vec<String>,
     // Track subagent states by parent_call_id so cells can share mutable state
     subagent_states: HashMap<String, Arc<std::sync::Mutex<history_cell::SubagentState>>>,
     // Active subagent cells that should be rendered dynamically (not flushed to history until complete)
@@ -457,6 +460,9 @@ impl ChatWidget {
         if let Some(user_message) = self.initial_user_message.take() {
             self.submit_user_message(user_message);
         }
+        // Warn if using Gemini/Antigravity provider without OAuth
+        // Warn if using Gemini provider with API key instead of OAuth
+        self.check_gemini_api_key_warning();
         if !self.suppress_session_configured_redraw {
             self.request_redraw();
         }
@@ -756,6 +762,28 @@ impl ChatWidget {
     fn on_warning(&mut self, message: impl Into<String>) {
         self.add_to_history(history_cell::new_warning_event(message.into()));
         self.request_redraw();
+    }
+
+    /// Checks if the current provider is Gemini and using API key instead of OAuth.
+    /// If so, emits a warning suggesting OAuth for better rate limits.
+    fn check_gemini_api_key_warning(&mut self) {
+        let provider_kind = self.config.model_provider.provider_kind;
+        let auth = self.auth_manager.auth();
+
+        match provider_kind {
+            ProviderKind::Gemini => {
+                let has_oauth = auth.as_ref().is_some_and(|a| a.gemini_account_count() > 0);
+                let has_api_key = std::env::var("GEMINI_API_KEY").is_ok();
+
+                if !has_oauth && has_api_key {
+                    self.on_warning(
+                        "Using GEMINI_API_KEY instead of OAuth. \
+                         Run `codex login gemini` for better rate limits and features.",
+                    );
+                }
+            }
+            _ => {}
+        }
     }
 
     fn on_mcp_startup_update(&mut self, ev: McpStartupUpdateEvent) {
@@ -1409,6 +1437,7 @@ impl ChatWidget {
             feedback,
             is_first_run,
             available_profiles,
+            available_agents,
             model_family,
         } = common;
         let model_slug = model_family.get_model_slug().to_string();
@@ -1431,6 +1460,8 @@ impl ChatWidget {
                 disable_paste_burst: config.disable_paste_burst,
                 animations_enabled: config.animations,
                 skills: None,
+                available_profiles: available_profiles.clone(),
+                available_agents: available_agents.clone(),
             }),
             active_cell: None,
             config,
@@ -1473,6 +1504,7 @@ impl ChatWidget {
             feedback,
             current_rollout_path: None,
             available_profiles,
+            available_agents,
             subagent_states: HashMap::new(),
             active_subagent_cells: HashMap::new(),
         };
@@ -1500,6 +1532,7 @@ impl ChatWidget {
             feedback,
             is_first_run: _,
             available_profiles,
+            available_agents,
             model_family,
         } = common;
         let model_slug = model_family.get_model_slug().to_string();
@@ -1522,6 +1555,8 @@ impl ChatWidget {
                 disable_paste_burst: config.disable_paste_burst,
                 animations_enabled: config.animations,
                 skills: None,
+                available_profiles: available_profiles.clone(),
+                available_agents: available_agents.clone(),
             }),
             active_cell: None,
             subagent_states: HashMap::new(),
@@ -1566,6 +1601,7 @@ impl ChatWidget {
             feedback,
             current_rollout_path: None,
             available_profiles,
+            available_agents,
         };
 
         widget.prefetch_rate_limits();

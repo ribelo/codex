@@ -1,9 +1,12 @@
 use codex_core::config::types::McpServerConfig;
 use codex_core::config::types::McpServerTransportConfig;
 use codex_core::mcp_connection_manager::McpConnectionManager;
+use codex_core::mcp_connection_manager::SandboxState;
 use codex_core::protocol::EventMsg;
 use codex_core::protocol::McpStartupStatus;
+use codex_core::protocol::SandboxPolicy;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
@@ -33,16 +36,20 @@ async fn test_mcp_lazy_init_background() {
         },
     );
 
-    manager.configure(
-        configs,
-        Default::default(),
-        HashMap::new(),
-        tx,
-        cancel_token,
-    );
-
-    // Call ensure_started
-    manager.ensure_started("sleepy").await;
+    manager
+        .initialize(
+            configs,
+            Default::default(),
+            HashMap::new(),
+            tx,
+            cancel_token,
+            SandboxState {
+                sandbox_policy: SandboxPolicy::ReadOnly,
+                codex_linux_sandbox_exe: None,
+                sandbox_cwd: PathBuf::from("/"),
+            },
+        )
+        .await;
 
     // Check events
     let event = rx.recv().await.expect("should receive starting event");

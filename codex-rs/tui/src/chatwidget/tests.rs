@@ -370,6 +370,7 @@ async fn helpers_are_available_and_do_not_panic() {
         feedback: codex_feedback::CodexFeedback::new(),
         is_first_run: true,
         available_profiles: Vec::new(),
+        available_agents: Vec::new(),
         model_family,
     };
     let mut w = ChatWidget::new(init, conversation_manager);
@@ -404,6 +405,8 @@ fn make_chatwidget_manual(
         disable_paste_burst: false,
         animations_enabled: cfg.animations,
         skills: None,
+        available_profiles: Vec::new(),
+        available_agents: Vec::new(),
     });
     let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("test"));
     let widget = ChatWidget {
@@ -449,6 +452,7 @@ fn make_chatwidget_manual(
         feedback: codex_feedback::CodexFeedback::new(),
         current_rollout_path: None,
         available_profiles: Vec::new(),
+        available_agents: Vec::new(),
         subagent_states: HashMap::new(),
         active_subagent_cells: HashMap::new(),
     };

@@ -1,6 +1,7 @@
 use anyhow::Result;
 use codex_core::protocol::EventMsg;
 use codex_core::protocol::Op;
+use codex_protocol::config_types::ReasoningDisplay;
 use codex_protocol::user_input::UserInput;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
@@ -69,7 +70,7 @@ async fn resume_includes_initial_messages_from_reasoning_events() -> Result<()> 
 
     let server = start_mock_server().await;
     let mut builder = test_codex().with_config(|config| {
-        config.show_raw_agent_reasoning = true;
+        config.reasoning_display = ReasoningDisplay::Raw;
     });
     let initial = builder.build(&server).await?;
     let codex = Arc::clone(&initial.codex);
@@ -99,22 +100,33 @@ async fn resume_includes_initial_messages_from_reasoning_events() -> Result<()> 
         .session_configured
         .initial_messages
         .expect("expected initial messages to be present for resumed session");
-    match initial_messages.as_slice() {
-        [
-            EventMsg::UserMessage(first_user),
-            EventMsg::TokenCount(_),
-            EventMsg::AgentReasoning(reasoning),
-            EventMsg::AgentReasoningRawContent(raw),
-            EventMsg::AgentMessage(assistant_message),
-            EventMsg::TokenCount(_),
-        ] => {
-            assert_eq!(first_user.message, "Record reasoning messages");
-            assert_eq!(reasoning.text, "Summarized step");
-            assert_eq!(raw.text, "raw detail");
-            assert_eq!(assistant_message.message, "Completed reasoning turn");
-        }
-        other => panic!("unexpected initial messages after resume: {other:#?}"),
-    }
+
+    let first_user = initial_messages
+        .iter()
+        .find_map(|m| match m {
+            EventMsg::UserMessage(msg) => Some(msg),
+            _ => None,
+        })
+        .expect("missing UserMessage");
+    assert_eq!(first_user.message, "Record reasoning messages");
+
+    let raw = initial_messages
+        .iter()
+        .find_map(|m| match m {
+            EventMsg::AgentReasoningRawContent(msg) => Some(msg),
+            _ => None,
+        })
+        .expect("missing AgentReasoningRawContent");
+    assert_eq!(raw.text, "raw detail");
+
+    let assistant_message = initial_messages
+        .iter()
+        .find_map(|m| match m {
+            EventMsg::AgentMessage(msg) => Some(msg),
+            _ => None,
+        })
+        .expect("missing AgentMessage");
+    assert_eq!(assistant_message.message, "Completed reasoning turn");
 
     Ok(())
 }

@@ -61,7 +61,7 @@ struct StatusHistoryCell {
     approval: String,
     sandbox: String,
     agents_summary: String,
-    account: Option<StatusAccountDisplay>,
+    account: StatusAccountDisplay,
     session_id: Option<String>,
     token_usage: StatusTokenUsageData,
     rate_limits: StatusRateLimitData,
@@ -311,17 +311,13 @@ impl HistoryCell for StatusHistoryCell {
             return Vec::new();
         }
 
-        let account_value = self.account.as_ref().map(|account| match account {
-            StatusAccountDisplay::ChatGpt { email, plan } => match (email, plan) {
-                (Some(email), Some(plan)) => format!("{email} ({plan})"),
-                (Some(email), None) => email.clone(),
-                (None, Some(plan)) => plan.clone(),
-                (None, None) => "ChatGPT".to_string(),
-            },
-            StatusAccountDisplay::ApiKey => {
-                "API key configured (run codex login to use ChatGPT)".to_string()
-            }
-        });
+        // Build auth display entries
+        let account = &self.account;
+        let has_any_auth = account.chatgpt.is_some()
+            || !account.gemini_accounts.is_empty()
+            || !account.antigravity_accounts.is_empty()
+            || account.gemini_api_key_set
+            || account.openai_api_key_set;
 
         let mut labels: Vec<String> =
             vec!["Model", "Directory", "Approval", "Sandbox", "Agents.md"]
@@ -330,8 +326,24 @@ impl HistoryCell for StatusHistoryCell {
                 .collect();
         let mut seen: BTreeSet<String> = labels.iter().cloned().collect();
 
-        if account_value.is_some() {
-            push_label(&mut labels, &mut seen, "Account");
+        // Add labels for each auth source
+        if account.chatgpt.is_some() {
+            push_label(&mut labels, &mut seen, "ChatGPT");
+        }
+        if !account.gemini_accounts.is_empty() {
+            push_label(&mut labels, &mut seen, "Gemini");
+        }
+        if account.gemini_api_key_set {
+            push_label(&mut labels, &mut seen, "Gemini API");
+        }
+        if !account.antigravity_accounts.is_empty() {
+            push_label(&mut labels, &mut seen, "Antigravity");
+        }
+        if account.openai_api_key_set {
+            push_label(&mut labels, &mut seen, "OpenAI API");
+        }
+        if !has_any_auth {
+            push_label(&mut labels, &mut seen, "Auth");
         }
         if self.session_id.is_some() {
             push_label(&mut labels, &mut seen, "Session");
@@ -377,8 +389,35 @@ impl HistoryCell for StatusHistoryCell {
         lines.push(formatter.line("Sandbox", vec![Span::from(self.sandbox.clone())]));
         lines.push(formatter.line("Agents.md", vec![Span::from(self.agents_summary.clone())]));
 
-        if let Some(account_value) = account_value {
-            lines.push(formatter.line("Account", vec![Span::from(account_value)]));
+        // Display auth info for each source
+        if let Some(chatgpt) = &account.chatgpt {
+            let value = match (&chatgpt.email, &chatgpt.plan) {
+                (Some(email), Some(plan)) => format!("{email} ({plan})"),
+                (Some(email), None) => email.clone(),
+                (None, Some(plan)) => plan.clone(),
+                (None, None) => "logged in".to_string(),
+            };
+            lines.push(formatter.line("ChatGPT", vec![Span::from(value)]));
+        }
+        if !account.gemini_accounts.is_empty() {
+            let emails = account.gemini_accounts.join(", ");
+            lines.push(formatter.line("Gemini", vec![Span::from(emails)]));
+        }
+        if account.gemini_api_key_set {
+            lines.push(formatter.line("Gemini API", vec![Span::from("GEMINI_API_KEY").dim()]));
+        }
+        if !account.antigravity_accounts.is_empty() {
+            let emails = account.antigravity_accounts.join(", ");
+            lines.push(formatter.line("Antigravity", vec![Span::from(emails)]));
+        }
+        if account.openai_api_key_set {
+            lines.push(formatter.line(
+                "OpenAI API",
+                vec![Span::from("OPENAI_API_KEY / CODEX_API_KEY").dim()],
+            ));
+        }
+        if !has_any_auth {
+            lines.push(formatter.line("Auth", vec![Span::from("not configured").dim()]));
         }
 
         if let Some(session) = self.session_id.as_ref() {
@@ -387,7 +426,7 @@ impl HistoryCell for StatusHistoryCell {
 
         lines.push(Line::from(Vec::<Span<'static>>::new()));
         // Hide token usage only for ChatGPT subscribers
-        if !matches!(self.account, Some(StatusAccountDisplay::ChatGpt { .. })) {
+        if account.chatgpt.is_none() {
             lines.push(formatter.line("Token usage", self.token_usage_spans()));
         }
 

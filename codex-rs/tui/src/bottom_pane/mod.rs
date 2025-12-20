@@ -92,6 +92,8 @@ pub(crate) struct BottomPaneParams {
     pub(crate) disable_paste_burst: bool,
     pub(crate) animations_enabled: bool,
     pub(crate) skills: Option<Vec<SkillMetadata>>,
+    pub(crate) available_profiles: Vec<String>,
+    pub(crate) available_agents: Vec<String>,
 }
 
 impl BottomPane {
@@ -105,6 +107,8 @@ impl BottomPane {
             disable_paste_burst,
             animations_enabled,
             skills,
+            available_profiles,
+            available_agents,
         } = params;
         let mut composer = ChatComposer::new(
             has_input_focus,
@@ -113,6 +117,8 @@ impl BottomPane {
             placeholder_text,
             disable_paste_burst,
         );
+        composer.set_available_profiles(available_profiles);
+        composer.set_available_agents(available_agents);
         composer.set_skill_mentions(skills);
 
         Self {
@@ -628,6 +634,8 @@ mod tests {
             disable_paste_burst: false,
             animations_enabled: true,
             skills: Some(Vec::new()),
+            available_profiles: Vec::new(),
+            available_agents: Vec::new(),
         });
         pane.push_approval_request(exec_request(), &features);
         assert_eq!(CancellationEvent::Handled, pane.on_ctrl_c());
@@ -651,6 +659,8 @@ mod tests {
             disable_paste_burst: false,
             animations_enabled: true,
             skills: Some(Vec::new()),
+            available_profiles: Vec::new(),
+            available_agents: Vec::new(),
         });
 
         // Create an approval modal (active view).
@@ -685,6 +695,8 @@ mod tests {
             disable_paste_burst: false,
             animations_enabled: true,
             skills: Some(Vec::new()),
+            available_profiles: Vec::new(),
+            available_agents: Vec::new(),
         });
 
         // Start a running task so the status indicator is active above the composer.
@@ -752,6 +764,8 @@ mod tests {
             disable_paste_burst: false,
             animations_enabled: true,
             skills: Some(Vec::new()),
+            available_profiles: Vec::new(),
+            available_agents: Vec::new(),
         });
 
         // Begin a task: show initial status.
@@ -779,6 +793,8 @@ mod tests {
             disable_paste_burst: false,
             animations_enabled: true,
             skills: Some(Vec::new()),
+            available_profiles: Vec::new(),
+            available_agents: Vec::new(),
         });
 
         // Activate spinner (status view replaces composer) with no live ring.
@@ -810,6 +826,8 @@ mod tests {
             disable_paste_burst: false,
             animations_enabled: true,
             skills: Some(Vec::new()),
+            available_profiles: Vec::new(),
+            available_agents: Vec::new(),
         });
 
         pane.set_task_running(true);
@@ -838,6 +856,8 @@ mod tests {
             disable_paste_burst: false,
             animations_enabled: true,
             skills: Some(Vec::new()),
+            available_profiles: Vec::new(),
+            available_agents: Vec::new(),
         });
 
         pane.set_task_running(true);

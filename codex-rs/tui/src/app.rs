@@ -227,6 +227,7 @@ pub(crate) struct App {
     pub(crate) current_model: String,
     pub(crate) active_profile: Option<String>,
     pub(crate) available_profiles: Vec<String>,
+    pub(crate) available_agents: Vec<String>,
     /// Stored to allow reloading config with a different profile.
     config_overrides: ConfigOverrides,
     /// Stored to allow reloading config with a different profile.
@@ -276,6 +277,7 @@ impl App {
         mut config: Config,
         active_profile: Option<String>,
         available_profiles: Vec<String>,
+        available_agents: Vec<String>,
         config_overrides: ConfigOverrides,
         cli_kv_overrides: Vec<(String, toml::Value)>,
         initial_prompt: Option<String>,
@@ -347,6 +349,7 @@ impl App {
                     feedback: feedback.clone(),
                     is_first_run,
                     available_profiles: available_profiles.clone(),
+                    available_agents: available_agents.clone(),
                     model_family: model_family.clone(),
                 };
                 ChatWidget::new(init, conversation_manager.clone())
@@ -374,6 +377,7 @@ impl App {
                     feedback: feedback.clone(),
                     is_first_run,
                     available_profiles: available_profiles.clone(),
+                    available_agents: available_agents.clone(),
                     model_family: model_family.clone(),
                 };
                 ChatWidget::new_from_existing(
@@ -399,6 +403,7 @@ impl App {
             current_model: model.clone(),
             active_profile,
             available_profiles,
+            available_agents,
             config_overrides,
             cli_kv_overrides,
             file_search,
@@ -540,6 +545,7 @@ impl App {
                     feedback: self.feedback.clone(),
                     is_first_run: false,
                     available_profiles: self.available_profiles.clone(),
+                    available_agents: self.available_agents.clone(),
                     model_family: model_family.clone(),
                 };
                 self.chat_widget = ChatWidget::new(init, self.server.clone());
@@ -597,6 +603,7 @@ impl App {
                             feedback: self.feedback.clone(),
                             is_first_run: false,
                             available_profiles: self.available_profiles.clone(),
+                            available_agents: self.available_agents.clone(),
                             model_family: model_family.clone(),
                         };
                         self.chat_widget = ChatWidget::new(init, self.server.clone());
@@ -667,6 +674,7 @@ impl App {
                                     feedback: self.feedback.clone(),
                                     is_first_run: false,
                                     available_profiles: self.available_profiles.clone(),
+                                    available_agents: self.available_agents.clone(),
                                     model_family: model_family.clone(),
                                 };
                                 self.chat_widget = ChatWidget::new_from_existing(
@@ -1323,6 +1331,7 @@ mod tests {
             current_model,
             active_profile: None,
             available_profiles: Vec::new(),
+            available_agents: Vec::new(),
             config_overrides: ConfigOverrides::default(),
             cli_kv_overrides: Vec::new(),
             file_search,
@@ -1367,6 +1376,7 @@ mod tests {
                 current_model,
                 active_profile: None,
                 available_profiles: Vec::new(),
+                available_agents: Vec::new(),
                 config_overrides: ConfigOverrides::default(),
                 cli_kv_overrides: Vec::new(),
                 file_search,
