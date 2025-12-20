@@ -5,9 +5,12 @@
 //! for each supported provider.
 
 mod antigravity_client;
+mod gemini_client;
 mod types;
 
 pub use antigravity_client::AntigravityQuotaClient;
+pub use gemini_client::GeminiQuotaClient;
+pub use gemini_client::GeminiQuotaResponse;
 pub use types::AntigravityUserStatus;
 pub use types::QuotaError;
 

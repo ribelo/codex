@@ -128,6 +128,7 @@ fn status_snapshot_includes_reasoning_details() {
         credits: None,
         plan_type: None,
         antigravity: None,
+        gemini: None,
     };
     let rate_display = rate_limit_snapshot_display(&snapshot, captured_at);
 
@@ -187,6 +188,7 @@ fn status_snapshot_includes_monthly_limit() {
         credits: None,
         plan_type: None,
         antigravity: None,
+        gemini: None,
     };
     let rate_display = rate_limit_snapshot_display(&snapshot, captured_at);
 
@@ -234,6 +236,7 @@ fn status_snapshot_shows_unlimited_credits() {
         }),
         plan_type: None,
         antigravity: None,
+        gemini: None,
     };
     let rate_display = rate_limit_snapshot_display(&snapshot, captured_at);
     let model_slug = ModelsManager::get_model_offline(config.model.as_deref());
@@ -279,6 +282,7 @@ fn status_snapshot_shows_positive_credits() {
         }),
         plan_type: None,
         antigravity: None,
+        gemini: None,
     };
     let rate_display = rate_limit_snapshot_display(&snapshot, captured_at);
     let model_slug = ModelsManager::get_model_offline(config.model.as_deref());
@@ -324,6 +328,7 @@ fn status_snapshot_hides_zero_credits() {
         }),
         plan_type: None,
         antigravity: None,
+        gemini: None,
     };
     let rate_display = rate_limit_snapshot_display(&snapshot, captured_at);
     let model_slug = ModelsManager::get_model_offline(config.model.as_deref());
@@ -367,6 +372,7 @@ fn status_snapshot_hides_when_has_no_credits_flag() {
         }),
         plan_type: None,
         antigravity: None,
+        gemini: None,
     };
     let rate_display = rate_limit_snapshot_display(&snapshot, captured_at);
     let model_slug = ModelsManager::get_model_offline(config.model.as_deref());
@@ -466,6 +472,7 @@ fn status_snapshot_truncates_in_narrow_terminal() {
         credits: None,
         plan_type: None,
         antigravity: None,
+        gemini: None,
     };
     let rate_display = rate_limit_snapshot_display(&snapshot, captured_at);
 
@@ -577,6 +584,7 @@ fn status_snapshot_includes_credits_and_limits() {
         }),
         plan_type: None,
         antigravity: None,
+        gemini: None,
     };
     let rate_display = rate_limit_snapshot_display(&snapshot, captured_at);
 
@@ -626,6 +634,7 @@ fn status_snapshot_shows_empty_limits_message() {
         credits: None,
         plan_type: None,
         antigravity: None,
+        gemini: None,
     };
     let captured_at = chrono::Local
         .with_ymd_and_hms(2024, 6, 7, 8, 9, 10)
@@ -691,6 +700,7 @@ fn status_snapshot_shows_stale_limits_message() {
         credits: None,
         plan_type: None,
         antigravity: None,
+        gemini: None,
     };
     let rate_display = rate_limit_snapshot_display(&snapshot, captured_at);
     let now = captured_at + ChronoDuration::minutes(20);
@@ -757,6 +767,7 @@ fn status_snapshot_cached_limits_hide_credits_without_flag() {
         }),
         plan_type: None,
         antigravity: None,
+        gemini: None,
     };
     let rate_display = rate_limit_snapshot_display(&snapshot, captured_at);
     let now = captured_at + ChronoDuration::minutes(20);

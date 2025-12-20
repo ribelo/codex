@@ -800,6 +800,34 @@ pub struct RateLimitSnapshot {
     /// Antigravity-specific quota data with per-model quotas and credits.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub antigravity: Option<AntigravityQuota>,
+    /// Gemini-specific quota data from CodeAssist API.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gemini: Option<GeminiQuota>,
+}
+
+impl RateLimitSnapshot {
+    /// Merge another snapshot into this one, preferring fields from `other` if set.
+    /// This allows combining quota data from multiple providers.
+    pub fn merge(&mut self, other: RateLimitSnapshot) {
+        if other.primary.is_some() {
+            self.primary = other.primary;
+        }
+        if other.secondary.is_some() {
+            self.secondary = other.secondary;
+        }
+        if other.credits.is_some() {
+            self.credits = other.credits;
+        }
+        if other.plan_type.is_some() {
+            self.plan_type = other.plan_type;
+        }
+        if other.antigravity.is_some() {
+            self.antigravity = other.antigravity;
+        }
+        if other.gemini.is_some() {
+            self.gemini = other.gemini;
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema, TS)]
@@ -856,6 +884,31 @@ pub struct ModelQuota {
     /// Unix timestamp (seconds since epoch) when quota resets.
     #[ts(type = "number | null")]
     pub resets_at: Option<i64>,
+}
+
+/// Gemini-specific quota information from Google CodeAssist API.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema, TS)]
+pub struct GeminiQuota {
+    /// The GCP project ID used for quota tracking.
+    pub project_id: Option<String>,
+    /// Per-model/token-type quota buckets.
+    pub buckets: Vec<GeminiBucket>,
+}
+
+/// A single quota bucket from Gemini CodeAssist API.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema, TS)]
+pub struct GeminiBucket {
+    /// Model identifier (e.g., "gemini-2.5-pro").
+    pub model_id: Option<String>,
+    /// Token type (e.g., "input", "output").
+    pub token_type: Option<String>,
+    /// Remaining amount as a string (e.g., "1000000").
+    pub remaining_amount: Option<String>,
+    /// Fraction of quota remaining (0.0-1.0).
+    pub remaining_fraction: Option<f64>,
+    /// Unix timestamp (seconds since epoch) when quota resets.
+    #[ts(type = "number | null")]
+    pub reset_time: Option<i64>,
 }
 
 // Includes prompts, tools and space to call compact.

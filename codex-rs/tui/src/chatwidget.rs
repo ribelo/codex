@@ -770,19 +770,16 @@ impl ChatWidget {
         let provider_kind = self.config.model_provider.provider_kind;
         let auth = self.auth_manager.auth();
 
-        match provider_kind {
-            ProviderKind::Gemini => {
-                let has_oauth = auth.as_ref().is_some_and(|a| a.gemini_account_count() > 0);
-                let has_api_key = std::env::var("GEMINI_API_KEY").is_ok();
+        if provider_kind == ProviderKind::Gemini {
+            let has_oauth = auth.as_ref().is_some_and(|a| a.gemini_account_count() > 0);
+            let has_api_key = std::env::var("GEMINI_API_KEY").is_ok();
 
-                if !has_oauth && has_api_key {
-                    self.on_warning(
-                        "Using GEMINI_API_KEY instead of OAuth. \
-                         Run `codex login gemini` for better rate limits and features.",
-                    );
-                }
+            if !has_oauth && has_api_key {
+                self.on_warning(
+                    "Using GEMINI_API_KEY instead of OAuth. \
+                     Run `codex login gemini` for better rate limits and features.",
+                );
             }
-            _ => {}
         }
     }
 
@@ -2565,52 +2562,90 @@ impl ChatWidget {
         self.stop_rate_limit_poller();
 
         let app_event_tx = self.app_event_tx.clone();
+        let auth = self.auth_manager.auth();
+        let chatgpt_base_url = self.config.chatgpt_base_url.clone();
 
-        // Determine which quota client to use based on provider
-        match self.config.model_provider.provider_kind {
-            ProviderKind::Antigravity => {
-                // Use the Antigravity quota client
-                let handle = tokio::spawn(async move {
-                    let mut interval = tokio::time::interval(Duration::from_secs(60));
-                    let client = AntigravityQuotaClient::new();
+        // Determine which providers we can fetch from
+        let has_chatgpt = auth.as_ref().is_some_and(|a| a.mode == AuthMode::ChatGPT);
+        let has_gemini = auth.as_ref().is_some_and(|a| a.gemini_account_count() > 0);
+        // Antigravity uses LSP-based auth, always try to fetch
+        let has_antigravity = true;
 
-                    loop {
-                        if let Some(snapshot) = client.fetch_quota().await {
-                            app_event_tx.send(AppEvent::RateLimitSnapshotFetched(snapshot));
-                        }
-                        interval.tick().await;
-                    }
-                });
+        let handle = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(60));
 
-                self.rate_limit_poller = Some(handle);
-            }
-            _ => {
-                // For OpenAI/ChatGPT, use the existing flow
-                let Some(auth) = self.auth_manager.auth() else {
-                    return;
+            loop {
+                let mut merged = RateLimitSnapshot {
+                    primary: None,
+                    secondary: None,
+                    credits: None,
+                    plan_type: None,
+                    antigravity: None,
+                    gemini: None,
                 };
-                if auth.mode != AuthMode::ChatGPT {
-                    return;
+
+                // Fetch from all providers concurrently
+                let (chatgpt_result, gemini_result, antigravity_result) = tokio::join!(
+                    async {
+                        if has_chatgpt {
+                            if let Some(auth) = auth.as_ref() {
+                                fetch_rate_limits(chatgpt_base_url.clone(), auth.clone()).await
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    },
+                    async {
+                        if has_gemini {
+                            if let Some(auth) = auth.as_ref() {
+                                let client = GeminiQuotaClient::new(Arc::new(auth.clone()));
+                                client.fetch_quota().await
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    },
+                    async {
+                        if has_antigravity {
+                            let client = AntigravityQuotaClient::new();
+                            client.fetch_quota().await
+                        } else {
+                            None
+                        }
+                    }
+                );
+
+                // Merge all results
+                if let Some(snapshot) = chatgpt_result {
+                    merged.merge(snapshot);
+                }
+                if let Some(snapshot) = gemini_result {
+                    merged.merge(snapshot);
+                }
+                if let Some(snapshot) = antigravity_result {
+                    merged.merge(snapshot);
                 }
 
-                let base_url = self.config.chatgpt_base_url.clone();
+                // Send merged snapshot if we got any data
+                let has_data = merged.primary.is_some()
+                    || merged.secondary.is_some()
+                    || merged.credits.is_some()
+                    || merged.antigravity.is_some()
+                    || merged.gemini.is_some();
 
-                let handle = tokio::spawn(async move {
-                    let mut interval = tokio::time::interval(Duration::from_secs(60));
+                if has_data {
+                    app_event_tx.send(AppEvent::RateLimitSnapshotFetched(merged));
+                }
 
-                    loop {
-                        if let Some(snapshot) =
-                            fetch_rate_limits(base_url.clone(), auth.clone()).await
-                        {
-                            app_event_tx.send(AppEvent::RateLimitSnapshotFetched(snapshot));
-                        }
-                        interval.tick().await;
-                    }
-                });
-
-                self.rate_limit_poller = Some(handle);
+                interval.tick().await;
             }
-        }
+        });
+
+        self.rate_limit_poller = Some(handle);
     }
 
     fn lower_cost_preset(&self) -> Option<ModelPreset> {
@@ -4179,3 +4214,4 @@ fn find_skill_mentions(text: &str, skills: &[SkillMetadata]) -> Vec<SkillMetadat
 #[cfg(test)]
 pub(crate) mod tests;
 use crate::exec_command::strip_bash_lc_and_escape;
+use codex_core::quota::GeminiQuotaClient;

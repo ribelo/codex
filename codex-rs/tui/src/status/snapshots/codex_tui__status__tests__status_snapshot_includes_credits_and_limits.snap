@@ -17,16 +17,16 @@ expression: sanitized
 │  Sandbox:          read-only                                      │
 │  Agents.md:        <none>                                         │
 │                                                                   │
-│ Authentication                                                    │
-│  Gemini API:       GEMINI_API_KEY                                 │
-│  OpenAI API:       OPENAI_API_KEY / CODEX_API_KEY                 │
-│                                                                   │
 │ Usage                                                             │
 │  Token usage:      2K total  (1.4K input + 600 output)            │
 │  Context window:   100% left (2.2K used / 272K)                   │
 │                                                                   │
-│ Rate Limits                                                       │
+│ OpenAI                                                            │
+│  API Key:          OPENAI_API_KEY                                 │
 │  5h limit:         [███████████░░░░░░░░░] 55% left (resets 09:25) │
 │  Weekly limit:     [██████████████░░░░░░] 70% left (resets 09:55) │
 │  Credits:          38 credits                                     │
+│                                                                   │
+│ Gemini                                                            │
+│  API Key:          GEMINI_API_KEY                                 │
 ╰───────────────────────────────────────────────────────────────────╯

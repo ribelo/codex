@@ -17,11 +17,13 @@ expression: sanitized
 │  Sandbox:          read-only                                          │
 │  Agents.md:        <none>                                             │
 │                                                                       │
-│ Authentication                                                        │
-│  Gemini API:       GEMINI_API_KEY                                     │
-│  OpenAI API:       OPENAI_API_KEY / CODEX_API_KEY                     │
-│                                                                       │
 │ Usage                                                                 │
 │  Token usage:      750 total  (500 input + 250 output)                │
 │  Context window:   100% left (750 used / 272K)                        │
+│                                                                       │
+│ OpenAI                                                                │
+│  API Key:          OPENAI_API_KEY                                     │
+│                                                                       │
+│ Gemini                                                                │
+│  API Key:          GEMINI_API_KEY                                     │
 ╰───────────────────────────────────────────────────────────────────────╯

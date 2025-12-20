@@ -9,6 +9,8 @@ use codex_core::auth::logout_antigravity;
 use codex_core::auth::logout_gemini;
 use codex_core::config::Config;
 use codex_core::config::ConfigOverrides;
+use codex_core::quota::GeminiQuotaClient;
+use codex_core::quota::ProviderQuotaClient;
 use codex_login::GoogleProviderKind;
 use codex_login::ServerOptions;
 use codex_login::run_device_code_login;
@@ -17,6 +19,9 @@ use codex_protocol::config_types::ForcedLoginMethod;
 use std::io::IsTerminal;
 use std::io::Read;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
 
 pub async fn login_with_chatgpt(
     codex_home: PathBuf,
@@ -254,7 +259,6 @@ pub async fn run_login_status(cli_config_overrides: CliConfigOverrides) -> ! {
                             "Logged in using an API key - {}{suffix}",
                             safe_format_key(&api_key)
                         );
-                        std::process::exit(0);
                     }
                     Err(e) => {
                         eprintln!("Unexpected error retrieving API key: {e}");
@@ -263,17 +267,58 @@ pub async fn run_login_status(cli_config_overrides: CliConfigOverrides) -> ! {
                 },
                 AuthMode::ChatGPT => {
                     eprintln!("Logged in using ChatGPT{suffix}");
-                    std::process::exit(0);
                 }
                 AuthMode::Gemini => {
                     eprintln!("Logged in using Gemini");
-                    std::process::exit(0);
                 }
                 AuthMode::Antigravity => {
                     eprintln!("Logged in using Antigravity");
-                    std::process::exit(0);
                 }
             }
+
+            if has_gemini {
+                let client = GeminiQuotaClient::new(Arc::new(auth.clone()));
+                if let Some(snapshot) = client.fetch_quota().await
+                    && let Some(gemini) = snapshot.gemini
+                    && !gemini.buckets.is_empty()
+                {
+                    eprintln!("Gemini Quota:");
+                    for bucket in gemini.buckets {
+                        let model = bucket.model_id.as_deref().unwrap_or("unknown");
+                        let token_type = bucket.token_type.as_deref().unwrap_or("unknown");
+                        if let Some(fraction) = bucket.remaining_fraction {
+                            eprint!(
+                                "  {model} ({token_type}): {:.0}% remaining",
+                                fraction * 100.0
+                            );
+
+                            if let Some(reset_time) = bucket.reset_time {
+                                let now = SystemTime::now()
+                                    .duration_since(UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_secs() as i64;
+                                let diff = reset_time - now;
+                                if diff > 0 {
+                                    let hours = diff / 3600;
+                                    let mins = (diff % 3600) / 60;
+                                    if hours > 0 {
+                                        eprint!(" (resets in {hours}h)");
+                                    } else if mins > 0 {
+                                        eprint!(" (resets in {mins}m)");
+                                    } else {
+                                        eprint!(" (resets in <1m)");
+                                    }
+                                }
+                            }
+                            eprintln!();
+                        } else if let Some(amount) = &bucket.remaining_amount {
+                            eprintln!("  {model} ({token_type}): {amount} remaining");
+                        }
+                    }
+                }
+            }
+
+            std::process::exit(0);
         }
         Ok(None) => {
             eprintln!("Not logged in");

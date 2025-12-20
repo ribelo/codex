@@ -2818,6 +2818,7 @@ mod tests {
             }),
             plan_type: Some(codex_protocol::account::PlanType::Plus),
             antigravity: None,
+            gemini: None,
         };
         state.set_rate_limits(initial.clone());
 
@@ -2835,6 +2836,7 @@ mod tests {
             credits: None,
             plan_type: None,
             antigravity: None,
+            gemini: None,
         };
         state.set_rate_limits(update.clone());
 
@@ -2846,6 +2848,7 @@ mod tests {
                 credits: initial.credits,
                 plan_type: initial.plan_type,
                 antigravity: None,
+                gemini: None,
             })
         );
     }
@@ -2897,6 +2900,7 @@ mod tests {
             }),
             plan_type: Some(codex_protocol::account::PlanType::Plus),
             antigravity: None,
+            gemini: None,
         };
         state.set_rate_limits(initial.clone());
 
@@ -2910,6 +2914,7 @@ mod tests {
             credits: None,
             plan_type: Some(codex_protocol::account::PlanType::Pro),
             antigravity: None,
+            gemini: None,
         };
         state.set_rate_limits(update.clone());
 
@@ -2921,6 +2926,7 @@ mod tests {
                 credits: initial.credits,
                 plan_type: update.plan_type,
                 antigravity: None,
+                gemini: None,
             })
         );
     }

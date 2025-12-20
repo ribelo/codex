@@ -3,9 +3,12 @@ use crate::history_cell::HistoryCell;
 use crate::history_cell::PlainHistoryCell;
 use crate::history_cell::with_border_with_inner_width;
 use crate::version::CODEX_CLI_VERSION;
+use crate::wrapping::RtOptions;
+use crate::wrapping::word_wrap_lines;
 use chrono::DateTime;
 use chrono::Local;
 use codex_common::create_config_summary_entries;
+use codex_core::AuthManager;
 use codex_core::config::Config;
 use codex_core::openai_models::model_family::ModelFamily;
 use codex_core::protocol::SandboxPolicy;
@@ -34,9 +37,6 @@ use super::rate_limits::StatusRateLimitValue;
 use super::rate_limits::compose_rate_limit_data;
 use super::rate_limits::format_status_limit_summary;
 use super::rate_limits::render_status_limit_progress_bar;
-use crate::wrapping::RtOptions;
-use crate::wrapping::word_wrap_lines;
-use codex_core::AuthManager;
 
 #[derive(Debug, Clone)]
 struct StatusContextWindowData {
@@ -140,7 +140,8 @@ impl StatusHistoryCell {
             output: total_usage.output_tokens,
             context_window,
         };
-        let rate_limits = compose_rate_limit_data(rate_limits, now);
+
+        let rate_limits_data = compose_rate_limit_data(rate_limits, &account, now);
 
         Self {
             model_name,
@@ -152,7 +153,7 @@ impl StatusHistoryCell {
             account,
             session_id,
             token_usage,
-            rate_limits,
+            rate_limits: rate_limits_data,
         }
     }
 
@@ -198,9 +199,7 @@ impl StatusHistoryCell {
         match &self.rate_limits {
             StatusRateLimitData::Available(rows_data) => {
                 if rows_data.is_empty() {
-                    return vec![
-                        formatter.line("Limits", vec![Span::from("data not available yet").dim()]),
-                    ];
+                    return vec![];
                 }
 
                 self.rate_limit_row_lines(rows_data, available_inner_width, formatter)
@@ -215,7 +214,7 @@ impl StatusHistoryCell {
                 lines
             }
             StatusRateLimitData::Missing => {
-                vec![formatter.line("Limits", vec![Span::from("data not available yet").dim()])]
+                vec![]
             }
         }
     }
@@ -230,6 +229,10 @@ impl StatusHistoryCell {
 
         for row in rows {
             match &row.value {
+                StatusRateLimitValue::SectionHeader => {
+                    lines.push(Line::from(""));
+                    lines.push(Line::from(row.label.clone()).bold());
+                }
                 StatusRateLimitValue::Window {
                     percent_used,
                     resets_at,
@@ -414,39 +417,6 @@ impl HistoryCell for StatusHistoryCell {
             lines.push(formatter.line("Session", vec![Span::from(session.clone())]));
         }
 
-        // Authentication Section
-        if show_auth {
-            lines.push(Line::from(""));
-            lines.push(Line::from("Authentication".bold()));
-
-            if let Some(chatgpt) = &account.chatgpt {
-                let value = match (&chatgpt.email, &chatgpt.plan) {
-                    (Some(email), Some(plan)) => format!("{email} ({plan})"),
-                    (Some(email), None) => email.clone(),
-                    (None, Some(plan)) => plan.clone(),
-                    (None, None) => "logged in".to_string(),
-                };
-                lines.push(formatter.line("ChatGPT", vec![Span::from(value)]));
-            }
-            if !account.gemini_accounts.is_empty() {
-                let emails = account.gemini_accounts.join(", ");
-                lines.push(formatter.line("Gemini", vec![Span::from(emails)]));
-            }
-            if account.gemini_api_key_set {
-                lines.push(formatter.line("Gemini API", vec![Span::from("GEMINI_API_KEY").dim()]));
-            }
-            if !account.antigravity_accounts.is_empty() {
-                let emails = account.antigravity_accounts.join(", ");
-                lines.push(formatter.line("Antigravity", vec![Span::from(emails)]));
-            }
-            if account.openai_api_key_set {
-                lines.push(formatter.line(
-                    "OpenAI API",
-                    vec![Span::from("OPENAI_API_KEY / CODEX_API_KEY").dim()],
-                ));
-            }
-        }
-
         // Usage Section
         if show_usage {
             lines.push(Line::from(""));
@@ -463,8 +433,6 @@ impl HistoryCell for StatusHistoryCell {
 
         // Rate Limits Section
         if show_rate_limits {
-            lines.push(Line::from(""));
-            lines.push(Line::from("Rate Limits".bold()));
             lines.extend(self.rate_limit_lines(available_inner_width, &formatter));
         }
 

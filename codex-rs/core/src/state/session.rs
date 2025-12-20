@@ -102,5 +102,8 @@ fn merge_rate_limit_fields(
     if snapshot.antigravity.is_none() {
         snapshot.antigravity = previous.and_then(|prior| prior.antigravity.clone());
     }
+    if snapshot.gemini.is_none() {
+        snapshot.gemini = previous.and_then(|prior| prior.gemini.clone());
+    }
     snapshot
 }

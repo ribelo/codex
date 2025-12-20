@@ -1,10 +1,8 @@
 //! Types for provider quota responses.
 
 use codex_protocol::protocol::AntigravityQuota;
-use codex_protocol::protocol::CreditsSnapshot;
 use codex_protocol::protocol::ModelQuota;
 use codex_protocol::protocol::RateLimitSnapshot;
-use codex_protocol::protocol::RateLimitWindow;
 use serde::Deserialize;
 use std::fmt;
 
@@ -156,60 +154,18 @@ impl AntigravityUserStatus {
     /// Maps prompt credits to the credits field and the most restrictive
     /// per-model quota to the primary rate limit window.
     pub fn to_rate_limit_snapshot(&self) -> RateLimitSnapshot {
-        let user_status = &self.user_status;
-
         // Build full AntigravityQuota with all data
         let antigravity = self.build_antigravity_quota();
 
-        // Map prompt credits to CreditsSnapshot
-        let credits = user_status.plan_status.as_ref().and_then(|plan_status| {
-            let plan_info = plan_status.plan_info.as_ref()?;
-            let monthly = plan_info.monthly_prompt_credits;
-            let available = plan_status.available_prompt_credits;
-
-            if monthly <= 0 {
-                return None;
-            }
-
-            Some(CreditsSnapshot {
-                has_credits: true,
-                unlimited: false,
-                balance: Some(available.to_string()),
-            })
-        });
-
-        // Find the most restrictive per-model quota (lowest remaining_fraction)
-        let primary = user_status
-            .cascade_model_config_data
-            .as_ref()
-            .and_then(|config_data| {
-                config_data
-                    .client_model_configs
-                    .iter()
-                    .filter_map(|config| {
-                        let quota_info = config.quota_info.as_ref()?;
-                        let remaining_fraction = quota_info.remaining_fraction?;
-                        Some((remaining_fraction, quota_info))
-                    })
-                    .min_by(|(a, _), (b, _)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
-                    .map(|(remaining_fraction, quota_info)| {
-                        let used_percent = (1.0 - remaining_fraction) * 100.0;
-                        let resets_at = parse_iso_timestamp(&quota_info.reset_time);
-
-                        RateLimitWindow {
-                            used_percent,
-                            window_minutes: None, // Antigravity doesn't expose window duration
-                            resets_at,
-                        }
-                    })
-            });
-
+        // Antigravity data goes only in the antigravity field.
+        // primary/secondary/credits are reserved for OpenAI/ChatGPT data.
         RateLimitSnapshot {
-            primary,
+            primary: None,
             secondary: None,
-            credits,
-            plan_type: None, // Antigravity doesn't map to ChatGPT plan types
+            credits: None,
+            plan_type: None,
             antigravity,
+            gemini: None,
         }
     }
 
@@ -340,17 +296,10 @@ mod tests {
         let response: AntigravityUserStatus = serde_json::from_str(json).unwrap();
         let snapshot = response.to_rate_limit_snapshot();
 
-        // Should pick the most restrictive quota (GPT-4 at 0.3 remaining = 70% used)
-        assert!(snapshot.primary.is_some());
-        let primary = snapshot.primary.unwrap();
-        assert!((primary.used_percent - 70.0).abs() < 0.01);
-
-        // Should have credits
-        assert!(snapshot.credits.is_some());
-        let credits = snapshot.credits.unwrap();
-        assert!(credits.has_credits);
-        assert!(!credits.unlimited);
-        assert_eq!(credits.balance, Some("750".to_string()));
+        // primary/secondary/credits are reserved for OpenAI, not populated by Antigravity
+        assert!(snapshot.primary.is_none());
+        assert!(snapshot.secondary.is_none());
+        assert!(snapshot.credits.is_none());
 
         // Check antigravity data
         assert!(snapshot.antigravity.is_some());

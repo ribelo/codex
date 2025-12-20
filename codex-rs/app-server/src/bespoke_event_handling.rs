@@ -1460,6 +1460,7 @@ mod tests {
             }),
             plan_type: None,
             antigravity: None,
+            gemini: None,
         };
 
         handle_token_count_event(
