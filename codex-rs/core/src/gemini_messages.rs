@@ -949,6 +949,7 @@ fn build_gemini_messages(
         }
     }
 
+    curate_gemini_history(&mut messages);
     apply_synthetic_thought_signatures(&mut messages);
 
     // Additional system instruction processing
@@ -968,17 +969,113 @@ fn build_gemini_messages(
     Ok((messages, system_instruction))
 }
 
+/// Curates message history to enforce strict User-Model-User alternation.
+/// Gemini requires strictly alternating roles - this function merges
+/// consecutive same-role turns and drops orphaned turns that would violate alternation.
+fn curate_gemini_history(contents: &mut Vec<GeminiContent>) {
+    if contents.is_empty() {
+        return;
+    }
+
+    // Step 1: Merge consecutive same-role turns
+    let mut merged: Vec<GeminiContent> = Vec::with_capacity(contents.len());
+    for content in contents.drain(..) {
+        if let Some(last) = merged.last_mut()
+            && last.role == content.role
+        {
+            last.parts.extend(content.parts);
+            continue;
+        }
+        merged.push(content);
+    }
+
+    // Step 2: Enforce alternation - drop turns that violate User-Model-User pattern
+    // Gemini expects: user, model, user, model, ... (starting with user)
+    // Also handle orphaned function responses when we drop a model turn with function calls
+    let mut result: Vec<GeminiContent> = Vec::with_capacity(merged.len());
+    let mut expected_role = "user"; // History should start with user
+    let mut skip_orphaned_responses = false; // Track if we need to skip function responses
+
+    for mut content in merged {
+        // If we're skipping orphaned responses and this is a user turn, filter out function_response parts
+        if skip_orphaned_responses && content.role == "user" {
+            // Filter out orphaned function_response parts
+            let cleaned_parts: Vec<_> = content
+                .parts
+                .into_iter()
+                .filter(|p| p.function_response.is_none())
+                .collect();
+
+            if cleaned_parts.is_empty() {
+                // Pure function response turn - drop entirely
+                tracing::warn!(
+                    "Dropping orphaned function response turn (no matching function call)"
+                );
+                continue;
+            }
+
+            // Has non-function-response content, keep the cleaned version
+            tracing::warn!("Stripped orphaned function response parts from user turn");
+            content = GeminiContent {
+                role: content.role,
+                parts: cleaned_parts,
+            };
+            skip_orphaned_responses = false;
+        }
+
+        if content.role == expected_role {
+            result.push(content);
+            expected_role = if expected_role == "user" {
+                "model"
+            } else {
+                "user"
+            };
+            skip_orphaned_responses = false;
+        } else {
+            // Role mismatch - dropping this turn
+            tracing::warn!(
+                "Dropping turn with role '{}' - expected '{}' for Gemini alternation",
+                content.role,
+                expected_role
+            );
+
+            // If we're dropping a model turn with function calls, we need to skip orphaned responses
+            if content.role == "model" && content.parts.iter().any(|p| p.function_call.is_some()) {
+                skip_orphaned_responses = true;
+            }
+        }
+    }
+
+    *contents = result;
+}
+
 fn apply_synthetic_thought_signatures(contents: &mut [GeminiContent]) {
+    // Find the last user turn that is NOT a tool response
+    // (a tool response contains function_response parts)
     let Some(start_index) = contents.iter().rposition(|content| {
         content.role == "user"
-            && content
+            && !content
                 .parts
                 .iter()
-                .any(|part| part.text.as_ref().is_some_and(|t| !t.is_empty()))
+                .any(|part| part.function_response.is_some())
     }) else {
         return;
     };
 
+    // First: Strip ALL thought_signatures from ALL function calls in history
+    // (historical signatures have no semantic value and waste tokens)
+    for content in contents.iter_mut() {
+        if content.role != "model" {
+            continue;
+        }
+        for part in &mut content.parts {
+            if part.function_call.is_some() {
+                part.thought_signature = None;
+            }
+        }
+    }
+
+    // Then: Apply synthetic signature ONLY to active turn function calls
     for content in &mut contents[start_index..] {
         if content.role != "model" {
             continue;
@@ -988,7 +1085,6 @@ fn apply_synthetic_thought_signatures(contents: &mut [GeminiContent]) {
             .parts
             .iter_mut()
             .find(|part| part.function_call.is_some())
-            && part.thought_signature.is_none()
         {
             part.thought_signature = Some(SYNTHETIC_THOUGHT_SIGNATURE.to_string());
         }
