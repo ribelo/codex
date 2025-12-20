@@ -89,6 +89,9 @@ pub struct Config {
     /// Optional override of model selection.
     pub model: Option<String>,
 
+    /// Available configuration profiles.
+    pub profiles: Vec<String>,
+
     /// Model used specifically for review sessions. Defaults to "gpt-5.1-codex-max".
     pub review_model: String,
 
@@ -1155,8 +1158,12 @@ impl Config {
 
         let check_for_update_on_startup = cfg.check_for_update_on_startup.unwrap_or(true);
 
+        let mut profiles: Vec<String> = cfg.profiles.keys().cloned().collect();
+        profiles.sort();
+
         let config = Self {
             model,
+            profiles,
             review_model,
             model_context_window: config_profile
                 .model_context_window
@@ -2943,6 +2950,12 @@ model_verbosity = "high"
         assert_eq!(
             Config {
                 model: Some("o3".to_string()),
+                profiles: vec![
+                    "gpt3".to_string(),
+                    "gpt5".to_string(),
+                    "o3".to_string(),
+                    "zdr".to_string()
+                ],
                 review_model: OPENAI_DEFAULT_REVIEW_MODEL.to_string(),
                 model_context_window: None,
                 model_auto_compact_token_limit: None,
@@ -3020,6 +3033,12 @@ model_verbosity = "high"
         )?;
         let expected_gpt3_profile_config = Config {
             model: Some("gpt-3.5-turbo".to_string()),
+            profiles: vec![
+                "gpt3".to_string(),
+                "gpt5".to_string(),
+                "o3".to_string(),
+                "zdr".to_string(),
+            ],
             review_model: OPENAI_DEFAULT_REVIEW_MODEL.to_string(),
             model_context_window: None,
             model_auto_compact_token_limit: None,
@@ -3112,6 +3131,12 @@ model_verbosity = "high"
         )?;
         let expected_zdr_profile_config = Config {
             model: Some("o3".to_string()),
+            profiles: vec![
+                "gpt3".to_string(),
+                "gpt5".to_string(),
+                "o3".to_string(),
+                "zdr".to_string(),
+            ],
             review_model: OPENAI_DEFAULT_REVIEW_MODEL.to_string(),
             model_context_window: None,
             model_auto_compact_token_limit: None,
@@ -3190,6 +3215,12 @@ model_verbosity = "high"
         )?;
         let expected_gpt5_profile_config = Config {
             model: Some("gpt-5.1".to_string()),
+            profiles: vec![
+                "gpt3".to_string(),
+                "gpt5".to_string(),
+                "o3".to_string(),
+                "zdr".to_string(),
+            ],
             review_model: OPENAI_DEFAULT_REVIEW_MODEL.to_string(),
             model_context_window: None,
             model_auto_compact_token_limit: None,

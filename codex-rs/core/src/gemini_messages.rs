@@ -46,7 +46,6 @@ use crate::truncate::approx_token_count;
 use crate::util::backoff;
 use crate::util::try_parse_error_message;
 use codex_client::CodexHttpClient;
-use codex_protocol::models::ReasoningItemContent;
 use uuid::Uuid;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -622,20 +621,16 @@ async fn resolve_gemini_credential(
     let auth_with_gemini =
         auth.and_then(|auth_ref| (auth_ref.gemini_account_count() > 0).then_some(auth_ref));
 
+    // Prefer OAuth over API key when available
+    if let Some(auth_ref) = auth_with_gemini {
+        return resolve_gemini_credential_for_account(auth_ref, provider, 0).await;
+    }
+
+    // Fall back to API key if no OAuth
     match provider.api_key() {
         Ok(Some(key)) => Ok(GeminiCredential::ApiKey(key)),
-        Ok(None) => {
-            if let Some(auth_ref) = auth_with_gemini {
-                return resolve_gemini_credential_for_account(auth_ref, provider, 0).await;
-            }
-            Err(CodexErr::UnsupportedOperation(GEMINI_AUTH_HINT.to_string()))
-        }
-        Err(err) => {
-            if let Some(auth_ref) = auth_with_gemini {
-                return resolve_gemini_credential_for_account(auth_ref, provider, 0).await;
-            }
-            Err(err)
-        }
+        Ok(None) => Err(CodexErr::UnsupportedOperation(GEMINI_AUTH_HINT.to_string())),
+        Err(err) => Err(err),
     }
 }
 
@@ -1516,21 +1511,6 @@ async fn append_reasoning_delta(
             *emitted_content = true;
         }
 
-        // Accumulate as raw content.
-        if let ResponseItem::Reasoning { content, .. } = &mut state.item {
-            if let Some(content_vec) = content {
-                if let Some(ReasoningItemContent::ReasoningText { text: existing }) =
-                    content_vec.last_mut()
-                {
-                    existing.push_str(text);
-                } else {
-                    content_vec.push(ReasoningItemContent::ReasoningText {
-                        text: text.to_string(),
-                    });
-                }
-            }
-        }
-
         // Stream only deltas; do not accumulate content in state.item to avoid duplication.
         let content_index = state.streamed_delta_count;
         state.streamed_delta_count += 1;
@@ -1758,8 +1738,7 @@ mod tests {
     fn auth_with_gemini_tokens() -> CodexAuth {
         let mut auth = CodexAuth::create_dummy_chatgpt_auth_for_testing();
         auth.mode = AuthMode::Gemini;
-        let mut guard = auth.auth_dot_json.lock().unwrap();
-        *guard = Some(AuthDotJson {
+        let auth_data = AuthDotJson {
             openai_api_key: None,
             tokens: None,
             gemini_accounts: vec![GeminiTokenData {
@@ -1769,12 +1748,12 @@ mod tests {
                 project_id: Some("project-1".to_string()),
                 managed_project_id: None,
                 email: None,
-                expires_at: None,
+                expires_at: Some(chrono::Utc::now() + chrono::Duration::hours(1)),
             }],
             antigravity_accounts: Vec::new(),
             last_refresh: None,
-        });
-        drop(guard);
+        };
+        auth.persist_auth(&auth_data).unwrap();
         auth
     }
 
@@ -1787,24 +1766,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn prefers_provider_api_key_when_gemini_tokens_exist() {
-        let previous = with_env_var("GEMINI_API_KEY", "api-key");
+    async fn prefers_oauth_over_api_key_when_gemini_tokens_exist() {
+        // Set API key to verify OAuth takes priority
+        let previous = with_env_var("GEMINI_API_KEY", "test-api-key");
+
+        let auth = auth_with_gemini_tokens();
         let provider = GeminiProvider {
             api_key_env_var: Some("GEMINI_API_KEY".to_string()),
             ..Default::default()
         };
 
-        let auth = auth_with_gemini_tokens();
-
         let credential = resolve_gemini_credential(Some(&auth), &provider)
             .await
             .expect("resolve credential");
 
-        match credential {
-            GeminiCredential::ApiKey(key) => assert_eq!(key, "api-key"),
-            other => panic!("expected API key credential, got {other:?}"),
-        }
+        assert!(
+            matches!(credential, GeminiCredential::OAuth { .. }),
+            "expected OAuth credential when Gemini tokens exist, got {credential:?}"
+        );
 
+        // Cleanup
         if let Some(prev) = previous {
             unsafe {
                 std::env::set_var("GEMINI_API_KEY", prev);

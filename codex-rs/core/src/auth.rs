@@ -347,7 +347,7 @@ impl CodexAuth {
         }
     }
 
-    fn persist_auth(&self, auth: &AuthDotJson) -> std::io::Result<()> {
+    pub(crate) fn persist_auth(&self, auth: &AuthDotJson) -> std::io::Result<()> {
         self.storage.save(auth)?;
         self.save_auth_snapshot(auth);
         Ok(())
@@ -758,11 +758,18 @@ impl CodexAuth {
             last_refresh: Some(Utc::now()),
         };
 
+        let temp_dir = tempfile::tempdir().expect("temp codex home");
+        let codex_home = temp_dir.path().to_path_buf();
+        TEST_AUTH_TEMP_DIRS.lock().unwrap().push(temp_dir);
+
+        let storage = create_auth_storage(codex_home, AuthCredentialsStoreMode::File);
+        let _ = storage.save(&auth_dot_json);
+
         let auth_dot_json = Arc::new(Mutex::new(Some(auth_dot_json)));
         Self {
             api_key: None,
             mode: AuthMode::ChatGPT,
-            storage: create_auth_storage(PathBuf::new(), AuthCredentialsStoreMode::File),
+            storage,
             auth_dot_json,
             client: crate::default_client::create_client(),
         }
@@ -808,6 +815,44 @@ pub fn logout(
 ) -> std::io::Result<bool> {
     let storage = create_auth_storage(codex_home.to_path_buf(), auth_credentials_store_mode);
     storage.delete()
+}
+
+/// Clears only the Gemini accounts from `auth.json`, leaving other auth data intact.
+pub fn logout_gemini(
+    codex_home: &Path,
+    auth_credentials_store_mode: AuthCredentialsStoreMode,
+) -> std::io::Result<bool> {
+    let storage = create_auth_storage(codex_home.to_path_buf(), auth_credentials_store_mode);
+    match storage.load()? {
+        Some(mut auth) => {
+            if auth.gemini_accounts.is_empty() {
+                return Ok(false);
+            }
+            auth.gemini_accounts.clear();
+            storage.save(&auth)?;
+            Ok(true)
+        }
+        None => Ok(false),
+    }
+}
+
+/// Clears only the Antigravity accounts from `auth.json`, leaving other auth data intact.
+pub fn logout_antigravity(
+    codex_home: &Path,
+    auth_credentials_store_mode: AuthCredentialsStoreMode,
+) -> std::io::Result<bool> {
+    let storage = create_auth_storage(codex_home.to_path_buf(), auth_credentials_store_mode);
+    match storage.load()? {
+        Some(mut auth) => {
+            if auth.antigravity_accounts.is_empty() {
+                return Ok(false);
+            }
+            auth.antigravity_accounts.clear();
+            storage.save(&auth)?;
+            Ok(true)
+        }
+        None => Ok(false),
+    }
 }
 
 /// Writes an `auth.json` that contains only the API key.

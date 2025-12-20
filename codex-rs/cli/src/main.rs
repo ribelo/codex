@@ -17,6 +17,8 @@ use codex_cli::login::run_login_with_chatgpt;
 use codex_cli::login::run_login_with_device_code;
 use codex_cli::login::run_login_with_gemini;
 use codex_cli::login::run_logout;
+use codex_cli::login::run_logout_antigravity;
+use codex_cli::login::run_logout_gemini;
 use codex_cloud_tasks::Cli as CloudTasksCli;
 use codex_common::CliConfigOverrides;
 use codex_exec::Cli as ExecCli;
@@ -212,10 +214,14 @@ struct LoginCommand {
     )]
     api_key: Option<String>,
 
-    #[arg(long = "gemini", help = "Login with Google (Gemini)")]
+    #[arg(long = "gemini", help = "Login with Google (Gemini)", hide = true)]
     gemini: bool,
 
-    #[arg(long = "antigravity", help = "Login with Google (Antigravity)")]
+    #[arg(
+        long = "antigravity",
+        help = "Login with Google (Antigravity)",
+        hide = true
+    )]
     antigravity: bool,
 
     #[arg(long = "device-auth")]
@@ -238,12 +244,27 @@ struct LoginCommand {
 enum LoginSubcommand {
     /// Show login status.
     Status,
+    /// Login with Google (Gemini).
+    Gemini,
+    /// Login with Google (Antigravity).
+    Antigravity,
 }
 
 #[derive(Debug, Parser)]
 struct LogoutCommand {
     #[clap(skip)]
     config_overrides: CliConfigOverrides,
+
+    #[command(subcommand)]
+    target: Option<LogoutTarget>,
+}
+
+#[derive(Debug, clap::Subcommand)]
+enum LogoutTarget {
+    /// Logout from Gemini (Google).
+    Gemini,
+    /// Logout from Antigravity (Google).
+    Antigravity,
 }
 
 #[derive(Debug, Parser)]
@@ -529,7 +550,14 @@ async fn cli_main(codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()
                 Some(LoginSubcommand::Status) => {
                     run_login_status(login_cli.config_overrides).await;
                 }
+                Some(LoginSubcommand::Gemini) => {
+                    run_login_with_gemini(login_cli.config_overrides).await;
+                }
+                Some(LoginSubcommand::Antigravity) => {
+                    run_login_with_antigravity(login_cli.config_overrides).await;
+                }
                 None => {
+                    // Handle legacy --gemini and --antigravity flags (hidden, for backwards compat)
                     if login_cli.antigravity {
                         run_login_with_antigravity(login_cli.config_overrides).await;
                     } else if login_cli.gemini {
@@ -560,7 +588,17 @@ async fn cli_main(codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()
                 &mut logout_cli.config_overrides,
                 root_config_overrides.clone(),
             );
-            run_logout(logout_cli.config_overrides).await;
+            match logout_cli.target {
+                Some(LogoutTarget::Gemini) => {
+                    run_logout_gemini(logout_cli.config_overrides).await;
+                }
+                Some(LogoutTarget::Antigravity) => {
+                    run_logout_antigravity(logout_cli.config_overrides).await;
+                }
+                None => {
+                    run_logout(logout_cli.config_overrides).await;
+                }
+            }
         }
         Some(Subcommand::Completion(completion_cli)) => {
             print_completion(completion_cli);

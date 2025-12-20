@@ -5,6 +5,8 @@ use codex_core::auth::AuthCredentialsStoreMode;
 use codex_core::auth::CLIENT_ID;
 use codex_core::auth::login_with_api_key;
 use codex_core::auth::logout;
+use codex_core::auth::logout_antigravity;
+use codex_core::auth::logout_gemini;
 use codex_core::config::Config;
 use codex_core::config::ConfigOverrides;
 use codex_login::GoogleProviderKind;
@@ -298,6 +300,44 @@ pub async fn run_logout(cli_config_overrides: CliConfigOverrides) -> ! {
         }
         Err(e) => {
             eprintln!("Error logging out: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+pub async fn run_logout_gemini(cli_config_overrides: CliConfigOverrides) -> ! {
+    let config = load_config_or_exit(cli_config_overrides).await;
+
+    match logout_gemini(&config.codex_home, config.cli_auth_credentials_store_mode) {
+        Ok(true) => {
+            eprintln!("Successfully logged out from Gemini");
+            std::process::exit(0);
+        }
+        Ok(false) => {
+            eprintln!("Not logged in to Gemini");
+            std::process::exit(0);
+        }
+        Err(e) => {
+            eprintln!("Error logging out from Gemini: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+pub async fn run_logout_antigravity(cli_config_overrides: CliConfigOverrides) -> ! {
+    let config = load_config_or_exit(cli_config_overrides).await;
+
+    match logout_antigravity(&config.codex_home, config.cli_auth_credentials_store_mode) {
+        Ok(true) => {
+            eprintln!("Successfully logged out from Antigravity");
+            std::process::exit(0);
+        }
+        Ok(false) => {
+            eprintln!("Not logged in to Antigravity");
+            std::process::exit(0);
+        }
+        Err(e) => {
+            eprintln!("Error logging out from Antigravity: {e}");
             std::process::exit(1);
         }
     }

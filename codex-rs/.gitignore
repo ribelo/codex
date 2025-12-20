@@ -8,6 +8,8 @@
 /target-arm64/
 **/*.snap.new
 /beads/
+/.beads/*
+!/.beads/issues.jsonl
 /history/
 # Temp local tracking files
 /diff_*.txt

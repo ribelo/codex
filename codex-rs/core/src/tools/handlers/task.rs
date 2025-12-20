@@ -15,6 +15,7 @@ use crate::client_common::tools::ResponsesApiTool;
 use crate::client_common::tools::ToolSpec;
 use crate::codex_delegate::run_codex_conversation_interactive;
 use crate::function_tool::FunctionCallError;
+use crate::model_provider_info::ProviderKind;
 use crate::model_provider_info::built_in_model_providers;
 use crate::subagents::SubagentRegistry;
 use crate::subagents::SubagentSandboxPolicy;
@@ -29,6 +30,7 @@ use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::SubagentEventPayload;
 use codex_protocol::protocol::TaskStartedEvent;
+use codex_protocol::protocol::WarningEvent;
 use codex_protocol::user_input::UserInput;
 
 pub fn create_task_tool(codex_home: &Path, allowed_subagents: Option<&[String]>) -> ToolSpec {
@@ -356,6 +358,17 @@ impl ToolHandler for TaskHandler {
                     .clone()
                     .or(Some(vec![]));
 
+                // Warn if subagent is using Gemini/Antigravity without OAuth
+                // Warn if subagent is using Gemini without OAuth (using API key instead)
+                check_gemini_api_key_warning(
+                    &sub_config.model_provider.provider_kind,
+                    &invocation.session.services.auth_manager,
+                    &args.subagent_type,
+                    &invocation.session,
+                    &invocation.turn,
+                )
+                .await;
+
                 let session_token = CancellationToken::new();
 
                 let codex = run_codex_conversation_interactive(
@@ -536,5 +549,39 @@ fn approval_restrictiveness(policy: AskForApproval) -> i32 {
         AskForApproval::OnFailure => 2,
         // Never - never ask, most permissive
         AskForApproval::Never => 3,
+    }
+}
+
+/// Check if subagent is using Gemini provider with API key instead of OAuth and emit warning.
+async fn check_gemini_api_key_warning(
+    provider_kind: &ProviderKind,
+    auth_manager: &std::sync::Arc<crate::AuthManager>,
+    subagent_type: &str,
+    session: &Arc<crate::codex::Session>,
+    turn: &Arc<crate::codex::TurnContext>,
+) {
+    let auth = auth_manager.auth();
+
+    let warning_message = match provider_kind {
+        ProviderKind::Gemini => {
+            let has_oauth = auth.as_ref().is_some_and(|a| a.gemini_account_count() > 0);
+            let has_api_key = std::env::var("GEMINI_API_KEY").is_ok();
+
+            if !has_oauth && has_api_key {
+                Some(format!(
+                    "Subagent '{subagent_type}' is using GEMINI_API_KEY instead of OAuth. \
+                     Run `codex login gemini` for better rate limits."
+                ))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    };
+
+    if let Some(message) = warning_message {
+        session
+            .send_event(turn.as_ref(), EventMsg::Warning(WarningEvent { message }))
+            .await;
     }
 }
