@@ -171,13 +171,25 @@ impl Session {
         last_agent_message: Option<String>,
     ) {
         let mut active = self.active_turn.lock().await;
+
+        // Read last_tool_output before removing the turn
+        let last_tool_output = if let Some(ref at) = *active {
+            at.turn_state.lock().await.last_tool_output.clone()
+        } else {
+            None
+        };
+
         if let Some(at) = active.as_mut()
             && at.remove_task(&turn_context.sub_id)
         {
             *active = None;
         }
         drop(active);
-        let event = EventMsg::TaskComplete(TaskCompleteEvent { last_agent_message });
+
+        let event = EventMsg::TaskComplete(TaskCompleteEvent {
+            last_agent_message,
+            last_tool_output,
+        });
         self.send_event(turn_context.as_ref(), event).await;
     }
 

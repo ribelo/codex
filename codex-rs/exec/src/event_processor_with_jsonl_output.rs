@@ -530,7 +530,10 @@ impl EventProcessor for EventProcessorWithJsonOutput {
 
         let Event { msg, .. } = event;
 
-        if let EventMsg::TaskComplete(TaskCompleteEvent { last_agent_message }) = msg {
+        if let EventMsg::TaskComplete(TaskCompleteEvent {
+            last_agent_message, ..
+        }) = msg
+        {
             if let Some(output_file) = self.last_message_path.as_deref() {
                 handle_last_message(last_agent_message.as_deref(), output_file);
             }

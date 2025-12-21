@@ -69,6 +69,8 @@ impl ActiveTurn {
 pub(crate) struct TurnState {
     pending_approvals: HashMap<String, oneshot::Sender<ReviewDecision>>,
     pending_input: Vec<ResponseInputItem>,
+    /// The output of the last tool call, captured for inclusion in TaskCompleteEvent.
+    pub(crate) last_tool_output: Option<String>,
 }
 
 impl TurnState {

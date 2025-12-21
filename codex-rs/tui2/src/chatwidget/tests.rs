@@ -3023,6 +3023,7 @@ fn multiple_agent_messages_in_single_turn_emit_multiple_headers() {
         id: "s1".into(),
         msg: EventMsg::TaskComplete(TaskCompleteEvent {
             last_agent_message: None,
+            last_tool_output: None,
         }),
     });
 
@@ -3308,6 +3309,7 @@ printf 'fenced within fenced\n'
         id: "t1".into(),
         msg: EventMsg::TaskComplete(TaskCompleteEvent {
             last_agent_message: None,
+            last_tool_output: None,
         }),
     });
     for lines in drain_insert_history(&mut rx) {

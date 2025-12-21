@@ -1354,6 +1354,27 @@ impl Session {
             self.emit_turn_item_started(turn_context, &item).await;
             self.emit_turn_item_completed(turn_context, item).await;
         }
+
+        self.update_last_tool_output(&response_item).await;
+    }
+
+    async fn update_last_tool_output(&self, response_item: &ResponseItem) {
+        match response_item {
+            ResponseItem::FunctionCallOutput { output, .. } => {
+                self.set_last_tool_output(Some(output.to_string())).await;
+            }
+            ResponseItem::CustomToolCallOutput { output, .. } => {
+                self.set_last_tool_output(Some(output.clone())).await;
+            }
+            _ => {}
+        }
+    }
+
+    async fn set_last_tool_output(&self, output: Option<String>) {
+        let active = self.active_turn.lock().await;
+        if let Some(ref at) = *active {
+            at.turn_state.lock().await.last_tool_output = output;
+        }
     }
 
     pub(crate) async fn notify_background_event(

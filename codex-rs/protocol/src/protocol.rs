@@ -717,6 +717,9 @@ pub struct ContextCompactedEvent;
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
 pub struct TaskCompleteEvent {
     pub last_agent_message: Option<String>,
+    /// The output of the last tool call, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_tool_output: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]

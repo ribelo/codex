@@ -431,6 +431,7 @@ impl ToolHandler for TaskHandler {
             })?;
 
         let mut final_output = String::new();
+        let mut last_tool_output: Option<String> = None;
         loop {
             let event = subagent_session_ref
                 .next_event()
@@ -457,6 +458,10 @@ impl ToolHandler for TaskHandler {
                 EventMsg::TaskComplete(tc) => {
                     if let Some(ref msg) = tc.last_agent_message {
                         final_output = msg.clone();
+                    }
+                    // Capture tool output if present
+                    if let Some(ref tool_out) = tc.last_tool_output {
+                        last_tool_output = Some(tool_out.clone());
                     }
                     // Send a wrapped TaskComplete so the TUI can mark the cell as completed
                     let wrapped = wrap_subagent_event(
@@ -527,6 +532,7 @@ impl ToolHandler for TaskHandler {
         let response = serde_json::json!({
             "result": final_output,
             "session_id": session_id,
+            "last_tool_output": last_tool_output,
         });
 
         Ok(ToolOutput::Function {

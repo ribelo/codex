@@ -18,7 +18,6 @@ use codex_core::protocol::PatchApplyBeginEvent;
 use codex_core::protocol::PatchApplyEndEvent;
 use codex_core::protocol::SessionConfiguredEvent;
 use codex_core::protocol::StreamErrorEvent;
-use codex_core::protocol::TaskCompleteEvent;
 use codex_core::protocol::TurnAbortReason;
 use codex_core::protocol::TurnDiffEvent;
 use codex_core::protocol::WarningEvent;
@@ -238,13 +237,17 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                     "auto-cancelling (not supported in exec mode)".style(self.dimmed)
                 );
             }
-            EventMsg::TaskComplete(TaskCompleteEvent { last_agent_message }) => {
-                let last_message = last_agent_message.as_deref();
+            EventMsg::TaskComplete(tc) => {
+                let output = tc
+                    .last_agent_message
+                    .or(tc.last_tool_output)
+                    .unwrap_or_default();
+
                 if let Some(output_file) = self.last_message_path.as_deref() {
-                    handle_last_message(last_message, output_file);
+                    handle_last_message(Some(&output), output_file);
                 }
 
-                self.final_message = last_agent_message;
+                self.final_message = Some(output);
 
                 return CodexStatus::InitiateShutdown;
             }

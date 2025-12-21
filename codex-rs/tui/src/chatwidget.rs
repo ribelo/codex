@@ -2064,9 +2064,9 @@ impl ChatWidget {
             }
             EventMsg::AgentReasoningSectionBreak(_) => self.on_reasoning_section_break(),
             EventMsg::TaskStarted(_) => self.on_task_started(),
-            EventMsg::TaskComplete(TaskCompleteEvent { last_agent_message }) => {
-                self.on_task_complete(last_agent_message)
-            }
+            EventMsg::TaskComplete(TaskCompleteEvent {
+                last_agent_message, ..
+            }) => self.on_task_complete(last_agent_message),
             EventMsg::TokenCount(ev) => {
                 self.set_token_info(ev.info);
                 self.on_rate_limit_snapshot(ev.rate_limits);
@@ -2471,8 +2471,12 @@ impl ChatWidget {
             }
             EventMsg::TaskComplete(ev) => {
                 guard.status = history_cell::SubagentTaskStatus::Completed;
-                if let Some(ref msg) = ev.last_agent_message {
-                    guard.final_message = Some(msg.clone());
+                if let Some(msg) = ev
+                    .last_agent_message
+                    .clone()
+                    .or(ev.last_tool_output.clone())
+                {
+                    guard.final_message = Some(msg);
                 }
             }
             EventMsg::TurnAborted(_) => {

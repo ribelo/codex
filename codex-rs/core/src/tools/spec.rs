@@ -1240,7 +1240,12 @@ mod tests {
 
     fn strip_descriptions_tool(spec: &mut ToolSpec) {
         match spec {
-            ToolSpec::Function(ResponsesApiTool { parameters, .. }) => {
+            ToolSpec::Function(ResponsesApiTool {
+                parameters,
+                description,
+                ..
+            }) => {
+                *description = String::new();
                 strip_descriptions_schema(parameters);
             }
             ToolSpec::WebSearch {} | ToolSpec::Freeform(_) => {}

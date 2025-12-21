@@ -217,6 +217,24 @@ pub struct SubagentRegistry {
 /// Built-in review agent template (frontmatter + system prompt).
 const BUILTIN_REVIEW_AGENT: &str = include_str!("../templates/subagents/review.md");
 
+/// Built-in finder agent template.
+const BUILTIN_FINDER_AGENT: &str = include_str!("../templates/subagents/finder.md");
+
+/// Built-in rush agent template.
+const BUILTIN_RUSH_AGENT: &str = include_str!("../templates/subagents/rush.md");
+
+/// Built-in oracle agent template.
+const BUILTIN_ORACLE_AGENT: &str = include_str!("../templates/subagents/oracle.md");
+
+/// Built-in general agent template.
+const BUILTIN_GENERAL_AGENT: &str = include_str!("../templates/subagents/general.md");
+
+/// Built-in librarian agent template.
+const BUILTIN_LIBRARIAN_AGENT: &str = include_str!("../templates/subagents/librarian.md");
+
+/// Built-in painter agent template.
+const BUILTIN_PAINTER_AGENT: &str = include_str!("../templates/subagents/painter.md");
+
 /// Ensure built-in agents exist in the agents directory.
 /// Creates the agents directory and any missing built-in agent files.
 pub fn ensure_builtin_agents(codex_home: &Path) {
@@ -228,13 +246,25 @@ pub fn ensure_builtin_agents(codex_home: &Path) {
         return;
     }
 
-    // Create review.md if it doesn't exist
-    let review_path = agents_dir.join("review.md");
-    if !review_path.exists() {
-        if let Err(e) = std::fs::write(&review_path, BUILTIN_REVIEW_AGENT) {
-            warn!("Failed to create built-in review agent: {e}");
-        } else {
-            info!(path = %review_path.display(), "Created built-in review agent");
+    // List of (filename, content) for built-in agents
+    let builtin_agents: &[(&str, &str)] = &[
+        ("review.md", BUILTIN_REVIEW_AGENT),
+        ("finder.md", BUILTIN_FINDER_AGENT),
+        ("rush.md", BUILTIN_RUSH_AGENT),
+        ("oracle.md", BUILTIN_ORACLE_AGENT),
+        ("general.md", BUILTIN_GENERAL_AGENT),
+        ("librarian.md", BUILTIN_LIBRARIAN_AGENT),
+        ("painter.md", BUILTIN_PAINTER_AGENT),
+    ];
+
+    for (filename, content) in builtin_agents {
+        let path = agents_dir.join(filename);
+        if !path.exists() {
+            if let Err(e) = std::fs::write(&path, content) {
+                warn!("Failed to create built-in agent {filename}: {e}");
+            } else {
+                info!(path = %path.display(), "Created built-in agent");
+            }
         }
     }
 }
@@ -427,8 +457,8 @@ mod tests {
 
         let outcome = load_subagents(codex_home.path()).await;
         assert!(outcome.errors.is_empty(), "Expected no errors");
-        // Includes user agent + built-in review agent
-        assert_eq!(outcome.agents.len(), 2);
+        // Includes user agent + 7 built-in agents
+        assert_eq!(outcome.agents.len(), 8);
         assert!(outcome.agents.iter().any(|a| a.slug == "test-agent"));
         assert!(outcome.agents.iter().any(|a| a.slug == "review"));
     }
@@ -445,8 +475,8 @@ mod tests {
 
         let outcome = load_subagents(codex_home.path()).await;
         assert!(outcome.errors.is_empty(), "Expected no errors");
-        // Includes user agent + built-in review agent
-        assert_eq!(outcome.agents.len(), 2);
+        // Includes user agent + 7 built-in agents
+        assert_eq!(outcome.agents.len(), 8);
         assert!(outcome.agents.iter().any(|a| a.slug == "explorer"));
         assert!(outcome.agents.iter().any(|a| a.slug == "review"));
     }
@@ -462,8 +492,8 @@ mod tests {
         );
 
         let outcome = load_subagents(codex_home.path()).await;
-        // Built-in review agent should still load successfully
-        assert_eq!(outcome.agents.len(), 1, "Only built-in review should load");
+        // Built-in agents should still load successfully
+        assert_eq!(outcome.agents.len(), 7);
         assert!(outcome.agents.iter().any(|a| a.slug == "review"));
         assert_eq!(outcome.errors.len(), 1);
         assert_eq!(outcome.errors[0].path, path);
@@ -493,8 +523,8 @@ mod tests {
         );
 
         let outcome = load_subagents(codex_home.path()).await;
-        // Built-in review agent should still load successfully
-        assert_eq!(outcome.agents.len(), 1);
+        // Built-in agents should still load successfully
+        assert_eq!(outcome.agents.len(), 7);
         assert!(outcome.agents.iter().any(|a| a.slug == "review"));
         assert_eq!(outcome.errors.len(), 1);
         assert_eq!(outcome.errors[0].path, path);
@@ -516,8 +546,8 @@ mod tests {
         );
 
         let outcome = load_subagents(codex_home.path()).await;
-        // Built-in review agent should still load successfully
-        assert_eq!(outcome.agents.len(), 1);
+        // Built-in agents should still load successfully
+        assert_eq!(outcome.agents.len(), 7);
         assert!(outcome.agents.iter().any(|a| a.slug == "review"));
         assert_eq!(outcome.errors.len(), 1);
         assert_eq!(outcome.errors[0].path, path);
@@ -542,8 +572,8 @@ mod tests {
         );
 
         let outcome = load_subagents(codex_home.path()).await;
-        // Built-in review agent should still load successfully
-        assert_eq!(outcome.agents.len(), 1);
+        // Built-in agents should still load successfully
+        assert_eq!(outcome.agents.len(), 7);
         assert!(outcome.agents.iter().any(|a| a.slug == "review"));
         assert_eq!(outcome.errors.len(), 1);
         assert_eq!(outcome.errors[0].path, path);
@@ -569,8 +599,8 @@ mod tests {
             "Expected no errors: {:?}",
             outcome.errors
         );
-        // Includes user agent + built-in review agent
-        assert_eq!(outcome.agents.len(), 2);
+        // Includes user agent + 7 built-in agents
+        assert_eq!(outcome.agents.len(), 8);
         let minimal = outcome
             .agents
             .iter()
@@ -588,8 +618,8 @@ mod tests {
         let codex_home = setup_codex_home();
         let outcome = load_subagents(codex_home.path()).await;
         assert!(outcome.errors.is_empty());
-        // Built-in review agent is auto-created
-        assert_eq!(outcome.agents.len(), 1);
+        // 7 Built-in agents are auto-created
+        assert_eq!(outcome.agents.len(), 7);
         assert!(outcome.agents.iter().any(|a| a.slug == "review"));
     }
 
@@ -599,8 +629,8 @@ mod tests {
         // Don't create agents dir
         let outcome = load_subagents(temp.path()).await;
         assert!(outcome.errors.is_empty());
-        // Built-in review agent is auto-created (agents dir is also created)
-        assert_eq!(outcome.agents.len(), 1);
+        // 7 Built-in agents are auto-created (agents dir is also created)
+        assert_eq!(outcome.agents.len(), 7);
         assert!(outcome.agents.iter().any(|a| a.slug == "review"));
     }
 

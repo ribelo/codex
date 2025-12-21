@@ -20,7 +20,6 @@ use codex_core::protocol::EventMsg;
 use codex_core::protocol::ExecApprovalRequestEvent;
 use codex_core::protocol::Op;
 use codex_core::protocol::Submission;
-use codex_core::protocol::TaskCompleteEvent;
 use codex_protocol::ConversationId;
 use codex_protocol::user_input::UserInput;
 use mcp_types::CallToolResult;
@@ -232,11 +231,11 @@ async fn run_codex_tool_session_inner(
                         .await;
                         continue;
                     }
-                    EventMsg::TaskComplete(TaskCompleteEvent { last_agent_message }) => {
-                        let text = match last_agent_message {
-                            Some(msg) => msg,
-                            None => "".to_string(),
-                        };
+                    EventMsg::TaskComplete(tc) => {
+                        let text = tc
+                            .last_agent_message
+                            .or(tc.last_tool_output)
+                            .unwrap_or_default();
                         let result = CallToolResult {
                             content: vec![ContentBlock::TextContent(TextContent {
                                 r#type: "text".to_string(),
