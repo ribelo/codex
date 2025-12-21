@@ -3,6 +3,7 @@ const SANDBOX_AND_APPROVALS_PROMPT: &str = include_str!("../../../sandbox_and_ap
 
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 use anyhow::Result;
@@ -17,6 +18,7 @@ use crate::codex_delegate::run_codex_conversation_interactive;
 use crate::function_tool::FunctionCallError;
 use crate::model_provider_info::ProviderKind;
 use crate::model_provider_info::built_in_model_providers;
+use crate::pending_patch::PendingSubagentResult;
 use crate::subagents::SubagentRegistry;
 use crate::subagents::SubagentSandboxPolicy;
 use crate::subagents::SubagentSession;
@@ -25,6 +27,7 @@ use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
 use crate::tools::registry::ToolHandler;
 use crate::tools::spec::JsonSchema;
+use crate::worktree_manager::WorktreeManager;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
@@ -142,6 +145,21 @@ fn wrap_subagent_event(
     })
 }
 
+/// Returns the restrictiveness level for an approval policy (lower = more restrictive).
+/// Used to ensure subagents can only tighten, not loosen approval requirements.
+fn approval_restrictiveness(policy: AskForApproval) -> i32 {
+    match policy {
+        // UnlessTrusted is most restrictive - asks for approval on almost everything
+        AskForApproval::UnlessTrusted => 0,
+        // OnRequest - model decides when to ask
+        AskForApproval::OnRequest => 1,
+        // OnFailure - auto-approve in sandbox, escalate on failure
+        AskForApproval::OnFailure => 2,
+        // Never - never ask, most restrictive of interaction (fails if blocked)
+        AskForApproval::Never => -1,
+    }
+}
+
 #[async_trait]
 impl ToolHandler for TaskHandler {
     fn kind(&self) -> crate::tools::registry::ToolKind {
@@ -158,6 +176,11 @@ impl ToolHandler for TaskHandler {
             .map_err(|e| FunctionCallError::Fatal(format!("Failed to parse arguments: {e}")))?;
 
         let turn = &invocation.turn;
+        let invocation_order = invocation
+            .turn
+            .task_invocation_counter
+            .fetch_add(1, Ordering::SeqCst);
+
         let codex_home = turn.client.config().codex_home.clone();
 
         let registry = SubagentRegistry::new(&codex_home);
@@ -212,7 +235,24 @@ impl ToolHandler for TaskHandler {
         let parent_delegation_id = delegation_context.parent_delegation_id.clone();
         let depth = Some(delegation_context.depth);
 
-        let subagent_session_ref: Arc<crate::codex::Codex> = {
+        // Create isolated worktree for this subagent
+        let worktree_manager = WorktreeManager::new(&codex_home);
+        let parent_worktree = turn.client.config().cwd.clone();
+
+        let worktree_handle = worktree_manager
+            .create_worktree(&parent_worktree)
+            .await
+            .map_err(|e| {
+                FunctionCallError::RespondToModel(format!(
+                    "Subagent execution requires a git repository for workspace isolation. \
+                     Error: {e}. Please ensure you are in a git repository (run 'git init' if needed)."
+                ))
+            })?;
+
+        // Use worktree path as cwd
+        let effective_cwd = worktree_handle.path.clone();
+
+        let (subagent_session_ref, is_reused): (Arc<crate::codex::Codex>, bool) = {
             let services = &invocation.session.services;
             let mut sessions = services.subagent_sessions.lock().await;
 
@@ -222,12 +262,24 @@ impl ToolHandler for TaskHandler {
                     session_id = %session_id,
                     "Reusing existing subagent session"
                 );
-                session.codex.clone()
+                let codex = session.codex.clone();
+                drop(sessions);
+                (codex, true)
             } else {
                 let spawn_started = Instant::now();
                 let config = turn.client.config();
                 let mut sub_config = (*config).clone();
                 sub_config.codex_home = codex_home.clone();
+                sub_config.cwd = effective_cwd.clone();
+
+                // Share build caches with main workspace to avoid slow rebuilds
+                let cargo_target = parent_worktree.join("target");
+                if cargo_target.exists() || parent_worktree.join("Cargo.toml").exists() {
+                    sub_config.shell_environment_policy.r#set.insert(
+                        "CARGO_TARGET_DIR".to_string(),
+                        cargo_target.to_string_lossy().to_string(),
+                    );
+                }
 
                 // Apply profile settings from frontmatter.
                 // We re-read config.toml on each invocation rather than caching because:
@@ -397,9 +449,32 @@ impl ToolHandler for TaskHandler {
                     elapsed_ms = spawn_started.elapsed().as_millis(),
                     "Spawned subagent session"
                 );
-                codex_arc
+                (codex_arc, false)
             }
         };
+
+        // If reusing session, update cwd to new worktree
+        if is_reused {
+            tracing::warn!(
+                session_id = %session_id,
+                new_cwd = %effective_cwd.display(),
+                "Reusing subagent session with new worktree - conversation history may reference outdated file state"
+            );
+
+            subagent_session_ref
+                .submit(Op::OverrideTurnContext {
+                    cwd: Some(effective_cwd.clone()),
+                    approval_policy: None,
+                    sandbox_policy: None,
+                    model: None,
+                    effort: None,
+                    summary: None,
+                })
+                .await
+                .map_err(|e| {
+                    FunctionCallError::Fatal(format!("Failed to update subagent CWD: {e}"))
+                })?;
+        }
 
         let input = vec![UserInput::Text {
             text: args.prompt.clone(),
@@ -423,116 +498,160 @@ impl ToolHandler for TaskHandler {
             .send_event(invocation.turn.as_ref(), task_started)
             .await;
 
-        subagent_session_ref
-            .submit(Op::UserInput { items: input })
-            .await
-            .map_err(|e| {
-                FunctionCallError::Fatal(format!("Failed to submit input to subagent: {e}"))
-            })?;
-
-        let mut final_output = String::new();
-        let mut last_tool_output: Option<String> = None;
-        loop {
-            let event = subagent_session_ref
-                .next_event()
+        let execution_result: Result<(String, Option<String>), FunctionCallError> = async {
+            subagent_session_ref
+                .submit(Op::UserInput { items: input })
                 .await
-                .map_err(|e| FunctionCallError::Fatal(format!("Subagent event error: {e}")))?;
+                .map_err(|e| {
+                    FunctionCallError::Fatal(format!("Failed to submit input to subagent: {e}"))
+                })?;
 
-            match event.msg {
-                EventMsg::SubagentEvent(mut nested) => {
-                    // Nested subagent invocation inside this delegated task.
-                    // Bump depth relative to the current delegation so the TUI
-                    // can render a visually nested tree.
-                    let parent_depth = depth.unwrap_or(0);
-                    let new_depth = parent_depth.saturating_add(1);
-                    nested.depth = Some(new_depth);
-                    if nested.parent_delegation_id.is_none() {
-                        nested.parent_delegation_id = delegation_id.clone();
-                    }
+            let mut final_output = String::new();
+            let mut last_tool_output: Option<String> = None;
+            loop {
+                let event = subagent_session_ref
+                    .next_event()
+                    .await
+                    .map_err(|e| FunctionCallError::Fatal(format!("Subagent event error: {e}")))?;
 
-                    invocation
-                        .session
-                        .send_event(invocation.turn.as_ref(), EventMsg::SubagentEvent(nested))
-                        .await;
-                }
-                EventMsg::TaskComplete(tc) => {
-                    if let Some(ref msg) = tc.last_agent_message {
-                        final_output = msg.clone();
+                match event.msg {
+                    EventMsg::SubagentEvent(mut nested) => {
+                        // Nested subagent invocation inside this delegated task.
+                        // Bump depth relative to the current delegation so the TUI
+                        // can render a visually nested tree.
+                        let parent_depth = depth.unwrap_or(0);
+                        let nested_depth = nested.depth.unwrap_or(0);
+                        let new_depth = parent_depth.saturating_add(nested_depth).saturating_add(1);
+                        nested.depth = Some(new_depth);
+                        if nested.parent_delegation_id.is_none() {
+                            nested.parent_delegation_id = delegation_id.clone();
+                        }
+
+                        invocation
+                            .session
+                            .send_event(invocation.turn.as_ref(), EventMsg::SubagentEvent(nested))
+                            .await;
                     }
-                    // Capture tool output if present
-                    if let Some(ref tool_out) = tc.last_tool_output {
-                        last_tool_output = Some(tool_out.clone());
+                    EventMsg::TaskComplete(tc) => {
+                        if let Some(ref msg) = tc.last_agent_message {
+                            final_output = msg.clone();
+                        }
+                        // Capture tool output if present
+                        if let Some(ref tool_out) = tc.last_tool_output {
+                            last_tool_output = Some(tool_out.clone());
+                        }
+                        // Send a wrapped TaskComplete so the TUI can mark the cell as completed
+                        let wrapped = wrap_subagent_event(
+                            &invocation.call_id,
+                            &args.subagent_type,
+                            &args.description,
+                            delegation_id.clone(),
+                            parent_delegation_id.clone(),
+                            depth,
+                            EventMsg::TaskComplete(tc),
+                        );
+                        invocation
+                            .session
+                            .send_event(invocation.turn.as_ref(), wrapped)
+                            .await;
+                        break Ok((final_output, last_tool_output));
                     }
-                    // Send a wrapped TaskComplete so the TUI can mark the cell as completed
-                    let wrapped = wrap_subagent_event(
-                        &invocation.call_id,
-                        &args.subagent_type,
-                        &args.description,
-                        delegation_id.clone(),
-                        parent_delegation_id.clone(),
-                        depth,
-                        EventMsg::TaskComplete(tc),
-                    );
-                    invocation
-                        .session
-                        .send_event(invocation.turn.as_ref(), wrapped)
-                        .await;
-                    // Exit delegation context
-                    {}
-                    break;
+                    EventMsg::TurnAborted(ta) => {
+                        let reason_str = format!("Turn aborted: {:?}", ta.reason);
+                        // Send a wrapped TurnAborted so the TUI can mark the cell as failed
+
+                        let wrapped = wrap_subagent_event(
+                            &invocation.call_id,
+                            &args.subagent_type,
+                            &args.description,
+                            delegation_id.clone(),
+                            parent_delegation_id.clone(),
+                            depth,
+                            EventMsg::TurnAborted(ta),
+                        );
+                        invocation
+                            .session
+                            .send_event(invocation.turn.as_ref(), wrapped)
+                            .await;
+                        break Err(FunctionCallError::RespondToModel(reason_str));
+                    }
+                    EventMsg::ExecCommandBegin(_)
+                    | EventMsg::ExecCommandEnd(_)
+                    | EventMsg::ExecCommandOutputDelta(_)
+                    | EventMsg::McpToolCallBegin(_)
+                    | EventMsg::McpToolCallEnd(_)
+                    | EventMsg::PatchApplyBegin(_)
+                    | EventMsg::PatchApplyEnd(_)
+                    | EventMsg::AgentMessageDelta(_)
+                    | EventMsg::AgentMessage(_) => {
+                        let wrapped = wrap_subagent_event(
+                            &invocation.call_id,
+                            &args.subagent_type,
+                            &args.description,
+                            delegation_id.clone(),
+                            parent_delegation_id.clone(),
+                            depth,
+                            event.msg,
+                        );
+                        invocation
+                            .session
+                            .send_event(invocation.turn.as_ref(), wrapped)
+                            .await;
+                    }
+                    _ => {}
                 }
-                EventMsg::TurnAborted(ta) => {
-                    let reason_str = format!("Turn aborted: {:?}", ta.reason);
-                    // Send a wrapped TurnAborted so the TUI can mark the cell as failed
-                    let wrapped = wrap_subagent_event(
-                        &invocation.call_id,
-                        &args.subagent_type,
-                        &args.description,
-                        delegation_id.clone(),
-                        parent_delegation_id.clone(),
-                        depth,
-                        EventMsg::TurnAborted(ta),
-                    );
-                    invocation
-                        .session
-                        .send_event(invocation.turn.as_ref(), wrapped)
-                        .await;
-                    // Exit delegation context
-                    {}
-                    return Err(FunctionCallError::RespondToModel(reason_str));
-                }
-                EventMsg::ExecCommandBegin(_)
-                | EventMsg::ExecCommandEnd(_)
-                | EventMsg::ExecCommandOutputDelta(_)
-                | EventMsg::McpToolCallBegin(_)
-                | EventMsg::McpToolCallEnd(_)
-                | EventMsg::PatchApplyBegin(_)
-                | EventMsg::PatchApplyEnd(_)
-                | EventMsg::AgentMessageDelta(_)
-                | EventMsg::AgentMessage(_) => {
-                    let wrapped = wrap_subagent_event(
-                        &invocation.call_id,
-                        &args.subagent_type,
-                        &args.description,
-                        delegation_id.clone(),
-                        parent_delegation_id.clone(),
-                        depth,
-                        event.msg,
-                    );
-                    invocation
-                        .session
-                        .send_event(invocation.turn.as_ref(), wrapped)
-                        .await;
-                }
-                _ => {}
             }
         }
+        .await;
+
+        // Handle execution result with cleanup on error
+        let (final_output, last_tool_output) = match execution_result {
+            Ok(result) => result,
+            Err(e) => {
+                let _ = worktree_manager.cleanup(&worktree_handle).await;
+                return Err(e);
+            }
+        };
+
+        // Generate diff but don't apply yet
+        let diff = match worktree_manager.generate_diff(&worktree_handle).await {
+            Ok(d) => d,
+            Err(e) => {
+                tracing::error!(error = %e, "Failed to generate diff from subagent worktree");
+                let _ = worktree_manager.cleanup(&worktree_handle).await;
+                // Return error response
+                return Err(FunctionCallError::RespondToModel(format!(
+                    "Failed to generate diff: {e}"
+                )));
+            }
+        };
+
+        // Collect for deferred merge instead of applying immediately
+        let pending = PendingSubagentResult {
+            invocation_order,
+            subagent_type: args.subagent_type.clone(),
+            session_id: session_id.clone(),
+            call_id: invocation.call_id.clone(),
+            result: final_output.clone(),
+            last_tool_output: last_tool_output.clone(),
+            diff,
+            worktree_handle,
+            parent_worktree: parent_worktree.clone(),
+        };
+
+        invocation
+            .turn
+            .pending_subagent_results
+            .lock()
+            .await
+            .push(pending);
 
         // Build a structured response that includes the session_id for follow-up calls
         let response = serde_json::json!({
             "result": final_output,
             "session_id": session_id,
             "last_tool_output": last_tool_output,
+            "changes": "pending",
         });
 
         Ok(ToolOutput::Function {
@@ -540,21 +659,6 @@ impl ToolHandler for TaskHandler {
             content: response.to_string(),
             content_items: None,
         })
-    }
-}
-
-/// Returns the restrictiveness level for an approval policy (lower = more restrictive).
-/// Used to ensure subagents can only tighten, not loosen approval requirements.
-fn approval_restrictiveness(policy: AskForApproval) -> i32 {
-    match policy {
-        // UnlessTrusted is most restrictive - asks for approval on almost everything
-        AskForApproval::UnlessTrusted => 0,
-        // OnRequest - model decides when to ask
-        AskForApproval::OnRequest => 1,
-        // OnFailure - auto-approve in sandbox, escalate on failure
-        AskForApproval::OnFailure => 2,
-        // Never - never ask, most permissive
-        AskForApproval::Never => 3,
     }
 }
 

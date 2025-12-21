@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU32;
 use std::sync::atomic::AtomicU64;
 
 use crate::AuthManager;
@@ -17,6 +18,7 @@ use crate::openai_models::model_family::ModelFamily;
 use crate::openai_models::models_manager::ModelsManager;
 use crate::parse_command::parse_command;
 use crate::parse_turn_item;
+use crate::pending_patch::PendingSubagentResult;
 use crate::stream_events_utils::HandleOutputCtx;
 use crate::stream_events_utils::handle_non_tool_response_item;
 use crate::stream_events_utils::handle_output_item_done;
@@ -28,6 +30,7 @@ use crate::util::error_or_panic;
 use async_channel::Receiver;
 use async_channel::Sender;
 use codex_protocol::ConversationId;
+use codex_protocol::SubagentChangesStatus;
 use codex_protocol::approvals::ExecPolicyAmendment;
 use codex_protocol::config_types::ReasoningDisplay;
 use codex_protocol::items::TurnItem;
@@ -339,8 +342,15 @@ pub(crate) struct TurnContext {
     pub(crate) exec_policy: Arc<RwLock<ExecPolicy>>,
     pub(crate) truncation_policy: TruncationPolicy,
     pub(crate) truncation_bias: TruncationBias,
+
+    /// Counter for subagent invocation order within this turn
+    pub(crate) task_invocation_counter: AtomicU32,
+
     pub(crate) mcp_truncation_policy: TruncationPolicy,
     pub(crate) mcp_truncation_bias: TruncationBias,
+
+    /// Pending subagent results awaiting merge at end of turn
+    pub(crate) pending_subagent_results: Mutex<Vec<PendingSubagentResult>>,
 }
 
 impl TurnContext {
@@ -532,11 +542,13 @@ impl Session {
                 model_family.truncation_policy,
             ),
             truncation_bias: model_family.truncation_bias,
+            task_invocation_counter: AtomicU32::new(0),
             mcp_truncation_policy: TruncationPolicy::new(
                 per_turn_config.as_ref(),
                 model_family.mcp_truncation_policy,
             ),
             mcp_truncation_bias: model_family.mcp_truncation_bias,
+            pending_subagent_results: Mutex::new(Vec::new()),
         }
     }
 
@@ -2588,6 +2600,8 @@ async fn drain_in_flight(
 }
 
 #[allow(clippy::too_many_arguments)]
+use crate::patch_merger::merge_pending_patches;
+
 async fn try_run_turn(
     router: Arc<ToolRouter>,
     sess: Arc<Session>,
@@ -2765,7 +2779,67 @@ async fn try_run_turn(
         }
     }
 
-    outcome
+    {
+        let outcome = outcome;
+        let pending = turn_context
+            .pending_subagent_results
+            .lock()
+            .await
+            .drain(..)
+            .collect::<Vec<_>>();
+        if !pending.is_empty() {
+            let codex_home = turn_context.tools_config.codex_home.clone();
+            let merge_results = merge_pending_patches(pending, &codex_home).await;
+
+            for result in merge_results {
+                tracing::info!(
+                    call_id = %result.call_id,
+                    subagent = %result.subagent_type,
+                    status = ?result.changes.status,
+                    "Subagent patch merged"
+                );
+
+                match result.changes.status {
+                    SubagentChangesStatus::Applied => {
+                        let files: Vec<_> = result
+                            .changes
+                            .files_changed
+                            .iter()
+                            .map(|f| f.path.as_str())
+                            .collect();
+                        let message = format!(
+                            "Subagent {} changes merged: {}",
+                            result.subagent_type,
+                            files.join(", ")
+                        );
+                        sess.send_event(
+                            &turn_context,
+                            EventMsg::AgentMessage(AgentMessageEvent { message }),
+                        )
+                        .await;
+                    }
+                    SubagentChangesStatus::Conflict => {
+                        let patch_path = result.changes.patch_path.clone().unwrap_or_default();
+                        let message = if patch_path.is_empty() {
+                            format!(
+                                "Subagent {} changes could not be merged (error applying patch).",
+                                result.subagent_type
+                            )
+                        } else {
+                            format!(
+                                "Subagent {} changes could not be merged. Patch saved to: {patch_path}",
+                                result.subagent_type
+                            )
+                        };
+                        sess.send_event(&turn_context, EventMsg::Warning(WarningEvent { message }))
+                            .await;
+                    }
+                    SubagentChangesStatus::NoChanges => {}
+                }
+            }
+        }
+        outcome
+    }
 }
 
 pub(super) fn get_last_assistant_message_from_turn(responses: &[ResponseItem]) -> Option<String> {
@@ -3782,3 +3856,4 @@ mod tests {
         pretty_assertions::assert_eq!(output, expected);
     }
 }
+use crate::protocol::AgentMessageEvent;

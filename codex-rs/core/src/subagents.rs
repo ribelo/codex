@@ -52,7 +52,7 @@ impl SubagentApprovalPolicy {
             SubagentApprovalPolicy::UnlessTrusted => Some(0),
             SubagentApprovalPolicy::OnFailure => Some(2),
             SubagentApprovalPolicy::OnRequest => Some(1),
-            SubagentApprovalPolicy::Never => Some(3),
+            SubagentApprovalPolicy::Never => Some(-1),
         }
     }
 }

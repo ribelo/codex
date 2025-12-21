@@ -137,7 +137,7 @@ async fn interrupt_tool_records_history_entries() {
     let output = response_mock
         .function_call_output_text(call_id)
         .expect("missing function_call_output text");
-    let re = Regex::new(r"^Wall time: ([0-9]+(?:\.[0-9])?) seconds\naborted by user$")
+    let re = Regex::new(r"^Wall time: ([0-9]+(?:\.[0-9])?) seconds\ncanceled by the user$")
         .expect("compile regex");
     let captures = re.captures(&output);
     assert_matches!(
