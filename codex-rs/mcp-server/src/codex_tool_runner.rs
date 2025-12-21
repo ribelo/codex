@@ -305,7 +305,9 @@ async fn run_codex_tool_session_inner(
                     | EventMsg::ContextCompacted(_)
                     | EventMsg::DeprecationNotice(_)
                     | EventMsg::SubagentEvent(_)
-                    | EventMsg::ListSkillsResponse(_) => {
+                    | EventMsg::ListSkillsResponse(_)
+                    | EventMsg::HandoffDraft(_)
+                    | EventMsg::HandoffCompleted(_) => {
                         // For now, we do not do anything extra for these
                         // events. Note that
                         // send(codex_event_to_notification(&event)) above has

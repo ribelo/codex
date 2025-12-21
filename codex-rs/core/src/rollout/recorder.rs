@@ -251,6 +251,9 @@ impl RolloutRecorder {
                     RolloutItem::EventMsg(_ev) => {
                         items.push(RolloutItem::EventMsg(_ev));
                     }
+                    RolloutItem::Handoff(item) => {
+                        items.push(RolloutItem::Handoff(item));
+                    }
                 },
                 Err(e) => {
                     warn!("failed to parse rollout line: {v:?}, error: {e}");

@@ -246,6 +246,76 @@ impl ConversationManager {
         self.finalize_spawn(codex, conversation_id).await
     }
 
+    /// Create a new conversation from a handoff draft.
+    /// The new conversation starts with the extracted context and goal.
+    pub async fn create_handoff_conversation(
+        &self,
+        draft: codex_protocol::protocol::HandoffDraft,
+        config: Config,
+    ) -> CodexResult<NewConversation> {
+        use codex_protocol::models::ContentItem;
+        use codex_protocol::models::ResponseItem;
+        use codex_protocol::protocol::RolloutItem;
+        use codex_protocol::protocol::SessionSource;
+
+        // Format file mentions
+        let file_mentions = format_file_mentions(&draft.relevant_files);
+
+        // Build context message
+        let context_text = format!(
+            "Continuing work from thread {}.\n\n{}\n\n{}",
+            draft.parent_id, file_mentions, draft.summary
+        );
+
+        let context_message = ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText { text: context_text }],
+        };
+
+        // Build goal message
+        let goal_message = ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: draft.goal.clone(),
+            }],
+        };
+
+        // Create initial history
+        let initial_history = InitialHistory::Handoff {
+            context: vec![
+                RolloutItem::ResponseItem(context_message),
+                RolloutItem::ResponseItem(goal_message),
+            ],
+            parent_id: draft.parent_id,
+        };
+
+        // Update config with handoff session source
+        let config = config;
+        // Note: session_source will be set during Codex::spawn based on InitialHistory
+
+        let auth_manager = self.auth_manager.clone();
+        let CodexSpawnOk {
+            codex,
+            conversation_id,
+        } = Codex::spawn(
+            config,
+            auth_manager,
+            self.models_manager.clone(),
+            initial_history,
+            SessionSource::Handoff {
+                parent_id: draft.parent_id,
+                goal: draft.goal,
+            },
+            Some(self.mcp_connection_manager.clone()),
+            self.skills_manager.clone(),
+        )
+        .await?;
+
+        self.finalize_spawn(codex, conversation_id).await
+    }
+
     pub async fn list_models(&self, config: &Config) -> Vec<ModelPreset> {
         self.models_manager.list_models(config).await
     }
@@ -288,6 +358,41 @@ fn truncate_before_nth_user_message(history: InitialHistory, n: usize) -> Initia
     } else {
         InitialHistory::Forked(rolled)
     }
+}
+
+/// Format file paths as mentions for the handoff context message.
+fn format_file_mentions(files: &[std::path::PathBuf]) -> String {
+    if files.is_empty() {
+        return String::new();
+    }
+
+    const MAX_MENTIONED: usize = 12;
+
+    let mentioned: Vec<String> = files
+        .iter()
+        .take(MAX_MENTIONED)
+        .map(|p| {
+            let s = p.display().to_string();
+            if s.chars().any(char::is_whitespace) {
+                format!("@\"{s}\"")
+            } else {
+                format!("@{s}")
+            }
+        })
+        .collect();
+
+    let mut result = mentioned.join(" ");
+
+    if files.len() > MAX_MENTIONED {
+        let others: Vec<String> = files
+            .iter()
+            .skip(MAX_MENTIONED)
+            .map(|p| p.display().to_string())
+            .collect();
+        result.push_str(&format!("\n\nOther relevant files: {}", others.join(", ")));
+    }
+
+    result
 }
 
 #[cfg(test)]

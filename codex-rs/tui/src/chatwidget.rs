@@ -1676,6 +1676,9 @@ impl ChatWidget {
                     InputResult::Command(cmd) => {
                         self.dispatch_command(cmd);
                     }
+                    InputResult::CommandWithArgs(cmd, args) => {
+                        self.dispatch_command_with_args(cmd, args);
+                    }
                     InputResult::DelegateCommand {
                         description,
                         prompt,
@@ -1708,6 +1711,28 @@ impl ChatWidget {
         self.bottom_pane
             .attach_image(path, width, height, format_label);
         self.request_redraw();
+    }
+
+    fn dispatch_command_with_args(&mut self, cmd: SlashCommand, args: String) {
+        if !cmd.available_during_task() && self.bottom_pane.is_task_running() {
+            let message = format!(
+                "'/{}' is disabled while a task is in progress.",
+                cmd.command()
+            );
+            self.add_to_history(history_cell::new_error_event(message));
+            self.request_redraw();
+            return;
+        }
+        match cmd {
+            SlashCommand::Handoff => {
+                self.app_event_tx
+                    .send(AppEvent::CodexOp(Op::Handoff { goal: args }));
+            }
+            _ => {
+                // Fall back to regular dispatch for commands that don't use args
+                self.dispatch_command(cmd);
+            }
+        }
     }
 
     fn dispatch_command(&mut self, cmd: SlashCommand) {
@@ -1752,6 +1777,12 @@ impl ChatWidget {
             }
             SlashCommand::Review => {
                 self.open_review_popup();
+            }
+            SlashCommand::Handoff => {
+                self.add_info_message(
+                    "Please provide a goal: /handoff <what you want to do next>".to_string(),
+                    None,
+                );
             }
             SlashCommand::Model => {
                 self.open_model_popup();
@@ -2104,6 +2135,7 @@ impl ChatWidget {
             EventMsg::ContextCompacted(_) => self.on_agent_message("Context compacted".to_owned()),
             EventMsg::RawResponseItem(_) => {}
             EventMsg::SubagentEvent(payload) => self.on_subagent_event(payload),
+            EventMsg::HandoffDraft(_) | EventMsg::HandoffCompleted(_) => {}
         }
     }
 

@@ -584,6 +584,8 @@ impl EventProcessor for EventProcessorWithHumanOutput {
             | EventMsg::UndoCompleted(_)
             | EventMsg::UndoStarted(_)
             | EventMsg::SubagentEvent(_)
+            | EventMsg::HandoffDraft(_)
+            | EventMsg::HandoffCompleted(_)
             | EventMsg::ListSkillsResponse(_) => {}
         }
         CodexStatus::Running

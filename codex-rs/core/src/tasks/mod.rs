@@ -1,6 +1,7 @@
 mod command_delegate;
 mod compact;
 mod ghost_snapshot;
+mod handoff;
 mod regular;
 mod subagent_delegate;
 mod undo;
@@ -33,6 +34,7 @@ use codex_protocol::user_input::UserInput;
 pub(crate) use command_delegate::CommandDelegateTask;
 pub(crate) use compact::CompactTask;
 pub(crate) use ghost_snapshot::GhostSnapshotTask;
+pub use handoff::HandoffTask;
 pub(crate) use regular::RegularTask;
 pub(crate) use subagent_delegate::SubagentDelegateTask;
 pub(crate) use undo::UndoTask;

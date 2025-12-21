@@ -242,6 +242,18 @@ pub enum Op {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         cwds: Vec<PathBuf>,
     },
+
+    /// Create a handoff draft to transfer the session to another agent/UI.
+    Handoff { goal: String },
+
+    /// Confirm and execute a handoff.
+    ConfirmHandoff {
+        draft: HandoffDraft,
+        child_id: ConversationId,
+    },
+
+    /// Cancel a pending handoff.
+    CancelHandoff,
 }
 
 /// Determines the conditions under which the user is consulted to approve
@@ -541,6 +553,10 @@ pub enum EventMsg {
     WebSearchBegin(WebSearchBeginEvent),
 
     WebSearchEnd(WebSearchEndEvent),
+
+    HandoffDraft(HandoffDraftEvent),
+
+    HandoffCompleted(HandoffCompletedEvent),
 
     /// Notification that the server is about to execute a command.
     ExecCommandBegin(ExecCommandBeginEvent),
@@ -1104,6 +1120,27 @@ pub struct WebSearchEndEvent {
     pub query: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+pub struct HandoffDraftEvent {
+    pub summary: String,
+    pub goal: String,
+    pub relevant_files: Vec<PathBuf>,
+    pub parent_id: ConversationId,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, PartialEq)]
+pub struct HandoffDraft {
+    pub summary: String,
+    pub goal: String,
+    pub relevant_files: Vec<PathBuf>,
+    pub parent_id: ConversationId,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+pub struct HandoffCompletedEvent {
+    pub new_session_id: ConversationId,
+}
+
 /// Response payload for `Op::GetHistory` containing the current session's
 /// in-memory transcript.
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
@@ -1124,6 +1161,10 @@ pub enum InitialHistory {
     New,
     Resumed(ResumedHistory),
     Forked(Vec<RolloutItem>),
+    Handoff {
+        context: Vec<RolloutItem>,
+        parent_id: ConversationId,
+    },
 }
 
 impl InitialHistory {
@@ -1132,6 +1173,7 @@ impl InitialHistory {
             InitialHistory::New => Vec::new(),
             InitialHistory::Resumed(resumed) => resumed.history.clone(),
             InitialHistory::Forked(items) => items.clone(),
+            InitialHistory::Handoff { context, .. } => context.clone(),
         }
     }
 
@@ -1157,6 +1199,15 @@ impl InitialHistory {
                     })
                     .collect(),
             ),
+            InitialHistory::Handoff { context, .. } => Some(
+                context
+                    .iter()
+                    .filter_map(|ri| match ri {
+                        RolloutItem::EventMsg(ev) => Some(ev.clone()),
+                        _ => None,
+                    })
+                    .collect(),
+            ),
         }
     }
 }
@@ -1171,6 +1222,10 @@ pub enum SessionSource {
     Exec,
     Mcp,
     SubAgent(SubAgentSource),
+    Handoff {
+        parent_id: ConversationId,
+        goal: String,
+    },
     #[serde(other)]
     Unknown,
 }
@@ -1192,6 +1247,7 @@ impl fmt::Display for SessionSource {
             SessionSource::Exec => f.write_str("exec"),
             SessionSource::Mcp => f.write_str("mcp"),
             SessionSource::SubAgent(sub_source) => write!(f, "subagent_{sub_source}"),
+            SessionSource::Handoff { .. } => f.write_str("handoff"),
             SessionSource::Unknown => f.write_str("unknown"),
         }
     }
@@ -1251,6 +1307,7 @@ pub enum RolloutItem {
     Compacted(CompactedItem),
     TurnContext(TurnContextItem),
     EventMsg(EventMsg),
+    Handoff(HandoffRolloutItem),
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, TS)]
@@ -1291,7 +1348,14 @@ pub struct RolloutLine {
     pub item: RolloutItem,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+pub struct HandoffRolloutItem {
+    pub child_id: ConversationId,
+    pub goal: String,
+    pub timestamp: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, JsonSchema, TS)]
 pub struct GitInfo {
     /// Current commit hash (SHA)
     #[serde(skip_serializing_if = "Option::is_none")]

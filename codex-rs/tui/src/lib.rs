@@ -47,6 +47,7 @@ mod exec_command;
 mod file_search;
 mod frames;
 mod get_git_diff;
+pub mod handoff_review;
 mod history_cell;
 pub mod insert_history;
 mod key_hint;

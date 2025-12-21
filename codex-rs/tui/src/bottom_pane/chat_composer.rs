@@ -81,6 +81,7 @@ const LARGE_PASTE_CHAR_THRESHOLD: usize = 1000;
 pub enum InputResult {
     Submitted(String),
     Command(SlashCommand),
+    CommandWithArgs(SlashCommand, String),
     DelegateCommand {
         description: String,
         prompt: String,
@@ -1210,14 +1211,27 @@ impl ChatComposer {
                 // but Enter should still dispatch the command rather than submit
                 // literal text.
                 let first_line = self.textarea.text().lines().next().unwrap_or("");
-                if let Some((name, rest)) = parse_slash_name(first_line)
-                    && rest.is_empty()
-                    && let Some((_n, cmd)) = built_in_slash_commands()
-                        .into_iter()
-                        .find(|(n, _)| *n == name)
-                {
-                    self.textarea.set_text("");
-                    return (InputResult::Command(cmd), true);
+                if let Some((name, rest)) = parse_slash_name(first_line) {
+                    // Special case: /handoff accepts arguments
+                    if name == "handoff" && !rest.is_empty() {
+                        let goal = rest.trim().to_string();
+                        if let Some((_, cmd)) = built_in_slash_commands()
+                            .into_iter()
+                            .find(|(n, _)| *n == "handoff")
+                        {
+                            self.textarea.set_text("");
+                            return (InputResult::CommandWithArgs(cmd, goal), true);
+                        }
+                    }
+                    // Original code: exact command match (no args)
+                    if rest.is_empty()
+                        && let Some((_n, cmd)) = built_in_slash_commands()
+                            .into_iter()
+                            .find(|(n, _)| *n == name)
+                    {
+                        self.textarea.set_text("");
+                        return (InputResult::Command(cmd), true);
+                    }
                 }
                 // If we're in a paste-like burst capture, treat Enter as part of the burst
                 // and accumulate it rather than submitting or inserting immediately.
@@ -2989,6 +3003,9 @@ mod tests {
             InputResult::DelegateCommand { .. } => {
                 panic!("unexpected DelegateCommand for '/init'")
             }
+            InputResult::CommandWithArgs(_, _) => {
+                panic!("unexpected CommandWithArgs")
+            }
         }
         assert!(composer.textarea.is_empty(), "composer should be cleared");
     }
@@ -3063,6 +3080,9 @@ mod tests {
             }
             InputResult::None => panic!("expected Command result for '/diff'"),
             InputResult::DelegateCommand { .. } => panic!("unexpected DelegateCommand for '/diff'"),
+            InputResult::CommandWithArgs(_, _) => {
+                panic!("unexpected CommandWithArgs")
+            }
         }
         assert!(composer.textarea.is_empty());
     }
@@ -3098,6 +3118,9 @@ mod tests {
             InputResult::None => panic!("expected Command result for '/mention'"),
             InputResult::DelegateCommand { .. } => {
                 panic!("unexpected DelegateCommand for '/mention'")
+            }
+            InputResult::CommandWithArgs(_, _) => {
+                panic!("unexpected CommandWithArgs")
             }
         }
         assert!(composer.textarea.is_empty(), "composer should be cleared");

@@ -451,6 +451,10 @@ impl Session {
         per_turn_config
     }
 
+    pub(crate) fn conversation_id(&self) -> ConversationId {
+        self.conversation_id
+    }
+
     pub(crate) async fn config(&self) -> Arc<Config> {
         self.state
             .lock()
@@ -561,7 +565,7 @@ impl Session {
         }
 
         let (conversation_id, rollout_params) = match &initial_history {
-            InitialHistory::New | InitialHistory::Forked(_) => {
+            InitialHistory::New | InitialHistory::Forked(_) | InitialHistory::Handoff { .. } => {
                 let conversation_id = ConversationId::default();
                 (
                     conversation_id,
@@ -788,9 +792,14 @@ impl Session {
                 // Ensure initial items are visible to immediate readers (e.g., tests, forks).
                 self.flush_rollout().await;
             }
-            InitialHistory::Resumed(_) | InitialHistory::Forked(_) => {
+            InitialHistory::Resumed(_)
+            | InitialHistory::Forked(_)
+            | InitialHistory::Handoff { .. } => {
                 let rollout_items = conversation_history.get_rollout_items();
-                let persist = matches!(conversation_history, InitialHistory::Forked(_));
+                let persist = matches!(
+                    conversation_history,
+                    InitialHistory::Forked(_) | InitialHistory::Handoff { .. }
+                );
 
                 // If resuming, warn when the last recorded model differs from the current one.
                 if let InitialHistory::Resumed(_) = conversation_history
@@ -826,6 +835,10 @@ impl Session {
                 if !reconstructed_history.is_empty() {
                     self.record_into_history(&reconstructed_history, &turn_context)
                         .await;
+                    if matches!(conversation_history, InitialHistory::Handoff { .. }) {
+                        self.send_raw_response_items(&turn_context, &reconstructed_history)
+                            .await;
+                    }
                 }
 
                 // If persisting, persist all rollout items as-is (recorder filters)
@@ -1577,6 +1590,30 @@ async fn submission_loop(sess: Arc<Session>, config: Arc<Config>, rx_sub: Receiv
             Op::Compact => {
                 handlers::compact(&sess, sub.id.clone()).await;
             }
+            Op::Handoff { goal } => {
+                handlers::handoff(&sess, sub.id.clone(), goal).await;
+            }
+            Op::ConfirmHandoff { draft, child_id } => {
+                use codex_protocol::protocol::HandoffRolloutItem;
+                use time::OffsetDateTime;
+
+                let timestamp = OffsetDateTime::now_utc();
+                let format = time::format_description::well_known::Rfc3339;
+                let timestamp_str = timestamp
+                    .format(&format)
+                    .unwrap_or_else(|_| timestamp.to_string());
+
+                let handoff_item = RolloutItem::Handoff(HandoffRolloutItem {
+                    child_id,
+                    goal: draft.goal.clone(),
+                    timestamp: timestamp_str,
+                });
+
+                sess.persist_rollout_items(&[handoff_item]).await;
+            }
+            Op::CancelHandoff => {
+                // TUI handles cancellation locally by clearing pending_handoff state.
+            }
             Op::RunUserShellCommand { command } => {
                 handlers::run_user_shell_command(
                     &sess,
@@ -1644,6 +1681,7 @@ mod handlers {
 
     use crate::tasks::CommandDelegateTask;
     use crate::tasks::CompactTask;
+    use crate::tasks::HandoffTask;
     use crate::tasks::RegularTask;
     use crate::tasks::UndoTask;
     use crate::tasks::UserShellCommandTask;
@@ -2081,6 +2119,53 @@ mod handlers {
             CompactTask,
         )
         .await;
+    }
+
+    pub async fn handoff(sess: &Arc<Session>, sub_id: String, goal: String) {
+        let turn_context = sess
+            .new_turn_with_sub_id(sub_id, SessionSettingsUpdate::default())
+            .await;
+
+        sess.spawn_task(Arc::clone(&turn_context), vec![], HandoffTask { goal })
+            .await;
+    }
+
+    // TUI creates handoff sessions directly via ConversationManager.
+    // This is kept for API compatibility but is no longer used.
+    #[allow(dead_code)]
+    pub async fn confirm_handoff(
+        sess: &Arc<Session>,
+        sub_id: String,
+        draft: codex_protocol::protocol::HandoffDraft,
+    ) {
+        use codex_protocol::ConversationId;
+        use codex_protocol::protocol::HandoffCompletedEvent;
+        use codex_protocol::protocol::HandoffRolloutItem;
+        use codex_protocol::protocol::RolloutItem;
+        use time::OffsetDateTime;
+
+        let ctx = sess
+            .new_turn_with_sub_id(sub_id, SessionSettingsUpdate::default())
+            .await;
+
+        let timestamp = OffsetDateTime::now_utc();
+        let format = time::format_description::well_known::Rfc3339;
+        let timestamp_str = timestamp
+            .format(&format)
+            .unwrap_or_else(|_| timestamp.to_string());
+
+        let handoff_item = RolloutItem::Handoff(HandoffRolloutItem {
+            child_id: ConversationId::new(),
+            goal: draft.goal.clone(),
+            timestamp: timestamp_str,
+        });
+
+        sess.persist_rollout_items(&[handoff_item]).await;
+
+        let event = EventMsg::HandoffCompleted(HandoffCompletedEvent {
+            new_session_id: ConversationId::new(),
+        });
+        sess.send_event(&ctx, event).await;
     }
 
     pub async fn shutdown(sess: &Arc<Session>, sub_id: String) -> bool {
