@@ -1,3 +1,4 @@
+use crate::ascii_animation::AsciiAnimation;
 use crate::tui::FrameRequester;
 use crate::tui::Tui;
 use crate::tui::TuiEvent;
@@ -9,14 +10,15 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::prelude::Stylize as _;
 use ratatui::text::Line;
-use ratatui::widgets::Block;
-use ratatui::widgets::Borders;
 use ratatui::widgets::Clear;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Widget;
 use ratatui::widgets::WidgetRef;
 use ratatui::widgets::Wrap;
 use tokio_stream::StreamExt;
+
+const MIN_ANIMATION_HEIGHT: u16 = 20;
+const MIN_ANIMATION_WIDTH: u16 = 60;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum GitWarningPromptOutcome {
@@ -73,6 +75,7 @@ pub(crate) async fn run_git_warning_prompt(tui: &mut Tui) -> GitWarningPromptOut
 struct GitWarningScreen {
     request_frame: FrameRequester,
     lines: Vec<Line<'static>>,
+    animation: AsciiAnimation,
     done: bool,
     exit: bool,
 }
@@ -95,6 +98,7 @@ impl GitWarningScreen {
         ];
 
         Self {
+            animation: AsciiAnimation::new(request_frame.clone()),
             request_frame,
             lines,
             done: false,
@@ -152,11 +156,22 @@ impl GitWarningScreen {
 impl WidgetRef for &GitWarningScreen {
     fn render_ref(&self, area: Rect, buf: &mut Buffer) {
         Clear.render(area, buf);
-        let block = Block::default()
-            .title("Git Repository Warning".bold())
-            .borders(Borders::ALL);
-        Paragraph::new(self.lines.clone())
-            .block(block)
+        self.animation.schedule_next_frame();
+
+        let show_animation =
+            area.height >= MIN_ANIMATION_HEIGHT && area.width >= MIN_ANIMATION_WIDTH;
+
+        let mut lines = Vec::new();
+
+        if show_animation {
+            let frame = self.animation.current_frame();
+            lines.extend(frame.lines().map(Into::into));
+            lines.push("".into());
+        }
+
+        lines.extend(self.lines.clone());
+
+        Paragraph::new(lines)
             .wrap(Wrap { trim: true })
             .render(area, buf);
     }
