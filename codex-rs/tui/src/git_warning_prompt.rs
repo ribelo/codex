@@ -80,7 +80,7 @@ struct GitWarningScreen {
 impl GitWarningScreen {
     fn new(request_frame: FrameRequester) -> Self {
         let lines: Vec<Line<'static>> = vec![
-            Line::from("Current directory is not a git repository".bold().red()),
+            Line::from("Current directory is not a git repository".bold()),
             Line::from(""),
             Line::from("Subagent file isolation is DISABLED. This means:"),
             Line::from(""),
@@ -153,7 +153,7 @@ impl WidgetRef for &GitWarningScreen {
     fn render_ref(&self, area: Rect, buf: &mut Buffer) {
         Clear.render(area, buf);
         let block = Block::default()
-            .title("Git Repository Warning".bold().red())
+            .title("Git Repository Warning".bold())
             .borders(Borders::ALL);
         Paragraph::new(self.lines.clone())
             .block(block)
