@@ -97,7 +97,7 @@ impl WorktreeManager {
     }
 
     /// Check if a directory is inside a git repository
-    async fn is_git_repo(dir: &Path) -> Result<bool> {
+    pub async fn is_git_repo(dir: &Path) -> Result<bool> {
         let output = Command::new("git")
             .args(["rev-parse", "--git-dir"])
             .current_dir(dir)
@@ -134,7 +134,7 @@ impl WorktreeManager {
 
         if !stash_output.status.success() {
             let stderr = String::from_utf8_lossy(&stash_output.stderr);
-            bail!("git stash create failed: {}", stderr);
+            bail!("git stash create failed: {stderr}");
         }
 
         let base_sha = String::from_utf8_lossy(&stash_output.stdout)

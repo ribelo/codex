@@ -655,4 +655,5 @@ mod tests {
         Ok(())
     }
 }
+mod git_warning_prompt;
 mod subagent_error_prompt;

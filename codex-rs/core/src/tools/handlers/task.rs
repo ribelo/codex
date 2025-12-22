@@ -1,6 +1,27 @@
 /// Sandbox and approvals documentation to prepend to subagent prompts.
 const SANDBOX_AND_APPROVALS_PROMPT: &str = include_str!("../../../sandbox_and_approvals.md");
 
+/// Worktree isolation documentation to inform subagents about file tracking behavior.
+const WORKTREE_ISOLATION_PROMPT: &str = r#"
+# Worktree Isolation
+
+You are running in an isolated git worktree.
+- Your working directory is a temporary copy of the repository.
+- Changes you make to files INSIDE the repository will be captured and merged back to the main workspace.
+- Changes you make to files OUTSIDE the repository (e.g. /tmp, ~/.config, absolute paths outside the repo) will be applied IMMEDIATELY to the user's system but WILL NOT be tracked by the merge system.
+- The main agent will not be aware of external file changes.
+"#;
+
+/// Prompt for subagents running without worktree isolation (non-git directories).
+const NO_ISOLATION_PROMPT: &str = r#"
+# No Worktree Isolation
+
+You are running directly in the user's working directory (not a git repository).
+- All file changes are applied IMMEDIATELY to the user's system.
+- There is no isolation or merge system - your changes take effect immediately.
+- Be careful with file modifications as they cannot be automatically rolled back.
+"#;
+
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -239,18 +260,48 @@ impl ToolHandler for TaskHandler {
         let worktree_manager = WorktreeManager::new(&codex_home);
         let parent_worktree = turn.client.config().cwd.clone();
 
-        let worktree_handle = worktree_manager
-            .create_worktree(&parent_worktree)
+        // Check if we're in a git repo for worktree isolation
+        let is_git_repo = WorktreeManager::is_git_repo(&parent_worktree)
             .await
-            .map_err(|e| {
-                FunctionCallError::RespondToModel(format!(
-                    "Subagent execution requires a git repository for workspace isolation. \
-                     Error: {e}. Please ensure you are in a git repository (run 'git init' if needed)."
-                ))
-            })?;
+            .unwrap_or(false);
 
-        // Use worktree path as cwd
-        let effective_cwd = worktree_handle.path.clone();
+        // Create worktree if in git repo, otherwise run directly
+        let (effective_cwd, worktree_handle): (
+            std::path::PathBuf,
+            Option<crate::worktree_manager::WorktreeHandle>,
+        ) = if is_git_repo {
+            match worktree_manager.create_worktree(&parent_worktree).await {
+                Ok(handle) => {
+                    let path = handle.path.clone();
+                    (path, Some(handle))
+                }
+                Err(e) => {
+                    // Git repo exists but worktree creation failed - this is an error
+                    let message = format!(
+                        "Failed to create worktree for subagent isolation: {e}. \
+                        Subagent execution aborted."
+                    );
+                    invocation
+                        .session
+                        .send_warning(&invocation.turn, message)
+                        .await;
+                    return Err(FunctionCallError::RespondToModel(format!(
+                        "Failed to create worktree for subagent isolation: {e}. \
+                        Cannot run subagent without isolation in a git repository."
+                    )));
+                }
+            }
+        } else {
+            // Not a git repo - run directly without isolation
+            (parent_worktree.clone(), None)
+        };
+
+        // Determine which isolation prompt to use
+        let isolation_prompt = if worktree_handle.is_some() {
+            WORKTREE_ISOLATION_PROMPT
+        } else {
+            NO_ISOLATION_PROMPT
+        };
 
         let (subagent_session_ref, is_reused): (Arc<crate::codex::Codex>, bool) = {
             let services = &invocation.session.services;
@@ -363,8 +414,9 @@ impl ToolHandler for TaskHandler {
                     subagent_def.system_prompt.clone()
                 };
 
-                sub_config.base_instructions =
-                    Some(format!("{base_prompt}\n\n{SANDBOX_AND_APPROVALS_PROMPT}"));
+                sub_config.base_instructions = Some(format!(
+                    "{base_prompt}\n\n{isolation_prompt}\n\n{SANDBOX_AND_APPROVALS_PROMPT}"
+                ));
 
                 // Apply sandbox_policy override (only if more restrictive than parent)
                 // Apply sandbox_policy override (only if more restrictive than parent).
@@ -608,50 +660,66 @@ impl ToolHandler for TaskHandler {
         let (final_output, last_tool_output) = match execution_result {
             Ok(result) => result,
             Err(e) => {
-                let _ = worktree_manager.cleanup(&worktree_handle).await;
+                if let Some(ref handle) = worktree_handle {
+                    let _ = worktree_manager.cleanup(handle).await;
+                }
                 return Err(e);
             }
         };
 
-        // Generate diff but don't apply yet
-        let diff = match worktree_manager.generate_diff(&worktree_handle).await {
-            Ok(d) => d,
-            Err(e) => {
-                tracing::error!(error = %e, "Failed to generate diff from subagent worktree");
-                let _ = worktree_manager.cleanup(&worktree_handle).await;
-                // Return error response
-                return Err(FunctionCallError::RespondToModel(format!(
-                    "Failed to generate diff: {e}"
-                )));
-            }
-        };
+        // Handle changes based on isolation mode
+        let (changes_status, environment_note) = if let Some(handle) = worktree_handle {
+            // Isolated mode: Generate diff and queue for merge
+            let diff = match worktree_manager.generate_diff(&handle).await {
+                Ok(d) => d,
+                Err(e) => {
+                    tracing::error!(error = %e, "Failed to generate diff from subagent worktree");
+                    let _ = worktree_manager.cleanup(&handle).await;
+                    return Err(FunctionCallError::RespondToModel(format!(
+                        "Failed to generate diff: {e}"
+                    )));
+                }
+            };
 
-        // Collect for deferred merge instead of applying immediately
-        let pending = PendingSubagentResult {
-            invocation_order,
-            subagent_type: args.subagent_type.clone(),
-            session_id: session_id.clone(),
-            call_id: invocation.call_id.clone(),
-            result: final_output.clone(),
-            last_tool_output: last_tool_output.clone(),
-            diff,
-            worktree_handle,
-            parent_worktree: parent_worktree.clone(),
-        };
+            // Collect for deferred merge instead of applying immediately
+            let pending = PendingSubagentResult {
+                invocation_order,
+                subagent_type: args.subagent_type.clone(),
+                session_id: session_id.clone(),
+                call_id: invocation.call_id.clone(),
+                result: final_output.clone(),
+                last_tool_output: last_tool_output.clone(),
+                diff,
+                worktree_handle: handle,
+                parent_worktree: parent_worktree.clone(),
+            };
 
-        invocation
-            .turn
-            .pending_subagent_results
-            .lock()
-            .await
-            .push(pending);
+            invocation
+                .turn
+                .pending_subagent_results
+                .lock()
+                .await
+                .push(pending);
+
+            (
+                "pending",
+                "Worktree isolation active: Repository changes are captured and will be merged at end of turn. External file changes (if any) were applied immediately and are not tracked.",
+            )
+        } else {
+            // Direct mode: Changes were applied immediately, no isolation
+            (
+                "applied",
+                "No worktree isolation: All file changes were applied immediately to the user's system.",
+            )
+        };
 
         // Build a structured response that includes the session_id for follow-up calls
         let response = serde_json::json!({
             "result": final_output,
             "session_id": session_id,
             "last_tool_output": last_tool_output,
-            "changes": "pending",
+            "changes": changes_status,
+            "environment_note": environment_note,
         });
 
         Ok(ToolOutput::Function {

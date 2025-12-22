@@ -6,6 +6,8 @@ use crate::chatwidget::ChatWidget;
 use crate::diff_render::DiffSummary;
 use crate::exec_command::strip_bash_lc_and_escape;
 use crate::file_search::FileSearchManager;
+use crate::git_warning_prompt::GitWarningPromptOutcome;
+use crate::git_warning_prompt::run_git_warning_prompt;
 use crate::history_cell::HistoryCell;
 use crate::model_migration::ModelMigrationOutcome;
 use crate::model_migration::migration_copy_for_config;
@@ -332,6 +334,23 @@ impl App {
                     });
                 }
                 SubagentErrorPromptOutcome::Continue => {}
+            }
+        }
+
+        // Check if we're in a git repository and warn if not
+        if !codex_core::WorktreeManager::is_git_repo(&config.cwd)
+            .await
+            .unwrap_or(false)
+        {
+            match run_git_warning_prompt(tui).await {
+                GitWarningPromptOutcome::Exit => {
+                    return Ok(AppExitInfo {
+                        token_usage: TokenUsage::default(),
+                        conversation_id: None,
+                        update_action: None,
+                    });
+                }
+                GitWarningPromptOutcome::Continue => {}
             }
         }
 

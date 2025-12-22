@@ -177,7 +177,7 @@ pub fn parse_markdown_to_draft(
         goal: goal.trim().to_string(),
         summary: summary.trim().to_string(),
         relevant_files: files,
-        parent_id: original.parent_id.clone(),
+        parent_id: original.parent_id,
     })
 }
 

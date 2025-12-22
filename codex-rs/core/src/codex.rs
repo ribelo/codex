@@ -465,6 +465,17 @@ impl Session {
         self.conversation_id
     }
 
+    /// Send a warning event to the user. This is visible in the TUI.
+    pub(crate) async fn send_warning(&self, turn_context: &TurnContext, message: String) {
+        let event = Event {
+            id: turn_context.sub_id.clone(),
+            msg: EventMsg::Warning(WarningEvent { message }),
+        };
+        if let Err(e) = self.tx_event.send(event).await {
+            tracing::error!("failed to send warning event: {e}");
+        }
+    }
+
     pub(crate) async fn config(&self) -> Arc<Config> {
         self.state
             .lock()
@@ -2865,6 +2876,7 @@ pub(super) fn get_last_assistant_message_from_turn(responses: &[ResponseItem]) -
 #[cfg(test)]
 pub(crate) use tests::make_session_and_context;
 
+use crate::protocol::AgentMessageEvent;
 #[cfg(test)]
 pub(crate) use tests::make_session_and_context_with_rx;
 
@@ -3856,4 +3868,3 @@ mod tests {
         pretty_assertions::assert_eq!(output, expected);
     }
 }
-use crate::protocol::AgentMessageEvent;
