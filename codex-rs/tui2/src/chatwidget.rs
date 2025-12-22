@@ -1924,12 +1924,12 @@ impl ChatWidget {
 
     fn on_subagent_event(&mut self, payload: SubagentEventPayload) {
         let SubagentEventPayload {
-            subagent_type,
+            subagent_name,
             inner,
             ..
         } = payload;
 
-        if subagent_type == "review" {
+        if subagent_name == "review" {
             if !self.is_review_mode {
                 self.is_review_mode = true;
                 if self.pre_review_token_info.is_none() {

@@ -1996,7 +1996,7 @@ mod handlers {
         let args = serde_json::json!({
             "description": description,
             "prompt": prompt,
-            "subagent_type": agent,
+            "subagent_name": agent,
         });
         let args_str = args.to_string();
 
@@ -2805,7 +2805,7 @@ async fn try_run_turn(
             for result in merge_results {
                 tracing::info!(
                     call_id = %result.call_id,
-                    subagent = %result.subagent_type,
+                    subagent = %result.subagent_name,
                     status = ?result.changes.status,
                     "Subagent patch merged"
                 );
@@ -2820,7 +2820,7 @@ async fn try_run_turn(
                             .collect();
                         let message = format!(
                             "Subagent {} changes merged: {}",
-                            result.subagent_type,
+                            result.subagent_name,
                             files.join(", ")
                         );
                         sess.send_event(
@@ -2834,12 +2834,12 @@ async fn try_run_turn(
                         let message = if patch_path.is_empty() {
                             format!(
                                 "Subagent {} changes could not be merged (error applying patch).",
-                                result.subagent_type
+                                result.subagent_name
                             )
                         } else {
                             format!(
                                 "Subagent {} changes could not be merged. Patch saved to: {patch_path}",
-                                result.subagent_type
+                                result.subagent_name
                             )
                         };
                         sess.send_event(&turn_context, EventMsg::Warning(WarningEvent { message }))

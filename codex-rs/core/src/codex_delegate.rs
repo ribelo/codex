@@ -34,6 +34,7 @@ use codex_protocol::protocol::InitialHistory;
 /// Approval requests are handled via `parent_session` and are not surfaced.
 /// The returned `ops_tx` allows the caller to submit additional `Op`s to the sub-agent.
 pub(crate) async fn run_codex_conversation_interactive(
+    subagent_name: &str,
     config: Config,
     auth_manager: Arc<AuthManager>,
     models_manager: Arc<ModelsManager>,
@@ -50,7 +51,7 @@ pub(crate) async fn run_codex_conversation_interactive(
         auth_manager,
         models_manager,
         initial_history.unwrap_or(InitialHistory::New),
-        SessionSource::SubAgent(SubAgentSource::Review),
+        SessionSource::SubAgent(SubAgentSource::Other(subagent_name.to_string())),
         Some(parent_session.services.mcp_connection_manager.clone()),
         Arc::clone(&parent_session.services.skills_manager),
     )
@@ -95,6 +96,7 @@ pub(crate) async fn run_codex_conversation_interactive(
 /// Internally calls the interactive variant, then immediately submits the provided input.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_codex_conversation_one_shot(
+    subagent_name: &str,
     config: Config,
     auth_manager: Arc<AuthManager>,
     models_manager: Arc<ModelsManager>,
@@ -108,6 +110,7 @@ pub(crate) async fn run_codex_conversation_one_shot(
     // requiring the caller to cancel the parent token.
     let child_cancel = cancel_token.child_token();
     let io = run_codex_conversation_interactive(
+        subagent_name,
         config,
         auth_manager,
         models_manager,

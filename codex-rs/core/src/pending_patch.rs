@@ -8,7 +8,7 @@ pub struct PendingSubagentResult {
     /// Invocation order (0 = first spawned in this turn)
     pub invocation_order: u32,
     /// The subagent type
-    pub subagent_type: String,
+    pub subagent_name: String,
     /// Session ID
     pub session_id: String,
     /// Call ID for this tool invocation

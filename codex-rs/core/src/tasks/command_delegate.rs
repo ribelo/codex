@@ -170,6 +170,7 @@ impl SessionTask for CommandDelegateTask {
         }];
 
         let rx = match run_codex_conversation_one_shot(
+            "command",
             sub_config,
             session.auth_manager(),
             session.models_manager(),
@@ -334,7 +335,7 @@ impl SessionTask for CommandDelegateTask {
 
 fn wrap_subagent_event(
     parent_call_id: &str,
-    subagent_type: &str,
+    subagent_name: &str,
     task_description: &str,
     delegation_id: Option<String>,
     parent_delegation_id: Option<String>,
@@ -343,7 +344,7 @@ fn wrap_subagent_event(
 ) -> EventMsg {
     EventMsg::SubagentEvent(SubagentEventPayload {
         parent_call_id: parent_call_id.to_string(),
-        subagent_type: subagent_type.to_string(),
+        subagent_name: subagent_name.to_string(),
         task_description: task_description.to_string(),
         delegation_id,
         parent_delegation_id,

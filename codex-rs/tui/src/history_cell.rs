@@ -1137,6 +1137,16 @@ pub(crate) struct SubagentState {
     pub(crate) final_message: Option<String>,
 }
 
+impl Default for SubagentState {
+    fn default() -> Self {
+        Self {
+            items: Vec::new(),
+            status: SubagentTaskStatus::Running,
+            final_message: None,
+        }
+    }
+}
+
 /// History cell for displaying a subagent task container.
 /// Groups all events from a delegated task under a single collapsible UI element.
 #[derive(Debug, Clone)]
@@ -1145,9 +1155,9 @@ pub(crate) struct SubagentTaskCell {
     #[allow(dead_code)]
     parent_call_id: String,
     /// The subagent type (slug) that is handling this task.
-    subagent_type: String,
+    subagent_name: String,
     /// Description of the task being delegated.
-    task_description: String,
+    pub(crate) task_description: String,
     /// Unique identifier for this delegation.
     delegation_id: Option<String>,
     /// Parent delegation ID if this is a nested delegation.
@@ -1168,7 +1178,7 @@ impl SubagentTaskCell {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         parent_call_id: String,
-        subagent_type: String,
+        subagent_name: String,
         task_description: String,
         delegation_id: Option<String>,
         parent_delegation_id: Option<String>,
@@ -1178,7 +1188,7 @@ impl SubagentTaskCell {
     ) -> Self {
         Self {
             parent_call_id,
-            subagent_type,
+            subagent_name,
             task_description,
             delegation_id,
             parent_delegation_id,
@@ -1265,7 +1275,7 @@ impl HistoryCell for SubagentTaskCell {
         };
 
         // Header
-        let profile_name = self.subagent_type.strip_prefix("profile:");
+        let profile_name = self.subagent_name.strip_prefix("profile:");
         let header = if let Some(profile_name) = profile_name {
             let action = match status {
                 SubagentTaskStatus::Running => "Running with profile:",
@@ -1290,7 +1300,7 @@ impl HistoryCell for SubagentTaskCell {
                 " ".into(),
                 action.bold(),
                 " @".magenta(),
-                self.subagent_type.clone().magenta(),
+                self.subagent_name.clone().magenta(),
             ])
         };
         lines.push(header);
@@ -1408,7 +1418,7 @@ impl HistoryCell for SubagentTaskCell {
         };
 
         // Header
-        let profile_name = self.subagent_type.strip_prefix("profile:");
+        let profile_name = self.subagent_name.strip_prefix("profile:");
         let header = if let Some(profile_name) = profile_name {
             let action = match status {
                 SubagentTaskStatus::Running => "Running with profile:",
@@ -1433,7 +1443,7 @@ impl HistoryCell for SubagentTaskCell {
                 " ".into(),
                 action.bold(),
                 " @".magenta(),
-                self.subagent_type.clone().magenta(),
+                self.subagent_name.clone().magenta(),
             ])
         };
         lines.push(header);
@@ -1535,7 +1545,7 @@ impl HistoryCell for SubagentTaskCell {
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn new_subagent_task_cell(
     parent_call_id: String,
-    subagent_type: String,
+    subagent_name: String,
     task_description: String,
     delegation_id: Option<String>,
     parent_delegation_id: Option<String>,
@@ -1545,7 +1555,7 @@ pub(crate) fn new_subagent_task_cell(
 ) -> SubagentTaskCell {
     SubagentTaskCell::new(
         parent_call_id,
-        subagent_type,
+        subagent_name,
         task_description,
         delegation_id,
         parent_delegation_id,

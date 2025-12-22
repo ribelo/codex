@@ -2198,7 +2198,7 @@ impl ChatWidget {
     fn on_subagent_event(&mut self, payload: SubagentEventPayload) {
         let SubagentEventPayload {
             parent_call_id,
-            subagent_type,
+            subagent_name,
             task_description,
             delegation_id,
             parent_delegation_id,
@@ -2223,7 +2223,7 @@ impl ChatWidget {
 
         // Create a new cell if we don't have one for this call_id yet
         if is_new {
-            if subagent_type == "review" {
+            if subagent_name == "review" {
                 self.is_review_mode = true;
                 if self.pre_review_token_info.is_none() {
                     self.pre_review_token_info = Some(self.token_info.clone());
@@ -2232,7 +2232,7 @@ impl ChatWidget {
 
             let cell = history_cell::new_subagent_task_cell(
                 parent_call_id.clone(),
-                subagent_type.clone(),
+                subagent_name.clone(),
                 task_description,
                 delegation_id.clone(),
                 parent_delegation_id.clone(),
@@ -2293,7 +2293,7 @@ impl ChatWidget {
             inner.as_ref(),
             EventMsg::TaskComplete(_) | EventMsg::TurnAborted(_)
         ) {
-            if subagent_type == "review" {
+            if subagent_name == "review" {
                 if let EventMsg::TaskComplete(tc) = inner.as_ref()
                     && let Some(ref output_text) = tc.last_agent_message
                     && let Ok(review_output) =

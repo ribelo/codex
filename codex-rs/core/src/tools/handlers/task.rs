@@ -107,7 +107,7 @@ pub fn create_task_tool(codex_home: &Path, allowed_subagents: Option<&[String]>)
         },
     );
     properties.insert(
-        "subagent_type".to_string(),
+        "subagent_name".to_string(),
         JsonSchema::String {
             description: Some("The type of subagent to use".to_string()),
         },
@@ -128,7 +128,7 @@ pub fn create_task_tool(codex_home: &Path, allowed_subagents: Option<&[String]>)
             required: Some(vec![
                 "description".to_string(),
                 "prompt".to_string(),
-                "subagent_type".to_string(),
+                "subagent_name".to_string(),
             ]),
             additional_properties: Some(false.into()),
         },
@@ -139,7 +139,7 @@ pub fn create_task_tool(codex_home: &Path, allowed_subagents: Option<&[String]>)
 struct TaskArgs {
     description: String,
     prompt: String,
-    subagent_type: String,
+    subagent_name: String,
     session_id: Option<String>,
 }
 
@@ -148,7 +148,7 @@ pub struct TaskHandler;
 /// Helper to wrap an inner event with subagent context.
 fn wrap_subagent_event(
     parent_call_id: &str,
-    subagent_type: &str,
+    subagent_name: &str,
     task_description: &str,
     delegation_id: Option<String>,
     parent_delegation_id: Option<String>,
@@ -157,7 +157,7 @@ fn wrap_subagent_event(
 ) -> EventMsg {
     EventMsg::SubagentEvent(SubagentEventPayload {
         parent_call_id: parent_call_id.to_string(),
-        subagent_type: subagent_type.to_string(),
+        subagent_name: subagent_name.to_string(),
         task_description: task_description.to_string(),
         delegation_id,
         parent_delegation_id,
@@ -205,7 +205,7 @@ impl ToolHandler for TaskHandler {
         let codex_home = turn.client.config().codex_home.clone();
 
         let registry = SubagentRegistry::new(&codex_home);
-        let subagent_def = registry.get(&args.subagent_type).ok_or_else(|| {
+        let subagent_def = registry.get(&args.subagent_name).ok_or_else(|| {
             let available: Vec<String> = registry.list().iter().map(|a| a.slug.clone()).collect();
             let available_str = if available.is_empty() {
                 "(none found)".to_string()
@@ -213,13 +213,13 @@ impl ToolHandler for TaskHandler {
                 available.join(", ")
             };
             FunctionCallError::RespondToModel(format!(
-                "Unknown subagent_type '{}'. Available subagents: {}. Ensure a matching .md exists in ~/.codex/agents",
-                args.subagent_type, available_str
+                "Unknown subagent_name '{}'. Available subagents: {}. Ensure a matching .md exists in ~/.codex/agents",
+                args.subagent_name, available_str
             ))
         })?;
 
         info!(
-            subagent = %args.subagent_type,
+            subagent = %args.subagent_name,
             profile = ?subagent_def.metadata.profile,
             "Task handler: resolved subagent definition"
         );
@@ -228,7 +228,7 @@ impl ToolHandler for TaskHandler {
         // This prevents the model from bypassing restrictions by guessing subagent names.
         let config = turn.client.config();
         if let Some(ref allowed) = config.allowed_subagents
-            && !allowed.contains(&args.subagent_type)
+            && !allowed.contains(&args.subagent_name)
         {
             let allowed_str = if allowed.is_empty() {
                 "(none)".to_string()
@@ -237,7 +237,7 @@ impl ToolHandler for TaskHandler {
             };
             return Err(FunctionCallError::RespondToModel(format!(
                 "Subagent '{}' is not allowed. Allowed subagents: {}",
-                args.subagent_type, allowed_str
+                args.subagent_name, allowed_str
             )));
         }
 
@@ -309,7 +309,7 @@ impl ToolHandler for TaskHandler {
 
             if let Some(session) = sessions.get(&session_id) {
                 info!(
-                    subagent = %args.subagent_type,
+                    subagent = %args.subagent_name,
                     session_id = %session_id,
                     "Reusing existing subagent session"
                 );
@@ -343,12 +343,12 @@ impl ToolHandler for TaskHandler {
                     .map_err(|e| {
                         FunctionCallError::RespondToModel(format!(
                             "Subagent configuration error for '{}': {e}",
-                            args.subagent_type
+                            args.subagent_name
                         ))
                     })?
                 {
                     info!(
-                        subagent = %args.subagent_type,
+                        subagent = %args.subagent_name,
                         profile_name = ?subagent_def.metadata.profile,
                         profile_model = ?profile.model,
                         profile_provider = ?profile.model_provider,
@@ -359,7 +359,7 @@ impl ToolHandler for TaskHandler {
                     if let Some(ref model) = profile.model {
                         sub_config.model = Some(model.clone());
                         info!(
-                            subagent = %args.subagent_type,
+                            subagent = %args.subagent_name,
                             model = %model,
                             "Task handler: applied model from profile"
                         );
@@ -397,7 +397,7 @@ impl ToolHandler for TaskHandler {
                     }
                 } else {
                     info!(
-                        subagent = %args.subagent_type,
+                        subagent = %args.subagent_name,
                         profile_name = ?subagent_def.metadata.profile,
                         "Task handler: no profile configured or profile returned None"
                     );
@@ -467,7 +467,7 @@ impl ToolHandler for TaskHandler {
                 check_gemini_api_key_warning(
                     &sub_config.model_provider.provider_kind,
                     &invocation.session.services.auth_manager,
-                    &args.subagent_type,
+                    &args.subagent_name,
                     &invocation.session,
                     &invocation.turn,
                 )
@@ -476,6 +476,7 @@ impl ToolHandler for TaskHandler {
                 let session_token = CancellationToken::new();
 
                 let codex = run_codex_conversation_interactive(
+                    &args.subagent_name,
                     sub_config,
                     invocation.session.services.auth_manager.clone(),
                     invocation.session.services.models_manager.clone(),
@@ -496,7 +497,7 @@ impl ToolHandler for TaskHandler {
 
                 sessions.insert(session_id.clone(), session);
                 info!(
-                    subagent = %args.subagent_type,
+                    subagent = %args.subagent_name,
                     session_id = %session_id,
                     elapsed_ms = spawn_started.elapsed().as_millis(),
                     "Spawned subagent session"
@@ -536,7 +537,7 @@ impl ToolHandler for TaskHandler {
         // This ensures the parent cell exists before any nested subagent events arrive.
         let task_started = wrap_subagent_event(
             &invocation.call_id,
-            &args.subagent_type,
+            &args.subagent_name,
             &args.description,
             delegation_id.clone(),
             parent_delegation_id.clone(),
@@ -595,7 +596,7 @@ impl ToolHandler for TaskHandler {
                         // Send a wrapped TaskComplete so the TUI can mark the cell as completed
                         let wrapped = wrap_subagent_event(
                             &invocation.call_id,
-                            &args.subagent_type,
+                            &args.subagent_name,
                             &args.description,
                             delegation_id.clone(),
                             parent_delegation_id.clone(),
@@ -614,7 +615,7 @@ impl ToolHandler for TaskHandler {
 
                         let wrapped = wrap_subagent_event(
                             &invocation.call_id,
-                            &args.subagent_type,
+                            &args.subagent_name,
                             &args.description,
                             delegation_id.clone(),
                             parent_delegation_id.clone(),
@@ -638,7 +639,7 @@ impl ToolHandler for TaskHandler {
                     | EventMsg::AgentMessage(_) => {
                         let wrapped = wrap_subagent_event(
                             &invocation.call_id,
-                            &args.subagent_type,
+                            &args.subagent_name,
                             &args.description,
                             delegation_id.clone(),
                             parent_delegation_id.clone(),
@@ -684,7 +685,7 @@ impl ToolHandler for TaskHandler {
             // Collect for deferred merge instead of applying immediately
             let pending = PendingSubagentResult {
                 invocation_order,
-                subagent_type: args.subagent_type.clone(),
+                subagent_name: args.subagent_name.clone(),
                 session_id: session_id.clone(),
                 call_id: invocation.call_id.clone(),
                 result: final_output.clone(),
@@ -734,7 +735,7 @@ impl ToolHandler for TaskHandler {
 async fn check_gemini_api_key_warning(
     provider_kind: &ProviderKind,
     auth_manager: &std::sync::Arc<crate::AuthManager>,
-    subagent_type: &str,
+    subagent_name: &str,
     session: &Arc<crate::codex::Session>,
     turn: &Arc<crate::codex::TurnContext>,
 ) {
@@ -747,7 +748,7 @@ async fn check_gemini_api_key_warning(
 
             if !has_oauth && has_api_key {
                 Some(format!(
-                    "Subagent '{subagent_type}' is using GEMINI_API_KEY instead of OAuth. \
+                    "Subagent '{subagent_name}' is using GEMINI_API_KEY instead of OAuth. \
                      Run `codex login gemini` for better rate limits."
                 ))
             } else {

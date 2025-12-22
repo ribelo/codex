@@ -11,7 +11,7 @@ use std::path::Path;
 pub struct MergeResult {
     pub call_id: String,
     pub session_id: String,
-    pub subagent_type: String,
+    pub subagent_name: String,
     pub changes: SubagentChanges,
 }
 
@@ -58,7 +58,7 @@ pub async fn merge_pending_patches(
             }
         } else {
             // Apply patch
-            let task_id = format!("{}-{}-{}", p.subagent_type, p.session_id, p.call_id);
+            let task_id = format!("{}-{}-{}", p.subagent_name, p.session_id, p.call_id);
             match worktree_manager
                 .apply_patch(&p.diff.patch, &p.parent_worktree, &task_id)
                 .await
@@ -102,7 +102,7 @@ pub async fn merge_pending_patches(
         results.push(MergeResult {
             call_id: p.call_id,
             session_id: p.session_id,
-            subagent_type: p.subagent_type,
+            subagent_name: p.subagent_name,
             changes,
         });
     }

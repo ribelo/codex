@@ -676,7 +676,7 @@ pub struct SubagentEventPayload {
     /// The tool_call_id of the parent "task" tool invocation.
     pub parent_call_id: String,
     /// The subagent type (slug) that produced this event.
-    pub subagent_type: String,
+    pub subagent_name: String,
     /// Description of the delegated task.
     pub task_description: String,
     /// Unique identifier for this delegation.

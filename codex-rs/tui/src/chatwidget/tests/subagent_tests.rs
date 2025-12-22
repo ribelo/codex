@@ -99,7 +99,7 @@ fn subagent_nesting_logic() {
     // Parent Delegation ID: None (Top level)
     chat.on_subagent_event(SubagentEventPayload {
         parent_call_id: "call_parent".to_string(),
-        subagent_type: "explorer".to_string(),
+        subagent_name: "explorer".to_string(),
         task_description: "Parent Task".to_string(),
         delegation_id: Some("del_parent".to_string()),
         parent_delegation_id: None,
@@ -122,7 +122,7 @@ fn subagent_nesting_logic() {
     // Parent Delegation ID: "del_parent" (Should link to parent)
     chat.on_subagent_event(SubagentEventPayload {
         parent_call_id: "call_child".to_string(),
-        subagent_type: "explorer".to_string(),
+        subagent_name: "explorer".to_string(),
         task_description: "Child Task".to_string(),
         delegation_id: Some("del_child".to_string()),
         parent_delegation_id: Some("del_parent".to_string()),
@@ -206,7 +206,7 @@ fn subagent_nested_rendering_order() {
     // Parent subagent starts first
     chat.on_subagent_event(SubagentEventPayload {
         parent_call_id: "call_parent".to_string(),
-        subagent_type: "explorer".to_string(),
+        subagent_name: "explorer".to_string(),
         task_description: "Parent Task".to_string(),
         delegation_id: Some("del_parent".to_string()),
         parent_delegation_id: None,
@@ -219,7 +219,7 @@ fn subagent_nested_rendering_order() {
     // Child subagent starts, nested under parent
     chat.on_subagent_event(SubagentEventPayload {
         parent_call_id: "call_child".to_string(),
-        subagent_type: "explorer".to_string(),
+        subagent_name: "explorer".to_string(),
         task_description: "Child Task".to_string(),
         delegation_id: Some("del_child".to_string()),
         parent_delegation_id: Some("del_parent".to_string()),
@@ -326,7 +326,7 @@ fn subagent_child_before_parent_becomes_separate_cell() {
     // Child subagent event arrives FIRST (before parent exists)
     chat.on_subagent_event(SubagentEventPayload {
         parent_call_id: "call_child".to_string(),
-        subagent_type: "explorer".to_string(),
+        subagent_name: "explorer".to_string(),
         task_description: "Child Task".to_string(),
         delegation_id: Some("del_child".to_string()),
         parent_delegation_id: Some("del_parent".to_string()), // References non-existent parent
@@ -339,7 +339,7 @@ fn subagent_child_before_parent_becomes_separate_cell() {
     // Parent subagent event arrives SECOND
     chat.on_subagent_event(SubagentEventPayload {
         parent_call_id: "call_parent".to_string(),
-        subagent_type: "explorer".to_string(),
+        subagent_name: "explorer".to_string(),
         task_description: "Parent Task".to_string(),
         delegation_id: Some("del_parent".to_string()),
         parent_delegation_id: None,
@@ -377,7 +377,7 @@ fn subagent_patch_activity_display() {
     // Start a subagent
     chat.on_subagent_event(SubagentEventPayload {
         parent_call_id: "call_sub".to_string(),
-        subagent_type: "explorer".to_string(),
+        subagent_name: "explorer".to_string(),
         task_description: "Patching Task".to_string(),
         delegation_id: Some("del_sub".to_string()),
         parent_delegation_id: None,
@@ -405,7 +405,7 @@ fn subagent_patch_activity_display() {
     // We need to construct PatchApplyEndEvent.
     chat.on_subagent_event(SubagentEventPayload {
         parent_call_id: "call_sub".to_string(),
-        subagent_type: "explorer".to_string(),
+        subagent_name: "explorer".to_string(),
         task_description: "Patching Task".to_string(),
         delegation_id: Some("del_sub".to_string()),
         parent_delegation_id: None,
