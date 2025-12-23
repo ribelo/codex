@@ -308,15 +308,15 @@ impl Codex {
 ///
 /// A session has at most 1 running task at a time, and can be interrupted by user input.
 pub(crate) struct Session {
-    conversation_id: ConversationId,
-    tx_event: Sender<Event>,
-    state: Mutex<SessionState>,
+    pub(crate) conversation_id: ConversationId,
+    pub(crate) tx_event: Sender<Event>,
+    pub(crate) state: Mutex<SessionState>,
     /// The set of enabled features should be invariant for the lifetime of the
     /// session.
-    features: Features,
+    pub(crate) features: Features,
     pub(crate) active_turn: Mutex<Option<ActiveTurn>>,
     pub(crate) services: SessionServices,
-    next_internal_sub_id: AtomicU64,
+    pub(crate) next_internal_sub_id: AtomicU64,
 }
 
 /// The context needed for a single turn of the conversation.
@@ -370,30 +370,30 @@ impl TurnContext {
 #[derive(Clone)]
 pub(crate) struct SessionConfiguration {
     /// Provider identifier ("openai", "openrouter", ...).
-    provider: ModelProviderInfo,
+    pub(crate) provider: ModelProviderInfo,
 
     /// If not specified, server will use its default model.
-    model: String,
+    pub(crate) model: String,
 
-    model_reasoning_effort: Option<ReasoningEffortConfig>,
-    model_reasoning_summary: ReasoningSummaryConfig,
+    pub(crate) model_reasoning_effort: Option<ReasoningEffortConfig>,
+    pub(crate) model_reasoning_summary: ReasoningSummaryConfig,
 
     /// Developer instructions that supplement the base instructions.
-    developer_instructions: Option<String>,
+    pub(crate) developer_instructions: Option<String>,
 
     /// Model instructions that are appended to the base instructions.
-    user_instructions: Option<String>,
+    pub(crate) user_instructions: Option<String>,
 
     /// Base instructions override.
-    base_instructions: Option<String>,
+    pub(crate) base_instructions: Option<String>,
 
     /// Compact prompt override.
-    compact_prompt: Option<String>,
+    pub(crate) compact_prompt: Option<String>,
 
     /// When to escalate for approval for execution
-    approval_policy: AskForApproval,
+    pub(crate) approval_policy: AskForApproval,
     /// How to sandbox commands executed in the system
-    sandbox_policy: SandboxPolicy,
+    pub(crate) sandbox_policy: SandboxPolicy,
 
     /// Working directory that should be treated as the *root* of the
     /// session. All relative paths supplied by the model as well as the
@@ -402,15 +402,15 @@ pub(crate) struct SessionConfiguration {
     /// expected to expand this to an absolute path before sending the
     /// `ConfigureSession` operation so that the business-logic layer can
     /// operate deterministically.
-    cwd: PathBuf,
+    pub(crate) cwd: PathBuf,
 
     /// Execpolicy policy, applied only when enabled by feature flag.
-    exec_policy: Arc<RwLock<ExecPolicy>>,
+    pub(crate) exec_policy: Arc<RwLock<ExecPolicy>>,
 
     // TODO(pakrym): Remove config from here
-    original_config_do_not_use: Arc<Config>,
+    pub(crate) original_config_do_not_use: Arc<Config>,
     /// Source of the session (cli, vscode, exec, mcp, ...)
-    session_source: SessionSource,
+    pub(crate) session_source: SessionSource,
 }
 
 impl SessionConfiguration {
@@ -1291,7 +1291,7 @@ impl Session {
             if let Some(token_usage) = token_usage {
                 state.update_token_info_from_usage(
                     token_usage,
-                    turn_context.client.get_model_context_window(),
+                    Some(turn_context.client.get_model_context_window()),
                 );
             }
         }
@@ -1323,7 +1323,7 @@ impl Session {
             };
 
             if info.model_context_window.is_none() {
-                info.model_context_window = turn_context.client.get_model_context_window();
+                info.model_context_window = Some(turn_context.client.get_model_context_window());
             }
 
             state.set_token_info(Some(info));
@@ -1354,13 +1354,11 @@ impl Session {
 
     pub(crate) async fn set_total_tokens_full(&self, turn_context: &TurnContext) {
         let context_window = turn_context.client.get_model_context_window();
-        if let Some(context_window) = context_window {
-            {
-                let mut state = self.state.lock().await;
-                state.set_token_usage_full(context_window);
-            }
-            self.send_token_count_event(turn_context).await;
+        {
+            let mut state = self.state.lock().await;
+            state.set_token_usage_full(context_window);
         }
+        self.send_token_count_event(turn_context).await;
     }
 
     pub(crate) async fn record_response_item_and_emit_turn_item(
@@ -2357,7 +2355,7 @@ pub(crate) async fn run_task(
         return None;
     }
     let event = EventMsg::TaskStarted(TaskStartedEvent {
-        model_context_window: turn_context.client.get_model_context_window(),
+        model_context_window: Some(turn_context.client.get_model_context_window()),
     });
     sess.send_event(&turn_context, event).await;
 
@@ -2431,8 +2429,7 @@ pub(crate) async fn run_task(
                 let limit = turn_context
                     .client
                     .get_model_family()
-                    .auto_compact_token_limit()
-                    .unwrap_or(i64::MAX);
+                    .auto_compact_token_limit();
                 let total_usage_tokens = sess.get_total_token_usage().await;
                 let token_limit_reached = total_usage_tokens >= limit;
 

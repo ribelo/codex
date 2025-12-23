@@ -165,7 +165,10 @@ pub(crate) struct GeminiGenerationConfig {
     stop_sequences: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) thinking_config: Option<GeminiThinkingConfig>,
-    // response_mime_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    response_mime_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    response_schema: Option<Value>,
 }
 
 #[derive(Serialize)]
@@ -380,6 +383,12 @@ pub(crate) fn build_gemini_payload(
     );
     let max_output_tokens = resolve_max_output_tokens(config, model_family, prompt_tokens);
 
+    let (response_mime_type, response_schema) = if let Some(schema) = &prompt.output_schema {
+        (Some("application/json".to_string()), Some(schema.clone()))
+    } else {
+        (None, None)
+    };
+
     let generation_config = GeminiGenerationConfig {
         candidate_count: Some(1),
         max_output_tokens,
@@ -388,6 +397,8 @@ pub(crate) fn build_gemini_payload(
         top_k: None,
         stop_sequences: None,
         thinking_config: gemini_thinking_config(config, model_family, &normalized_model),
+        response_mime_type,
+        response_schema,
     };
 
     let payload = GeminiRequest {
@@ -582,17 +593,17 @@ fn resolve_max_output_tokens(
     prompt_tokens: i64,
 ) -> Option<i64> {
     let hard_cap = DEFAULT_MAX_OUTPUT_TOKENS;
-    if let Some(window) = effective_context_window(config, model_family) {
-        let remaining = window.saturating_sub(prompt_tokens).max(1);
-        return Some(remaining.min(hard_cap));
-    }
-    Some(hard_cap)
+    let window = effective_context_window(config, model_family);
+    let remaining = window.saturating_sub(prompt_tokens).max(1);
+    Some(remaining.min(hard_cap))
 }
 
-fn effective_context_window(config: &Config, model_family: &ModelFamily) -> Option<i64> {
+fn effective_context_window(config: &Config, model_family: &ModelFamily) -> i64 {
     config
         .model_context_window
-        .map(|window| window.saturating_mul(model_family.effective_context_window_percent) / 100)
+        .unwrap_or(model_family.context_window)
+        .saturating_mul(model_family.effective_context_window_percent)
+        / 100
 }
 
 async fn resolve_gemini_credential_for_account(
@@ -1495,6 +1506,15 @@ pub(crate) async fn process_gemini_sse<S, E>(
                 {
                     // Process parts in arrival order - Gemini sends thinking chunks first.
                     for part in parts {
+                        trace!(
+                            "Gemini SSE part: text={:?}, thought={:?}, thought_sig={}, func_call={}",
+                            part.text
+                                .as_ref()
+                                .map(|t| t.chars().take(50).collect::<String>()),
+                            part.thought,
+                            part.thought_signature.is_some(),
+                            part.function_call.is_some()
+                        );
                         if let Some(ref text) = part.text {
                             if is_thought_value(&part.thought) {
                                 append_reasoning_delta(
@@ -1551,6 +1571,11 @@ async fn append_text_delta(
     text: &str,
     thought_signature: Option<String>,
 ) {
+    trace!(
+        "append_text_delta: text len={}, has_signature={}",
+        text.len(),
+        thought_signature.is_some()
+    );
     ensure_assistant_item(assistant_state);
     if let Some(state) = assistant_state.as_mut() {
         if !state.added {

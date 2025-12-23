@@ -36,11 +36,11 @@ pub struct ModelFamily {
     /// "virtual" `apply_patch` CLI.
     pub needs_special_apply_patch_instructions: bool,
 
-    /// Maximum supported context window, if known.
-    pub context_window: Option<i64>,
+    /// Maximum supported context window.
+    pub context_window: i64,
 
     /// Token threshold for automatic compaction if config does not override it.
-    auto_compact_token_limit: Option<i64>,
+    auto_compact_token_limit: i64,
 
     // Whether the `reasoning` field can be set when making a request to this
     // model family. Note it has `effort` and `summary` subfields (though
@@ -101,10 +101,10 @@ impl ModelFamily {
             self.reasoning_summary_format = reasoning_summary_format.clone();
         }
         if let Some(context_window) = config.model_context_window {
-            self.context_window = Some(context_window);
+            self.context_window = context_window;
         }
         if let Some(auto_compact_token_limit) = config.model_auto_compact_token_limit {
-            self.auto_compact_token_limit = Some(auto_compact_token_limit);
+            self.auto_compact_token_limit = auto_compact_token_limit;
         }
         self
     }
@@ -119,14 +119,10 @@ impl ModelFamily {
         self
     }
 
-    pub fn auto_compact_token_limit(&self) -> Option<i64> {
+    pub fn auto_compact_token_limit(&self) -> i64 {
         self.auto_compact_token_limit
-            .or(self.context_window.map(Self::default_auto_compact_limit))
     }
 
-    const fn default_auto_compact_limit(context_window: i64) -> i64 {
-        (context_window * 9) / 10
-    }
     pub fn get_model_slug(&self) -> &str {
         &self.slug
     }
@@ -142,8 +138,8 @@ macro_rules! model_family {
             slug: $slug.to_string(),
             family: $family.to_string(),
             needs_special_apply_patch_instructions: false,
-            context_window: Some(CONTEXT_WINDOW_272K),
-            auto_compact_token_limit: None,
+            context_window: CONTEXT_WINDOW_272K,
+            auto_compact_token_limit: (CONTEXT_WINDOW_272K * 9) / 10,
             supports_reasoning_summaries: false,
             reasoning_summary_format: ReasoningSummaryFormat::None,
             apply_patch_tool_type: None,
@@ -176,14 +172,14 @@ pub(in crate::openai_models) fn find_family_for_model(slug: &str) -> ModelFamily
             slug, "o3",
             supports_reasoning_summaries: true,
             needs_special_apply_patch_instructions: true,
-            context_window: Some(200_000),
+            context_window: 200_000,
         )
     } else if slug.starts_with("o4-mini") {
         model_family!(
             slug, "o4-mini",
             supports_reasoning_summaries: true,
             needs_special_apply_patch_instructions: true,
-            context_window: Some(200_000),
+            context_window: 200_000,
         )
     } else if slug.starts_with("codex-mini-latest") {
         model_family!(
@@ -191,31 +187,31 @@ pub(in crate::openai_models) fn find_family_for_model(slug: &str) -> ModelFamily
             supports_reasoning_summaries: true,
             needs_special_apply_patch_instructions: true,
             shell_type: ConfigShellToolType::ShellCommand,
-            context_window: Some(200_000),
+            context_window: 200_000,
         )
     } else if slug.starts_with("gpt-4.1") {
         model_family!(
             slug, "gpt-4.1",
             needs_special_apply_patch_instructions: true,
-            context_window: Some(1_047_576),
+            context_window: 1_047_576,
         )
     } else if slug.starts_with("gpt-oss") || slug.starts_with("openai/gpt-oss") {
         model_family!(
             slug, "gpt-oss",
             apply_patch_tool_type: Some(ApplyPatchToolType::Function),
-            context_window: Some(96_000),
+            context_window: 96_000,
         )
     } else if slug.starts_with("gpt-4o") {
         model_family!(
             slug, "gpt-4o",
             needs_special_apply_patch_instructions: true,
-            context_window: Some(128_000),
+            context_window: 128_000,
         )
     } else if slug.starts_with("gpt-3.5") {
         model_family!(
             slug, "gpt-3.5",
             needs_special_apply_patch_instructions: true,
-            context_window: Some(16_385),
+            context_window: 16_385,
         )
     // Internal models.
     } else if slug.starts_with("test-gpt-5") {
@@ -251,7 +247,7 @@ pub(in crate::openai_models) fn find_family_for_model(slug: &str) -> ModelFamily
             support_verbosity: false,
             truncation_policy: TruncationPolicy::Tokens(10_000),
             mcp_truncation_policy: TruncationPolicy::Tokens(10_000),
-            context_window: Some(CONTEXT_WINDOW_272K),
+            context_window: CONTEXT_WINDOW_272K,
         )
     } else if slug.starts_with("exp-") {
         model_family!(
@@ -264,7 +260,7 @@ pub(in crate::openai_models) fn find_family_for_model(slug: &str) -> ModelFamily
             default_reasoning_effort: Some(ReasoningEffort::Medium),
             truncation_policy: TruncationPolicy::Bytes(DEFAULT_TOOL_OUTPUT_BYTES),
             shell_type: ConfigShellToolType::UnifiedExec,
-            context_window: Some(CONTEXT_WINDOW_272K),
+            context_window: CONTEXT_WINDOW_272K,
         )
     // Production models.
     } else if slug.starts_with("caribou") {
@@ -278,7 +274,7 @@ pub(in crate::openai_models) fn find_family_for_model(slug: &str) -> ModelFamily
             shell_type: ConfigShellToolType::ShellCommand,
             support_verbosity: false,
             truncation_policy: TruncationPolicy::Tokens(10_000),
-            context_window: Some(CONTEXT_WINDOW_272K),
+            context_window: CONTEXT_WINDOW_272K,
         )
     } else if slug.starts_with("gpt-5.1-codex-max") {
         model_family!(
@@ -291,7 +287,7 @@ pub(in crate::openai_models) fn find_family_for_model(slug: &str) -> ModelFamily
             support_verbosity: false,
             truncation_policy: TruncationPolicy::Tokens(10_000),
             mcp_truncation_policy: TruncationPolicy::Tokens(10_000),
-            context_window: Some(CONTEXT_WINDOW_272K),
+            context_window: CONTEXT_WINDOW_272K,
         )
     } else if slug.starts_with("gpt-5.1-codex") || slug.starts_with("codex-") {
         model_family!(
@@ -316,7 +312,7 @@ pub(in crate::openai_models) fn find_family_for_model(slug: &str) -> ModelFamily
             default_reasoning_effort: Some(ReasoningEffort::Medium),
             truncation_policy: TruncationPolicy::Bytes(10_000),
             shell_type: ConfigShellToolType::ShellCommand,
-            context_window: Some(CONTEXT_WINDOW_272K),
+            context_window: CONTEXT_WINDOW_272K,
         )
     } else if slug.starts_with("gpt-5.1") {
         model_family!(
@@ -329,7 +325,7 @@ pub(in crate::openai_models) fn find_family_for_model(slug: &str) -> ModelFamily
             default_reasoning_effort: Some(ReasoningEffort::Medium),
             truncation_policy: TruncationPolicy::Bytes(DEFAULT_TOOL_OUTPUT_BYTES),
             shell_type: ConfigShellToolType::ShellCommand,
-            context_window: Some(CONTEXT_WINDOW_272K),
+            context_window: CONTEXT_WINDOW_272K,
         )
     } else if slug.starts_with("claude") {
         model_family!(
@@ -342,7 +338,7 @@ pub(in crate::openai_models) fn find_family_for_model(slug: &str) -> ModelFamily
             truncation_policy: TruncationPolicy::Bytes(10_000),
             truncation_bias: TruncationBias::TailHeavy,
             mcp_truncation_bias: TruncationBias::TailHeavy,
-            context_window: Some(CONTEXT_WINDOW_272K),
+            context_window: CONTEXT_WINDOW_272K,
             apply_patch_tool_type: Some(ApplyPatchToolType::Function),
         )
     } else if slug.starts_with("gemini") {
@@ -383,8 +379,8 @@ fn derive_default_model_family(model: &str) -> ModelFamily {
         slug: model.to_string(),
         family: model.to_string(),
         needs_special_apply_patch_instructions: false,
-        context_window: None,
-        auto_compact_token_limit: None,
+        context_window: CONTEXT_WINDOW_272K,
+        auto_compact_token_limit: (CONTEXT_WINDOW_272K * 9) / 10,
         supports_reasoning_summaries: false,
         reasoning_summary_format: ReasoningSummaryFormat::None,
         // let's add apply patch to every model by default

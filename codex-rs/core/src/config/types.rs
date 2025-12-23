@@ -394,6 +394,23 @@ const fn default_true() -> bool {
     true
 }
 
+/// Configuration for handoff extraction to a new thread.
+/// Allows using a different model (e.g., one with larger context) for extraction.
+#[derive(Deserialize, Debug, Clone, PartialEq, Default)]
+pub struct HandoffConfig {
+    /// Model provider to use for handoff extraction (e.g., "gemini", "openai").
+    /// If not set, uses the current session's provider.
+    pub model_provider: Option<String>,
+
+    /// Model to use for handoff extraction (e.g., "gemini-2.5-flash").
+    /// If not set, uses the current session's model.
+    pub model: Option<String>,
+
+    /// Context window size for the handoff model.
+    /// If not set, uses a conservative default or the provider's default.
+    pub model_context_window: Option<i64>,
+}
+
 /// Settings for notices we display to users via the tui and app-server clients
 /// (primarily the Codex IDE extension). NOTE: these are different from
 /// notifications - notices are warnings, NUX screens, acknowledgements, etc.

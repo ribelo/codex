@@ -38,6 +38,14 @@ pub struct NewConversation {
     pub session_configured: SessionConfiguredEvent,
 }
 
+/// Result of creating a handoff conversation.
+/// Includes the new conversation and the message to send.
+pub struct HandoffConversation {
+    pub conversation: NewConversation,
+    /// The handoff message to send as the first user turn.
+    pub handoff_message: String,
+}
+
 /// [`ConversationManager`] is responsible for creating conversations and
 /// maintaining them in memory.
 pub struct ConversationManager {
@@ -252,48 +260,25 @@ impl ConversationManager {
         &self,
         draft: codex_protocol::protocol::HandoffDraft,
         config: Config,
-    ) -> CodexResult<NewConversation> {
-        use codex_protocol::models::ContentItem;
-        use codex_protocol::models::ResponseItem;
-        use codex_protocol::protocol::RolloutItem;
+    ) -> CodexResult<HandoffConversation> {
         use codex_protocol::protocol::SessionSource;
 
         // Format file mentions
         let file_mentions = format_file_mentions(&draft.relevant_files);
 
-        // Build context message
-        let context_text = format!(
-            "Continuing work from thread {}.\n\n{}\n\n{}",
-            draft.parent_id, file_mentions, draft.summary
+        // Build the handoff message that will be sent as first user turn
+        let handoff_message = format!(
+            "Continuing work from thread {}.\n\n{}\n\n{}\n\n{}",
+            draft.parent_id, file_mentions, draft.summary, draft.goal
         );
 
-        let context_message = ResponseItem::Message {
-            id: None,
-            role: "user".to_string(),
-            content: vec![ContentItem::InputText { text: context_text }],
-        };
-
-        // Build goal message
-        let goal_message = ResponseItem::Message {
-            id: None,
-            role: "user".to_string(),
-            content: vec![ContentItem::InputText {
-                text: draft.goal.clone(),
-            }],
-        };
-
-        // Create initial history
-        let initial_history = InitialHistory::Handoff {
-            context: vec![
-                RolloutItem::ResponseItem(context_message),
-                RolloutItem::ResponseItem(goal_message),
-            ],
-            parent_id: draft.parent_id,
-        };
-
-        // Update config with handoff session source
-        let config = config;
-        // Note: session_source will be set during Codex::spawn based on InitialHistory
+        let parent_rollout_path = self
+            .conversations
+            .read()
+            .await
+            .get(&draft.parent_id)
+            .ok_or(CodexErr::ConversationNotFound(draft.parent_id))?
+            .rollout_path();
 
         let auth_manager = self.auth_manager.clone();
         let CodexSpawnOk {
@@ -303,17 +288,22 @@ impl ConversationManager {
             config,
             auth_manager,
             self.models_manager.clone(),
-            initial_history,
+            InitialHistory::New,
             SessionSource::Handoff {
                 parent_id: draft.parent_id,
-                goal: draft.goal,
+                rollout_path: parent_rollout_path,
+                goal: draft.goal.clone(),
             },
             Some(self.mcp_connection_manager.clone()),
             self.skills_manager.clone(),
         )
         .await?;
 
-        self.finalize_spawn(codex, conversation_id).await
+        let conversation = self.finalize_spawn(codex, conversation_id).await?;
+        Ok(HandoffConversation {
+            conversation,
+            handoff_message,
+        })
     }
 
     pub async fn list_models(&self, config: &Config) -> Vec<ModelPreset> {

@@ -1137,6 +1137,7 @@ pub struct HandoffDraft {
     pub goal: String,
     pub relevant_files: Vec<PathBuf>,
     pub parent_id: ConversationId,
+    pub target_profile: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
@@ -1227,6 +1228,7 @@ pub enum SessionSource {
     SubAgent(SubAgentSource),
     Handoff {
         parent_id: ConversationId,
+        rollout_path: PathBuf,
         goal: String,
     },
     #[serde(other)]

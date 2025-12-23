@@ -46,7 +46,7 @@ impl SessionTask for CommandDelegateTask {
             .send_event(
                 ctx.as_ref(),
                 EventMsg::TaskStarted(TaskStartedEvent {
-                    model_context_window: ctx.client.get_model_context_window(),
+                    model_context_window: Some(ctx.client.get_model_context_window()),
                 }),
             )
             .await;

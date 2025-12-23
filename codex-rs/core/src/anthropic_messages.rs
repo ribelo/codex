@@ -55,6 +55,8 @@ struct AnthropicRequest {
     stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     thinking: Option<AnthropicThinking>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    output_format: Option<AnthropicOutputFormat>,
 }
 
 #[derive(Serialize)]
@@ -62,6 +64,14 @@ struct AnthropicMessage {
     role: String,
     content: Vec<Value>,
 }
+
+#[derive(Serialize)]
+struct AnthropicOutputFormat {
+    #[serde(rename = "type")]
+    format_type: String,
+    schema: Value,
+}
+
 /// Sanitize tool ID to match Anthropic's strict requirements (alphanumeric, hyphen, underscore).
 /// Matches Opencode's logic: `part.toolCallId.replace(/[^a-zA-Z0-9_-]/g, "_")`
 fn sanitize_tool_id(id: &str) -> String {
@@ -166,6 +176,14 @@ pub(crate) async fn stream_anthropic_messages(
         ..cfg
     });
 
+    let output_format = prompt
+        .output_schema
+        .as_ref()
+        .map(|schema| AnthropicOutputFormat {
+            format_type: "json_schema".to_string(),
+            schema: schema.clone(),
+        });
+
     let payload = AnthropicRequest {
         model: model_family.get_model_slug().to_string(),
         system: Some(system_prompt),
@@ -175,6 +193,7 @@ pub(crate) async fn stream_anthropic_messages(
         max_tokens,
         stream: true,
         thinking,
+        output_format,
     };
 
     let payload_json = serde_json::to_value(&payload)?;
@@ -192,7 +211,11 @@ pub(crate) async fn stream_anthropic_messages(
     loop {
         attempt += 1;
 
-        let req_builder = provider.create_request_builder(client).await?;
+        let mut req_builder = provider.create_request_builder(client).await?;
+        if payload_json.get("output_format").is_some() {
+            req_builder = req_builder.header("anthropic-beta", "structured-outputs-2025-11-13");
+        }
+
         let res = otel_event_manager
             .log_request(attempt, || {
                 req_builder
@@ -568,17 +591,17 @@ fn resolve_max_tokens(
     prompt_tokens: i64,
     hard_cap: i64,
 ) -> i64 {
-    let Some(window) = effective_context_window(config, model_family) else {
-        return hard_cap;
-    };
+    let window = effective_context_window(config, model_family);
     let remaining = window.saturating_sub(prompt_tokens).max(1);
     remaining.min(hard_cap)
 }
 
-fn effective_context_window(config: &Config, model_family: &ModelFamily) -> Option<i64> {
+fn effective_context_window(config: &Config, model_family: &ModelFamily) -> i64 {
     config
         .model_context_window
-        .map(|window| window.saturating_mul(model_family.effective_context_window_percent) / 100)
+        .unwrap_or(model_family.context_window)
+        .saturating_mul(model_family.effective_context_window_percent)
+        / 100
 }
 
 async fn process_anthropic_sse<S, E>(

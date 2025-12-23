@@ -3,15 +3,20 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde::Deserialize;
+use serde_json::json;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
+use tracing::info;
 use tracing::warn;
 
+use crate::client::ModelClient;
 use crate::codex::Session;
 use crate::codex::TurnContext;
 use crate::state::TaskKind;
+use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::HandoffDraftEvent;
+use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::TaskStartedEvent;
 use codex_protocol::user_input::UserInput;
 
@@ -33,6 +38,27 @@ struct ExtractionResult {
     files: Vec<String>,
 }
 
+fn extraction_result_schema() -> serde_json::Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "summary": {
+                "type": "string",
+                "description": "Plain text with bullets. No markdown headers, no bold/italic, no code fences. Use workspace-relative paths for files."
+            },
+            "files": {
+                "type": "array",
+                "items": {
+                    "type": "string"
+                },
+                "description": "An array of file or directory paths (workspace-relative) that are relevant to accomplishing the goal. Prioritize by importance, up to 12 items."
+            }
+        },
+        "required": ["summary", "files"],
+        "additionalProperties": false
+    })
+}
+
 #[async_trait]
 impl SessionTask for HandoffTask {
     fn kind(&self) -> TaskKind {
@@ -50,7 +76,7 @@ impl SessionTask for HandoffTask {
 
         // Emit TaskStarted so TUI shows "Working"
         let event = EventMsg::TaskStarted(TaskStartedEvent {
-            model_context_window: ctx.client.get_model_context_window(),
+            model_context_window: Some(ctx.client.get_model_context_window()),
         });
         sess.send_event(&ctx, event).await;
 
@@ -96,6 +122,7 @@ async fn run_extraction(
 ) -> Result<ExtractionResult, String> {
     use crate::client_common::Prompt;
     use crate::client_common::ResponseEvent;
+    use crate::truncate::TruncationBias;
     use crate::truncate::approx_token_count;
     use codex_protocol::models::ContentItem;
     use codex_protocol::models::ResponseItem;
@@ -105,10 +132,86 @@ async fn run_extraction(
     let mut history = sess.clone_history().await;
     let mut input = history.get_history_for_prompt();
 
-    // Get model context window, default to conservative 32k if unknown
-    let model_context = ctx.client.get_model_context_window().unwrap_or(32_000);
-    // Reserve ~20% for extraction prompt and response
-    let budget = (model_context as usize).saturating_sub(model_context as usize / 5);
+    // Early check for empty history - nothing to extract from
+    if input.is_empty() {
+        warn!("Handoff extraction: history is EMPTY - nothing to extract from");
+        return Err("No conversation history to extract from. Please have a conversation first before using /handoff.".to_string());
+    }
+
+    tracing::info!(
+        "Handoff extraction: starting with {} history messages",
+        input.len()
+    );
+
+    let config = sess.config().await;
+    let handoff_config = &config.handoff;
+
+    // Resolve client to use: configured handoff model or current session's model
+    let client: ModelClient =
+        if handoff_config.model.is_some() || handoff_config.model_provider.is_some() {
+            // Use configured handoff model
+            let provider_id = handoff_config
+                .model_provider
+                .as_deref()
+                .unwrap_or(&config.model_provider_id);
+
+            let provider = config
+                .model_providers
+                .get(provider_id)
+                .ok_or_else(|| format!("Handoff provider '{provider_id}' not found in config"))?
+                .clone();
+
+            let model_name = handoff_config
+                .model
+                .as_deref()
+                .or(config.model.as_deref())
+                .ok_or_else(|| "No model configured for handoff".to_string())?;
+
+            let model_family = sess
+                .services
+                .models_manager
+                .construct_model_family(model_name, &config)
+                .await;
+
+            info!(
+                "Handoff extraction: using configured model {} (provider: {})",
+                model_name, provider_id
+            );
+
+            ModelClient::new(
+                Arc::new((*config).clone()),
+                Some(Arc::clone(&sess.services.auth_manager)),
+                model_family,
+                sess.services.otel_event_manager.clone(),
+                provider,
+                None, // no reasoning effort for extraction
+                ReasoningSummary::None,
+                sess.conversation_id(),
+                SessionSource::Exec,
+            )
+        } else {
+            // Use current session's client
+            info!(
+                "Handoff extraction: using session model {}",
+                ctx.client.get_model()
+            );
+            ctx.client.clone()
+        };
+
+    // Get context window from configured model or client
+    let model_context = handoff_config
+        .model_context_window
+        .unwrap_or_else(|| client.get_model_context_window());
+    // Reserve ~30% for extraction prompt, response, and token estimation error
+    let budget = (model_context as usize).saturating_sub(model_context as usize * 3 / 10);
+
+    // Log model and context info
+    let model_name = client.get_model();
+    let instruction_tokens = approx_token_count(prompt);
+    debug!(
+        "Handoff extraction: model={}, context_window={}, budget={}, instruction_tokens={}",
+        model_name, model_context, budget, instruction_tokens
+    );
 
     // Truncate history if too long (Head + Tail strategy)
     // Conservative token budget for extraction to avoid context overflow while allowing enough context.
@@ -118,43 +221,77 @@ async fn run_extraction(
         .map(|item| approx_token_count(&serde_json::to_string(item).unwrap_or_default()))
         .sum();
 
-    if total_estimate > budget {
-        let mut truncated = Vec::new();
-        let mut used_tokens = 0;
+    // Apply correction factor: our 4-bytes-per-token estimate is often ~25% low
+    // Real tokenizers typically yield ~3 bytes per token for mixed content
+    let total_estimate = total_estimate + total_estimate / 4;
 
-        // Keep first message (original user intent)
-        if let Some(first) = input.first() {
-            let cost = approx_token_count(&serde_json::to_string(first).unwrap_or_default());
-            truncated.push(first.clone());
-            used_tokens += cost;
+    debug!(
+        "Handoff extraction: history_messages={}, history_tokens_estimate={}, total_with_instructions={}",
+        input.len(),
+        total_estimate,
+        total_estimate + instruction_tokens
+    );
+
+    if total_estimate > budget {
+        debug!("Handoff extraction: history exceeds budget, truncating...");
+
+        // Use TailHeavy truncation: 20% head, 80% tail
+        // This preserves initial context/goal and recent work
+        let bias = TruncationBias::TailHeavy;
+        let head_budget = (budget as f64 * bias.head_ratio()) as usize;
+        let tail_budget = budget.saturating_sub(head_budget);
+
+        // Collect head items (first messages up to head_budget)
+        let mut head = Vec::new();
+        let mut head_tokens = 0;
+        for item in input.iter() {
+            let cost = approx_token_count(&serde_json::to_string(item).unwrap_or_default());
+            // Apply correction factor
+            let cost = cost + cost / 4;
+            if head_tokens + cost > head_budget {
+                break;
+            }
+            head.push(item.clone());
+            head_tokens += cost;
         }
 
-        // Collect tail items that fit
+        // Collect tail items (recent messages up to tail_budget, in reverse)
         let mut tail = Vec::new();
-        for item in input.iter().skip(1).rev() {
+        let mut tail_tokens = 0;
+        let skip_count = head.len();
+        for item in input.iter().skip(skip_count).rev() {
             let cost = approx_token_count(&serde_json::to_string(item).unwrap_or_default());
-            if used_tokens + cost >= budget {
+            // Apply correction factor
+            let cost = cost + cost / 4;
+            if tail_tokens + cost > tail_budget {
                 break;
             }
             tail.push(item.clone());
-            used_tokens += cost;
+            tail_tokens += cost;
         }
+        tail.reverse();
 
-        let omitted_count = input.len().saturating_sub(1 + tail.len());
+        let omitted_count = input.len().saturating_sub(head.len() + tail.len());
+        debug!(
+            "Handoff truncation: head={} msgs ({}t), tail={} msgs ({}t), omitted={}",
+            head.len(),
+            head_tokens,
+            tail.len(),
+            tail_tokens,
+            omitted_count
+        );
+
+        // Build truncated input: head + marker + tail
+        let mut truncated = head;
         if omitted_count > 0 {
-            debug!("Truncated {omitted_count} messages for handoff extraction");
-            // Add a marker message indicating omission
             truncated.push(ResponseItem::Message {
                 id: None,
                 role: "system".to_string(),
                 content: vec![ContentItem::InputText {
-                    text: format!("[... omitted {omitted_count} messages for brevity ...]"),
+                    text: format!("[... {omitted_count} messages omitted for context limit ...]"),
                 }],
             });
         }
-
-        // Append tail in chronological order
-        tail.reverse();
         truncated.extend(tail);
         input = truncated;
     }
@@ -163,37 +300,96 @@ async fn run_extraction(
         input,
         tools: vec![],
         base_instructions_override: Some(prompt.to_string()),
-        output_schema: None,
+        output_schema: Some(extraction_result_schema()),
     };
 
     // Stream the response
-    let mut stream = ctx
-        .client
-        .clone()
+    let mut stream = client
         .stream(&extraction_prompt)
         .await
         .map_err(|e| format!("Failed to start extraction: {e}"))?;
 
     let mut response_text = String::new();
+    let mut received_deltas = false;
+    let mut event_count = 0;
     while let Some(event) = stream.next().await {
+        event_count += 1;
         match event {
             Ok(ResponseEvent::OutputItemDone(item)) => {
+                debug!("Handoff extraction: OutputItemDone event #{event_count}");
+                // Only use OutputItemDone if we haven't received streaming deltas
+                // (to avoid double accumulation)
                 if let codex_protocol::models::ResponseItem::Message { content, .. } = &item {
                     for c in content {
                         if let ContentItem::OutputText { text, .. } = c {
-                            response_text.push_str(text);
+                            debug!(
+                                "Handoff extraction: OutputItemDone text len={}, content={:?}",
+                                text.len(),
+                                &text.chars().take(100).collect::<String>()
+                            );
+                            // Use OutputItemDone content if we haven't accumulated from deltas
+                            // or if deltas were empty
+                            if !received_deltas || response_text.is_empty() {
+                                response_text.push_str(text);
+                            }
                         }
                     }
                 }
             }
-            Ok(ResponseEvent::Completed { .. }) => break,
+            Ok(ResponseEvent::OutputTextDelta(delta)) => {
+                if !received_deltas {
+                    debug!(
+                        "Handoff extraction: first OutputTextDelta received, len={}",
+                        delta.len()
+                    );
+                }
+                received_deltas = true;
+                debug!(
+                    "Handoff extraction: OutputTextDelta len={}, content={:?}",
+                    delta.len(),
+                    &delta.chars().take(50).collect::<String>()
+                );
+                response_text.push_str(&delta);
+            }
+            Ok(ResponseEvent::Completed { .. }) => {
+                debug!(
+                    "Handoff extraction: Completed event, total events={event_count}, response_text len={}",
+                    response_text.len()
+                );
+                break;
+            }
             Err(e) => return Err(format!("Extraction stream error: {e}")),
-            _ => continue,
+            other => {
+                debug!(
+                    "Handoff extraction: other event #{event_count}: {:?}",
+                    std::mem::discriminant(&other)
+                );
+                continue;
+            }
         }
     }
 
+    if response_text.is_empty() {
+        warn!(
+            "Handoff extraction: response_text is EMPTY after {event_count} events (received_deltas={received_deltas})"
+        );
+        return Err("Extraction returned empty response. Please try again.".to_string());
+    } else {
+        tracing::info!(
+            "Handoff extraction: response_text len={}, first 200 chars: {:?}",
+            response_text.len(),
+            &response_text.chars().take(200).collect::<String>()
+        );
+    }
+
     // Parse JSON from response
-    parse_extraction_result(&response_text)
+    let result = parse_extraction_result(&response_text)?;
+    tracing::info!(
+        "Handoff extraction: parsed summary len={}, files={}",
+        result.summary.len(),
+        result.files.len()
+    );
+    Ok(result)
 }
 
 fn parse_extraction_result(text: &str) -> Result<ExtractionResult, String> {

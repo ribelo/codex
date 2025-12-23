@@ -8,6 +8,8 @@ use crate::exec_command::strip_bash_lc_and_escape;
 use crate::file_search::FileSearchManager;
 use crate::git_warning_prompt::GitWarningPromptOutcome;
 use crate::git_warning_prompt::run_git_warning_prompt;
+use crate::handoff_review::HandoffReviewOutcome;
+use crate::handoff_review::run_handoff_review_with_edit;
 use crate::history_cell::HistoryCell;
 use crate::model_migration::ModelMigrationOutcome;
 use crate::model_migration::migration_copy_for_config;
@@ -52,9 +54,6 @@ use color_eyre::eyre::WrapErr;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
-use crossterm::event::KeyModifiers;
-use crossterm::terminal::disable_raw_mode;
-use crossterm::terminal::enable_raw_mode;
 use ratatui::style::Stylize;
 use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
@@ -264,8 +263,6 @@ pub(crate) struct App {
 
     // One-shot suppression of the next world-writable scan after user confirmation.
     skip_world_writable_scan_once: bool,
-
-    pub(crate) pending_handoff: Option<codex_protocol::protocol::HandoffDraft>,
 }
 
 impl App {
@@ -442,7 +439,6 @@ impl App {
             pending_update_action: None,
             suppress_shutdown_complete: false,
             skip_world_writable_scan_once: false,
-            pending_handoff: None,
         };
 
         // On startup, if Agent mode (workspace-write) or ReadOnly is active, warn about world-writable dirs on Windows.
@@ -533,14 +529,6 @@ impl App {
                     tui.draw(
                         self.chat_widget.desired_height(tui.terminal.size()?.width),
                         |frame| {
-                            if let Some(ref draft) = self.pending_handoff {
-                                use crate::handoff_review::HandoffReviewWidget;
-                                use ratatui::widgets::Widget;
-                                let widget = HandoffReviewWidget::new(draft);
-                                widget.render(frame.area(), frame.buffer_mut());
-                                return;
-                            }
-
                             self.chat_widget.render(frame.area(), frame.buffer);
                             if let Some((x, y)) = self.chat_widget.cursor_pos(frame.area()) {
                                 frame.set_cursor_position((x, y));
@@ -799,13 +787,134 @@ impl App {
                     return Ok(true);
                 }
                 if let EventMsg::HandoffDraft(event) = &event.msg {
-                    // Store the draft for review
-                    self.pending_handoff = Some(codex_protocol::protocol::HandoffDraft {
+                    // Create the draft and run the review prompt
+                    let draft = codex_protocol::protocol::HandoffDraft {
                         summary: event.summary.clone(),
                         goal: event.goal.clone(),
                         relevant_files: event.relevant_files.clone(),
                         parent_id: event.parent_id,
-                    });
+                        target_profile: None,
+                    };
+
+                    let (final_draft, outcome) =
+                        run_handoff_review_with_edit(tui, draft, &self.available_profiles).await;
+
+                    match outcome {
+                        HandoffReviewOutcome::Confirm => {
+                            let mut handoff_config = self.config.clone();
+                            let mut switched_profile = false;
+
+                            if let Some(profile) = &final_draft.target_profile {
+                                let mut overrides = self.config_overrides.clone();
+                                overrides.config_profile = Some(profile.clone());
+                                match Config::load_with_cli_overrides(
+                                    self.cli_kv_overrides.clone(),
+                                    overrides,
+                                )
+                                .await
+                                {
+                                    Ok(cfg) => {
+                                        handoff_config = cfg;
+                                        switched_profile = true;
+                                    }
+                                    Err(e) => {
+                                        let msg =
+                                            format!("Failed to load profile '{profile}': {e}");
+                                        tracing::error!("{msg}");
+                                        self.chat_widget.add_error_message(msg);
+                                    }
+                                }
+                            }
+
+                            let new_model = handoff_config
+                                .model
+                                .clone()
+                                .unwrap_or_else(|| self.current_model.clone());
+                            // Get model family for the new session
+                            let model_family = self
+                                .server
+                                .get_models_manager()
+                                .construct_model_family(&new_model, &handoff_config)
+                                .await;
+
+                            // Create the new handoff conversation
+                            match self
+                                .server
+                                .create_handoff_conversation(
+                                    final_draft.clone(),
+                                    handoff_config.clone(),
+                                )
+                                .await
+                            {
+                                Ok(handoff_result) => {
+                                    self.chat_widget.submit_op(Op::ConfirmHandoff {
+                                        draft: final_draft.clone(),
+                                        child_id: handoff_result.conversation.conversation_id,
+                                    });
+
+                                    // Save summary of current session
+                                    let summary = session_summary(
+                                        self.chat_widget.token_usage(),
+                                        self.chat_widget.conversation_id(),
+                                    );
+
+                                    // Shutdown current conversation
+                                    self.shutdown_current_conversation().await;
+
+                                    // Create new ChatWidget with the handoff conversation
+                                    let init = crate::chatwidget::ChatWidgetInit {
+                                        config: handoff_config.clone(),
+                                        frame_requester: tui.frame_requester(),
+                                        app_event_tx: self.app_event_tx.clone(),
+                                        initial_prompt: Some(handoff_result.handoff_message),
+                                        initial_images: Vec::new(),
+                                        enhanced_keys_supported: self.enhanced_keys_supported,
+                                        auth_manager: self.auth_manager.clone(),
+                                        models_manager: self.server.get_models_manager(),
+                                        feedback: self.feedback.clone(),
+                                        is_first_run: false,
+                                        available_profiles: self.available_profiles.clone(),
+                                        available_agents: self.available_agents.clone(),
+                                        model_family: model_family.clone(),
+                                    };
+
+                                    self.chat_widget = ChatWidget::new_from_existing(
+                                        init,
+                                        handoff_result.conversation.conversation,
+                                        handoff_result.conversation.session_configured,
+                                    );
+                                    self.current_model = model_family.get_model_slug().to_string();
+
+                                    if switched_profile {
+                                        self.config = handoff_config;
+                                        self.active_profile = final_draft.target_profile.clone();
+                                    }
+
+                                    // Show previous session summary
+                                    if let Some(summary) = summary {
+                                        let mut lines: Vec<Line<'static>> =
+                                            vec![summary.usage_line.clone().into()];
+                                        if let Some(command) = summary.resume_command {
+                                            let spans = vec![
+                                                "To continue previous session, run ".into(),
+                                                command.cyan(),
+                                            ];
+                                            lines.push(spans.into());
+                                        }
+                                        self.chat_widget.add_plain_history_lines(lines);
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::error!("Handoff failed: {e}");
+                                    self.chat_widget
+                                        .add_error_message(format!("Handoff failed: {e}"));
+                                }
+                            }
+                        }
+                        HandoffReviewOutcome::Cancel => {
+                            self.chat_widget.submit_op(Op::CancelHandoff);
+                        }
+                    }
                     tui.frame_requester().schedule_frame();
                     return Ok(true);
                 }
@@ -1215,163 +1324,6 @@ impl App {
     }
 
     async fn handle_key_event(&mut self, tui: &mut tui::Tui, key_event: KeyEvent) {
-        if self.pending_handoff.is_some() {
-            if key_event.kind == KeyEventKind::Press {
-                match key_event.code {
-                    KeyCode::Enter => {
-                        if let Some(draft) = self.pending_handoff.as_ref() {
-                            let draft = draft.clone();
-                            // Get model family for the new session
-                            let model_family = self
-                                .server
-                                .get_models_manager()
-                                .construct_model_family(self.current_model.as_str(), &self.config)
-                                .await;
-
-                            // Create the new handoff conversation
-                            match self
-                                .server
-                                .create_handoff_conversation(draft.clone(), self.config.clone())
-                                .await
-                            {
-                                Ok(new_conv) => {
-                                    self.pending_handoff = None;
-                                    self.chat_widget.submit_op(Op::ConfirmHandoff {
-                                        draft,
-                                        child_id: new_conv.conversation_id,
-                                    });
-
-                                    // Save summary of current session
-                                    let summary = session_summary(
-                                        self.chat_widget.token_usage(),
-                                        self.chat_widget.conversation_id(),
-                                    );
-
-                                    // Shutdown current conversation
-                                    self.shutdown_current_conversation().await;
-
-                                    // Create new ChatWidget with the handoff conversation
-                                    let init = crate::chatwidget::ChatWidgetInit {
-                                        config: self.config.clone(),
-                                        frame_requester: tui.frame_requester(),
-                                        app_event_tx: self.app_event_tx.clone(),
-                                        initial_prompt: None,
-                                        initial_images: Vec::new(),
-                                        enhanced_keys_supported: self.enhanced_keys_supported,
-                                        auth_manager: self.auth_manager.clone(),
-                                        models_manager: self.server.get_models_manager(),
-                                        feedback: self.feedback.clone(),
-                                        is_first_run: false,
-                                        available_profiles: self.available_profiles.clone(),
-                                        available_agents: self.available_agents.clone(),
-                                        model_family: model_family.clone(),
-                                    };
-
-                                    self.chat_widget = ChatWidget::new_from_existing(
-                                        init,
-                                        new_conv.conversation,
-                                        new_conv.session_configured,
-                                    );
-                                    self.current_model = model_family.get_model_slug().to_string();
-
-                                    // Show previous session summary
-                                    if let Some(summary) = summary {
-                                        let mut lines: Vec<Line<'static>> =
-                                            vec![summary.usage_line.clone().into()];
-                                        if let Some(command) = summary.resume_command {
-                                            let spans = vec![
-                                                "To continue previous session, run ".into(),
-                                                command.cyan(),
-                                            ];
-                                            lines.push(spans.into());
-                                        }
-                                        self.chat_widget.add_plain_history_lines(lines);
-                                    }
-
-                                    tui.frame_requester().schedule_frame();
-                                }
-                                Err(e) => {
-                                    tracing::error!("Handoff failed: {e}");
-                                    self.chat_widget
-                                        .add_error_message(format!("Handoff failed: {e}"));
-                                }
-                            }
-                        }
-                    }
-                    KeyCode::Esc => {
-                        self.pending_handoff = None;
-                        self.chat_widget.submit_op(Op::CancelHandoff);
-                    }
-                    KeyCode::Char('c') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
-                        self.pending_handoff = None;
-                        self.chat_widget.submit_op(Op::CancelHandoff);
-                    }
-                    KeyCode::Char('e') => {
-                        if let Some(draft) = self.pending_handoff.clone() {
-                            use crate::handoff_review::parse_markdown_to_draft;
-                            use crate::handoff_review::serialize_draft_to_markdown;
-                            let content = serialize_draft_to_markdown(&draft);
-                            let temp_path = std::env::temp_dir().join("codex_handoff_edit.md");
-                            if let Err(e) = std::fs::write(&temp_path, content) {
-                                self.chat_widget.add_error_message(format!(
-                                    "failed to write temp file for editing: {e}"
-                                ));
-                                return;
-                            }
-
-                            // Leave raw mode and alternate screen to give editor full control
-                            let _ = disable_raw_mode();
-                            let _ = tui.leave_alt_screen();
-
-                            let editor =
-                                std::env::var("EDITOR").unwrap_or_else(|_| "vim".to_string());
-                            let parts: Vec<String> =
-                                shlex::split(&editor).unwrap_or_else(|| vec![editor.clone()]);
-
-                            let status = if let Some((cmd, args)) = parts.split_first() {
-                                std::process::Command::new(cmd)
-                                    .args(args)
-                                    .arg(&temp_path)
-                                    .status()
-                            } else {
-                                std::process::Command::new("vim").arg(&temp_path).status()
-                            };
-
-                            // Restore terminal state
-                            let _ = tui.enter_alt_screen();
-                            let _ = enable_raw_mode();
-
-                            match status {
-                                Ok(s) if s.success() => match std::fs::read_to_string(&temp_path) {
-                                    Ok(edited) => match parse_markdown_to_draft(&edited, &draft) {
-                                        Ok(new_draft) => self.pending_handoff = Some(new_draft),
-                                        Err(e) => self.chat_widget.add_error_message(format!(
-                                            "failed to parse edited draft: {e}"
-                                        )),
-                                    },
-                                    Err(e) => self.chat_widget.add_error_message(format!(
-                                        "failed to read edited draft: {e}"
-                                    )),
-                                },
-                                Ok(s) => self.chat_widget.add_error_message(format!(
-                                    "editor exited with non-zero status: {s}"
-                                )),
-                                Err(e) => {
-                                    self.chat_widget.add_error_message(format!(
-                                        "failed to spawn editor: {e}. Is $EDITOR set correctly?"
-                                    ));
-                                }
-                            }
-                            let _ = std::fs::remove_file(temp_path);
-                            tui.frame_requester().schedule_frame();
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            return;
-        }
-
         match key_event {
             KeyEvent {
                 code: KeyCode::Char('t'),
@@ -1547,7 +1499,6 @@ mod tests {
             pending_update_action: None,
             suppress_shutdown_complete: false,
             skip_world_writable_scan_once: false,
-            pending_handoff: None,
         }
     }
 
@@ -1593,7 +1544,6 @@ mod tests {
                 pending_update_action: None,
                 suppress_shutdown_complete: false,
                 skip_world_writable_scan_once: false,
-                pending_handoff: None,
             },
             rx,
             op_rx,

@@ -21,10 +21,14 @@ use codex_cli::login::run_logout_antigravity;
 use codex_cli::login::run_logout_gemini;
 use codex_cloud_tasks::Cli as CloudTasksCli;
 use codex_common::CliConfigOverrides;
+use codex_core::RolloutRecorder;
+use codex_core::find_conversation_path_by_id_str;
 use codex_exec::Cli as ExecCli;
 use codex_exec::Command as ExecCommand;
 use codex_exec::ReviewArgs;
 use codex_execpolicy::ExecPolicyCheckCommand;
+use codex_protocol::protocol::InitialHistory;
+use codex_protocol::protocol::RolloutItem;
 use codex_responses_api_proxy::Args as ResponsesApiProxyArgs;
 use codex_tui::AppExitInfo;
 use codex_tui::Cli as TuiCli;
@@ -134,6 +138,9 @@ enum Subcommand {
 
     /// Inspect feature flags.
     Features(FeaturesCli),
+
+    /// Debug handoff extraction from a previous session.
+    Handoff(HandoffCommand),
 }
 
 #[derive(Debug, Parser)]
@@ -430,6 +437,17 @@ struct FeaturesCli {
 }
 
 #[derive(Debug, Parser)]
+struct HandoffCommand {
+    /// Session ID (UUID) from a previous rollout to extract from.
+    #[arg(value_name = "SESSION_ID")]
+    session_id: String,
+
+    /// Goal/instruction for the handoff.
+    #[arg(value_name = "INSTRUCTION")]
+    instruction: String,
+}
+
+#[derive(Debug, Parser)]
 enum FeaturesSubcommand {
     /// List known features with their stage and effective state.
     List,
@@ -694,6 +712,134 @@ async fn cli_main(codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()
                 }
             }
         },
+        Some(Subcommand::Handoff(HandoffCommand {
+            session_id,
+            instruction,
+        })) => {
+            println!("Handoff command: session_id={session_id}, instruction={instruction}");
+
+            let codex_home = find_codex_home()?;
+            let path = find_conversation_path_by_id_str(&codex_home, &session_id).await?;
+
+            let Some(path) = path else {
+                anyhow::bail!("Session not found: {session_id}");
+            };
+
+            println!("Loading rollout from: {}", path.display());
+            let history = RolloutRecorder::get_rollout_history(&path).await?;
+
+            match history {
+                InitialHistory::Resumed(resumed) => {
+                    println!("Loaded {} history items", resumed.history.len());
+
+                    // Count item types
+                    let mut session_meta_count = 0;
+                    let mut response_item_count = 0;
+                    let mut compacted_count = 0;
+                    let mut turn_context_count = 0;
+                    let mut event_msg_count = 0;
+                    let mut handoff_count = 0;
+
+                    // Collect response items for extraction
+                    let mut response_items: Vec<codex_protocol::models::ResponseItem> = Vec::new();
+
+                    for item in &resumed.history {
+                        match item {
+                            RolloutItem::SessionMeta(_) => session_meta_count += 1,
+                            RolloutItem::ResponseItem(ri) => {
+                                response_item_count += 1;
+                                response_items.push(ri.clone());
+                            }
+                            RolloutItem::Compacted(_) => compacted_count += 1,
+                            RolloutItem::TurnContext(_) => turn_context_count += 1,
+                            RolloutItem::EventMsg(_) => event_msg_count += 1,
+                            RolloutItem::Handoff(_) => handoff_count += 1,
+                        };
+                    }
+
+                    println!("\nItem counts:");
+                    println!("  SessionMeta: {session_meta_count}");
+                    println!("  ResponseItem: {response_item_count}");
+                    println!("  Compacted: {compacted_count}");
+                    println!("  TurnContext: {turn_context_count}");
+                    println!("  EventMsg: {event_msg_count}");
+                    println!("  Handoff: {handoff_count}");
+
+                    println!(
+                        "\nExtracted {} response items for handoff",
+                        response_items.len()
+                    );
+
+                    // Show first few messages
+                    println!("\nFirst 5 response items:");
+                    for (i, item) in response_items.iter().take(5).enumerate() {
+                        match item {
+                            codex_protocol::models::ResponseItem::Message {
+                                role, content, ..
+                            } => {
+                                let content_preview: String = content
+                                    .iter()
+                                    .map(|c| match c {
+                                        codex_protocol::models::ContentItem::InputText { text } => {
+                                            let preview: String = text.chars().take(100).collect();
+                                            format!(
+                                                "InputText({} chars): {}...",
+                                                text.len(),
+                                                preview
+                                            )
+                                        }
+                                        codex_protocol::models::ContentItem::OutputText {
+                                            text,
+                                            ..
+                                        } => {
+                                            let preview: String = text.chars().take(100).collect();
+                                            format!(
+                                                "OutputText({} chars): {}...",
+                                                text.len(),
+                                                preview
+                                            )
+                                        }
+                                        codex_protocol::models::ContentItem::InputImage {
+                                            ..
+                                        } => "InputImage".to_string(),
+                                    })
+                                    .collect::<Vec<_>>()
+                                    .join(", ");
+                                println!("  {}. Message(role={role}): [{content_preview}]", i + 1);
+                            }
+                            codex_protocol::models::ResponseItem::FunctionCall {
+                                name,
+                                call_id,
+                                ..
+                            } => {
+                                println!(
+                                    "  {}. FunctionCall(name={name}, call_id={call_id})",
+                                    i + 1
+                                );
+                            }
+                            codex_protocol::models::ResponseItem::FunctionCallOutput {
+                                call_id,
+                                ..
+                            } => {
+                                println!("  {}. FunctionCallOutput(call_id={call_id})", i + 1);
+                            }
+                            _ => {
+                                println!("  {}. Other", i + 1);
+                            }
+                        }
+                    }
+
+                    println!(
+                        "\n--- Handoff extraction would use these {} items ---",
+                        response_items.len()
+                    );
+                    println!("Instruction: {instruction}");
+                }
+                _ => {
+                    println!("No history items found (InitialHistory was not Resumed)");
+                }
+            }
+        }
     }
 
     Ok(())

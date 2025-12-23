@@ -99,12 +99,17 @@ impl ModelClient {
         }
     }
 
-    pub fn get_model_context_window(&self) -> Option<i64> {
+    pub fn get_model_context_window(&self) -> i64 {
+        // Config override takes precedence
+        if let Some(config_window) = self.config.model_context_window {
+            return config_window;
+        }
         let model_family = self.get_model_family();
         let effective_context_window_percent = model_family.effective_context_window_percent;
         model_family
             .context_window
-            .map(|w| w.saturating_mul(effective_context_window_percent) / 100)
+            .saturating_mul(effective_context_window_percent)
+            / 100
     }
 
     pub fn config(&self) -> Arc<Config> {

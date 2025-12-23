@@ -40,7 +40,7 @@ impl SessionTask for SubagentDelegateTask {
 
         // Emit TaskStarted so TUI shows "Working" and Ctrl+C interrupts
         let event = EventMsg::TaskStarted(TaskStartedEvent {
-            model_context_window: ctx.client.get_model_context_window(),
+            model_context_window: Some(ctx.client.get_model_context_window()),
         });
         sess.send_event(&ctx, event).await;
 

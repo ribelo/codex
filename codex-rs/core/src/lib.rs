@@ -71,6 +71,7 @@ pub mod review_format;
 pub mod review_prompts;
 pub use codex_protocol::protocol::InitialHistory;
 pub use conversation_manager::ConversationManager;
+pub use conversation_manager::HandoffConversation;
 pub use conversation_manager::NewConversation;
 // Re-export common auth types for workspace consumers
 pub use auth::AuthManager;

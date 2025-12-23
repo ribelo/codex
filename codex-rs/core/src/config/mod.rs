@@ -1,6 +1,7 @@
 use crate::auth::AuthCredentialsStoreMode;
 use crate::config::types::DEFAULT_OTEL_ENVIRONMENT;
 use crate::config::types::GhostSnapshotToml;
+use crate::config::types::HandoffConfig;
 use crate::config::types::History;
 use crate::config::types::McpServerConfig;
 use crate::config::types::Notice;
@@ -164,6 +165,9 @@ pub struct Config {
     /// TUI notifications preference. When set, the TUI will send OSC 9 notifications on approvals
     /// and turn completions when not focused.
     pub tui_notifications: Notifications,
+
+    /// Configuration for handoff extraction to a new thread.
+    pub handoff: HandoffConfig,
 
     /// Enable ASCII animations and shimmer effects in the TUI.
     pub animations: bool,
@@ -658,6 +662,10 @@ pub struct ConfigToml {
 
     /// Collection of settings that are specific to the TUI.
     pub tui: Option<Tui>,
+
+    /// Configuration for handoff extraction to a new thread.
+    #[serde(default)]
+    pub handoff: Option<HandoffConfig>,
 
     pub reasoning_display: Option<ReasoningDisplay>,
 
@@ -1255,6 +1263,7 @@ impl Config {
                 .as_ref()
                 .map(|t| t.notifications.clone())
                 .unwrap_or_default(),
+            handoff: cfg.handoff.clone().unwrap_or_default(),
             animations: cfg.tui.as_ref().map(|t| t.animations).unwrap_or(true),
             show_tooltips: cfg.tui.as_ref().map(|t| t.show_tooltips).unwrap_or(true),
             otel: {
@@ -2959,6 +2968,7 @@ model_verbosity = "high"
                 review_model: OPENAI_DEFAULT_REVIEW_MODEL.to_string(),
                 model_context_window: None,
                 model_auto_compact_token_limit: None,
+                handoff: HandoffConfig::default(),
                 model_provider_id: "openai".to_string(),
                 model_provider: fixture.openai_provider.clone(),
                 provider_profile_config: Default::default(),
@@ -3042,6 +3052,7 @@ model_verbosity = "high"
             review_model: OPENAI_DEFAULT_REVIEW_MODEL.to_string(),
             model_context_window: None,
             model_auto_compact_token_limit: None,
+            handoff: HandoffConfig::default(),
             model_provider_id: "openai-chat-completions".to_string(),
             model_provider: fixture.openai_chat_completions_provider.clone(),
             provider_profile_config: Default::default(),
@@ -3140,6 +3151,7 @@ model_verbosity = "high"
             review_model: OPENAI_DEFAULT_REVIEW_MODEL.to_string(),
             model_context_window: None,
             model_auto_compact_token_limit: None,
+            handoff: HandoffConfig::default(),
             model_provider_id: "openai".to_string(),
             model_provider: fixture.openai_provider.clone(),
             provider_profile_config: Default::default(),
@@ -3224,6 +3236,7 @@ model_verbosity = "high"
             review_model: OPENAI_DEFAULT_REVIEW_MODEL.to_string(),
             model_context_window: None,
             model_auto_compact_token_limit: None,
+            handoff: HandoffConfig::default(),
             model_provider_id: "openai".to_string(),
             model_provider: fixture.openai_provider.clone(),
             provider_profile_config: Default::default(),
