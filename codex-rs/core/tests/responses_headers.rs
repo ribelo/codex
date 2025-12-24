@@ -245,7 +245,6 @@ async fn responses_respects_model_family_overrides_from_config() {
     config.model = Some("gpt-3.5-turbo".to_string());
     config.model_provider_id = provider.name.clone();
     config.model_provider = provider.clone();
-    config.model_supports_reasoning_summaries = Some(true);
     config.model_reasoning_summary_format = Some(ReasoningSummaryFormat::Experimental);
     config.model_reasoning_summary = ReasoningSummary::Detailed;
     let effort = config.model_reasoning_effort;

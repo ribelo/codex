@@ -246,9 +246,6 @@ pub struct Config {
     /// request using the Responses API.
     pub model_reasoning_summary: ReasoningSummary,
 
-    /// Optional override to force-enable reasoning summaries for the configured model.
-    pub model_supports_reasoning_summaries: Option<bool>,
-
     /// Optional override to force reasoning summary format for the configured model.
     pub model_reasoning_summary_format: Option<ReasoningSummaryFormat>,
 
@@ -677,9 +674,6 @@ pub struct ConfigToml {
     pub model_reasoning_summary: Option<ReasoningSummary>,
     /// Optional verbosity control for GPT-5 models (Responses API `text.verbosity`).
     pub model_verbosity: Option<Verbosity>,
-
-    /// Override to force-enable reasoning summaries for the configured model.
-    pub model_supports_reasoning_summaries: Option<bool>,
 
     /// Override to force reasoning summary format for the configured model.
     pub model_reasoning_summary_format: Option<ReasoningSummaryFormat>,
@@ -1237,9 +1231,6 @@ impl Config {
                 .model_reasoning_summary
                 .or(cfg.model_reasoning_summary)
                 .unwrap_or_default(),
-            model_supports_reasoning_summaries: config_profile
-                .model_supports_reasoning_summaries
-                .or(cfg.model_supports_reasoning_summaries),
             model_reasoning_summary_format: config_profile
                 .model_reasoning_summary_format
                 .or(cfg.model_reasoning_summary_format),
@@ -3011,7 +3002,6 @@ model_verbosity = "high"
                 codex_linux_sandbox_exe: None,
                 model_reasoning_effort: Some(ReasoningEffort::High),
                 model_reasoning_summary: ReasoningSummary::Detailed,
-                model_supports_reasoning_summaries: None,
                 model_reasoning_summary_format: None,
                 model_verbosity: None,
                 chatgpt_base_url: "https://chatgpt.com/backend-api/".to_string(),
@@ -3094,7 +3084,6 @@ model_verbosity = "high"
             codex_linux_sandbox_exe: None,
             model_reasoning_effort: None,
             model_reasoning_summary: ReasoningSummary::default(),
-            model_supports_reasoning_summaries: None,
             model_reasoning_summary_format: None,
             model_verbosity: None,
             chatgpt_base_url: "https://chatgpt.com/backend-api/".to_string(),
@@ -3192,7 +3181,6 @@ model_verbosity = "high"
             codex_linux_sandbox_exe: None,
             model_reasoning_effort: None,
             model_reasoning_summary: ReasoningSummary::default(),
-            model_supports_reasoning_summaries: None,
             model_reasoning_summary_format: None,
             model_verbosity: None,
             chatgpt_base_url: "https://chatgpt.com/backend-api/".to_string(),
@@ -3276,7 +3264,6 @@ model_verbosity = "high"
             codex_linux_sandbox_exe: None,
             model_reasoning_effort: Some(ReasoningEffort::High),
             model_reasoning_summary: ReasoningSummary::Detailed,
-            model_supports_reasoning_summaries: None,
             model_reasoning_summary_format: None,
             model_verbosity: Some(Verbosity::High),
             chatgpt_base_url: "https://chatgpt.com/backend-api/".to_string(),

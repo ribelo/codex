@@ -2447,7 +2447,6 @@ mod tests {
     fn reasoning_summary_block_respects_config_overrides() {
         let mut config = test_config();
         config.model = Some("gpt-3.5-turbo".to_string());
-        config.model_supports_reasoning_summaries = Some(true);
         config.model_reasoning_summary_format = Some(ReasoningSummaryFormat::Experimental);
         let model_family =
             ModelsManager::construct_model_family_offline(&config.model.clone().unwrap(), &config);

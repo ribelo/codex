@@ -94,9 +94,6 @@ pub struct ModelFamily {
 
 impl ModelFamily {
     pub fn with_config_overrides(mut self, config: &Config) -> Self {
-        if let Some(supports_reasoning_summaries) = config.model_supports_reasoning_summaries {
-            self.supports_reasoning_summaries = supports_reasoning_summaries;
-        }
         if let Some(reasoning_summary_format) = config.model_reasoning_summary_format.as_ref() {
             self.reasoning_summary_format = reasoning_summary_format.clone();
         }
