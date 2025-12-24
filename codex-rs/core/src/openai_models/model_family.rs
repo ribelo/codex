@@ -49,7 +49,7 @@ pub struct ModelFamily {
     // The reasoning effort to use for this model family when none is explicitly chosen.
     pub default_reasoning_effort: Option<ReasoningEffort>,
 
-    /// Whether to parse the reasoning summary header (e.g. "## Summary\n\n").
+    /// Whether to parse the experimental reasoning summary format with `**header**` delimiters.
     pub parse_reasoning_header: bool,
 
     /// Present if the model performs better when `apply_patch` is provided as

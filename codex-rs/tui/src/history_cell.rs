@@ -3382,4 +3382,61 @@ mod tests {
             "Transcript: Child 2 should appear before parent's final message"
         );
     }
+
+    #[test]
+    fn reasoning_summary_block_splits_header_and_summary_when_present() {
+        let cell = new_reasoning_summary_block(
+            "**High level plan**\n\nWe should fix the bug next.".to_string(),
+            true,
+        );
+
+        let rendered_display = render_lines(&cell.display_lines(80));
+        assert_eq!(rendered_display, vec!["• We should fix the bug next."]);
+
+        let rendered_transcript = render_transcript(cell.as_ref());
+        assert_eq!(rendered_transcript, vec!["• We should fix the bug next."]);
+    }
+
+    #[test]
+    fn reasoning_summary_block_falls_back_when_header_is_missing() {
+        let cell =
+            new_reasoning_summary_block("**High level reasoning without closing".to_string(), true);
+
+        let rendered = render_transcript(cell.as_ref());
+        assert_eq!(rendered, vec!["• **High level reasoning without closing"]);
+    }
+
+    #[test]
+    fn reasoning_summary_block_falls_back_when_summary_is_missing() {
+        let cell = new_reasoning_summary_block(
+            "**High level reasoning without closing**".to_string(),
+            true,
+        );
+
+        let rendered = render_transcript(cell.as_ref());
+        assert_eq!(rendered, vec!["• High level reasoning without closing"]);
+
+        let cell = new_reasoning_summary_block(
+            "**High level reasoning without closing**\n\n  ".to_string(),
+            true,
+        );
+
+        let rendered = render_transcript(cell.as_ref());
+        assert_eq!(rendered, vec!["• High level reasoning without closing"]);
+    }
+
+    #[test]
+    fn reasoning_summary_block_no_parse_shows_raw() {
+        let cell = new_reasoning_summary_block(
+            "**High level plan**\n\nWe should fix the bug next.".to_string(),
+            false,
+        );
+
+        let rendered = render_transcript(cell.as_ref());
+        // When parse_header=false, the full text is shown with markdown parsing
+        // The ** markers become bold styling, newlines become separate lines
+        assert_eq!(rendered.len(), 3);
+        assert!(rendered[0].contains("High level plan"));
+        assert!(rendered[2].contains("We should fix the bug next"));
+    }
 }
