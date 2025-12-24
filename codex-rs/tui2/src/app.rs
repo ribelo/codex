@@ -316,11 +316,7 @@ impl App {
             }
         }
 
-        let skills = if config.features.enabled(Feature::Skills) {
-            Some(skills_outcome.skills.clone())
-        } else {
-            None
-        };
+        let skills = Some(skills_outcome.skills.clone());
 
         let enhanced_keys_supported = tui.enhanced_keys_supported();
         let model_family = conversation_manager

@@ -52,8 +52,6 @@ pub enum Feature {
     RemoteCompaction,
     /// Refresh remote models and emit AppReady once the list is available.
     RemoteModels,
-    /// Experimental skills injection (CLI flag-driven).
-    Skills,
     /// Experimental shell snapshotting.
     ShellSnapshot,
     /// Experimental TUI v2 (viewport) implementation.
@@ -318,12 +316,6 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::RemoteModels,
         key: "remote_models",
-        stage: Stage::Experimental,
-        default_enabled: false,
-    },
-    FeatureSpec {
-        id: Feature::Skills,
-        key: "skills",
         stage: Stage::Experimental,
         default_enabled: false,
     },

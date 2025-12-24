@@ -182,11 +182,7 @@ impl Codex {
         let (tx_sub, rx_sub) = async_channel::bounded(SUBMISSION_CHANNEL_CAPACITY);
         let (tx_event, rx_event) = async_channel::unbounded();
 
-        let loaded_skills = if config.features.enabled(Feature::Skills) {
-            Some(skills_manager.skills_for_cwd(&config.cwd))
-        } else {
-            None
-        };
+        let loaded_skills = Some(skills_manager.skills_for_cwd(&config.cwd));
 
         if let Some(outcome) = &loaded_skills {
             for err in &outcome.errors {
