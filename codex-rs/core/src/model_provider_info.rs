@@ -139,6 +139,7 @@ pub struct ModelProviderInfo {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ModelProviderInfoSerde {
     name: String,
     base_url: Option<String>,

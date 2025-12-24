@@ -52,6 +52,7 @@ impl<'de> Deserialize<'de> for McpServerConfig {
         D: Deserializer<'de>,
     {
         #[derive(Deserialize, Clone)]
+        #[serde(deny_unknown_fields)]
         struct RawMcpServerConfig {
             // stdio
             command: Option<String>,
@@ -221,6 +222,7 @@ mod option_duration_secs {
 }
 
 #[derive(Deserialize, Debug, Copy, Clone, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub enum UriBasedFileOpener {
     #[serde(rename = "vscode")]
     VsCode,
@@ -253,6 +255,7 @@ impl UriBasedFileOpener {
 
 /// Settings for ghost snapshots.
 #[derive(Deserialize, Debug, Clone, PartialEq, Default)]
+#[serde(deny_unknown_fields)]
 pub struct GhostSnapshotToml {
     /// Files larger than this size (in bytes) will be treated as untracked.
     pub ignore_large_untracked_files: Option<i64>,
@@ -267,6 +270,7 @@ pub struct GhostSnapshotToml {
 
 /// Settings that govern if and what will be written to `~/.codex/history.jsonl`.
 #[derive(Deserialize, Debug, Clone, PartialEq, Default)]
+#[serde(deny_unknown_fields)]
 pub struct History {
     /// If true, history entries will not be written to disk.
     pub persistence: HistoryPersistence,
@@ -277,7 +281,7 @@ pub struct History {
 }
 
 #[derive(Deserialize, Debug, Copy, Clone, PartialEq, Default)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub enum HistoryPersistence {
     /// Save all history entries to disk.
     #[default]
@@ -289,7 +293,7 @@ pub enum HistoryPersistence {
 // ===== OTEL configuration =====
 
 #[derive(Deserialize, Debug, Clone, PartialEq)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub enum OtelHttpProtocol {
     /// Binary payload
     Binary,
@@ -298,7 +302,7 @@ pub enum OtelHttpProtocol {
 }
 
 #[derive(Deserialize, Debug, Clone, PartialEq, Default)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub struct OtelTlsConfig {
     pub ca_certificate: Option<AbsolutePathBuf>,
     pub client_certificate: Option<AbsolutePathBuf>,
@@ -307,7 +311,7 @@ pub struct OtelTlsConfig {
 
 /// Which OTEL exporter to use.
 #[derive(Deserialize, Debug, Clone, PartialEq)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub enum OtelExporterKind {
     None,
     OtlpHttp {
@@ -329,6 +333,7 @@ pub enum OtelExporterKind {
 
 /// OTEL settings loaded from config.toml. Fields are optional so we can apply defaults.
 #[derive(Deserialize, Debug, Clone, PartialEq, Default)]
+#[serde(deny_unknown_fields)]
 pub struct OtelConfigToml {
     /// Log user prompt in traces
     pub log_user_prompt: Option<bool>,
@@ -373,6 +378,7 @@ impl Default for Notifications {
 
 /// Collection of settings that are specific to the TUI.
 #[derive(Deserialize, Debug, Clone, PartialEq, Default)]
+#[serde(deny_unknown_fields)]
 pub struct Tui {
     /// Enable desktop notifications from the TUI when the terminal is unfocused.
     /// Defaults to `true`.
@@ -397,6 +403,7 @@ const fn default_true() -> bool {
 /// Configuration for handoff extraction to a new thread.
 /// Allows using a different model (e.g., one with larger context) for extraction.
 #[derive(Deserialize, Debug, Clone, PartialEq, Default)]
+#[serde(deny_unknown_fields)]
 pub struct HandoffConfig {
     /// Model provider to use for handoff extraction (e.g., "gemini", "openai").
     /// If not set, uses the current session's provider.
@@ -415,6 +422,7 @@ pub struct HandoffConfig {
 /// (primarily the Codex IDE extension). NOTE: these are different from
 /// notifications - notices are warnings, NUX screens, acknowledgements, etc.
 #[derive(Deserialize, Debug, Clone, PartialEq, Default)]
+#[serde(deny_unknown_fields)]
 pub struct Notice {
     /// Tracks whether the user has acknowledged the full access warning prompt.
     pub hide_full_access_warning: Option<bool>,
@@ -435,6 +443,7 @@ impl Notice {
 }
 
 #[derive(Deserialize, Debug, Clone, PartialEq, Default)]
+#[serde(deny_unknown_fields)]
 pub struct SandboxWorkspaceWrite {
     #[serde(default)]
     pub writable_roots: Vec<PathBuf>,
@@ -458,7 +467,7 @@ impl From<SandboxWorkspaceWrite> for codex_app_server_protocol::SandboxSettings 
 }
 
 #[derive(Deserialize, Debug, Clone, PartialEq, Default)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub enum ShellEnvironmentPolicyInherit {
     /// "Core" environment variables for the platform. On UNIX, this would
     /// include HOME, LOGNAME, PATH, SHELL, and USER, among others.
@@ -475,6 +484,7 @@ pub enum ShellEnvironmentPolicyInherit {
 /// Policy for building the `env` when spawning a process via either the
 /// `shell` or `local_shell` tool.
 #[derive(Deserialize, Debug, Clone, PartialEq, Default)]
+#[serde(deny_unknown_fields)]
 pub struct ShellEnvironmentPolicyToml {
     pub inherit: Option<ShellEnvironmentPolicyInherit>,
 
@@ -554,7 +564,7 @@ impl From<ShellEnvironmentPolicyToml> for ShellEnvironmentPolicy {
 }
 
 #[derive(Deserialize, Debug, Clone, PartialEq, Eq, Default, Hash)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub enum ReasoningSummaryFormat {
     #[default]
     None,
