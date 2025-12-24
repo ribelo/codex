@@ -662,7 +662,7 @@ impl Session {
             config.model_provider.name.as_str(),
             config.model_reasoning_effort,
             config.model_reasoning_summary,
-            config.model_context_window,
+            Some(config.model_context_window),
             config.model_auto_compact_token_limit,
             config.approval_policy,
             config.sandbox_policy.clone(),
@@ -1322,9 +1322,7 @@ impl Session {
                 total_tokens: estimated_total_tokens.max(0),
             };
 
-            if info.model_context_window.is_none() {
-                info.model_context_window = Some(turn_context.client.get_model_context_window());
-            }
+            info.model_context_window = Some(turn_context.client.get_model_context_window());
 
             state.set_token_info(Some(info));
         }
@@ -2882,7 +2880,7 @@ mod tests {
     use super::*;
     use crate::CodexAuth;
     use crate::config::ConfigOverrides;
-    use crate::config::ConfigToml;
+
     use crate::exec::ExecToolCallOutput;
     use crate::function_tool::FunctionCallError;
     use crate::shell::default_user_shell;
@@ -2968,7 +2966,7 @@ mod tests {
     fn set_rate_limits_retains_previous_credits() {
         let codex_home = tempfile::tempdir().expect("create temp dir");
         let config = Config::load_from_base_config_with_overrides(
-            ConfigToml::default(),
+            crate::config::test_config_toml(),
             ConfigOverrides::default(),
             codex_home.path().to_path_buf(),
         )
@@ -3046,7 +3044,7 @@ mod tests {
     fn set_rate_limits_updates_plan_type_when_present() {
         let codex_home = tempfile::tempdir().expect("create temp dir");
         let config = Config::load_from_base_config_with_overrides(
-            ConfigToml::default(),
+            crate::config::test_config_toml(),
             ConfigOverrides::default(),
             codex_home.path().to_path_buf(),
         )
@@ -3256,7 +3254,7 @@ mod tests {
         let (tx_event, _rx_event) = async_channel::unbounded();
         let codex_home = tempfile::tempdir().expect("create temp dir");
         let config = Config::load_from_base_config_with_overrides(
-            ConfigToml::default(),
+            crate::config::test_config_toml(),
             ConfigOverrides::default(),
             codex_home.path().to_path_buf(),
         )
@@ -3347,7 +3345,7 @@ mod tests {
         let (tx_event, rx_event) = async_channel::unbounded();
         let codex_home = tempfile::tempdir().expect("create temp dir");
         let config = Config::load_from_base_config_with_overrides(
-            ConfigToml::default(),
+            crate::config::test_config_toml(),
             ConfigOverrides::default(),
             codex_home.path().to_path_buf(),
         )

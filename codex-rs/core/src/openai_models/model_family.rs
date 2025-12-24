@@ -100,11 +100,12 @@ impl ModelFamily {
         if let Some(reasoning_summary_format) = config.model_reasoning_summary_format.as_ref() {
             self.reasoning_summary_format = reasoning_summary_format.clone();
         }
-        if let Some(context_window) = config.model_context_window {
-            self.context_window = context_window;
-        }
+        self.context_window = config.model_context_window;
         if let Some(auto_compact_token_limit) = config.model_auto_compact_token_limit {
             self.auto_compact_token_limit = auto_compact_token_limit;
+        } else {
+            // Recalculate auto_compact_token_limit as 90% of the new context window
+            self.auto_compact_token_limit = (config.model_context_window * 9) / 10;
         }
         self
     }

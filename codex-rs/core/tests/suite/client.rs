@@ -1332,8 +1332,8 @@ async fn token_count_includes_rate_limits_snapshot() {
                     "reasoning_output_tokens": 0,
                     "total_tokens": 123
                 },
-                // Default model is gpt-5.1-codex-max in tests → 95% usable context window
-                "model_context_window": 258400
+                // Test config sets model_context_window = 128000, effective = 128000 * 95% = 121600
+                "model_context_window": 121600
             },
             "rate_limits": {
                 "primary": {
@@ -1463,7 +1463,8 @@ async fn context_window_error_sets_total_tokens_to_model_window() -> anyhow::Res
     skip_if_no_network!(Ok(()));
     let server = MockServer::start().await;
 
-    const EFFECTIVE_CONTEXT_WINDOW: i64 = (272_000 * 95) / 100;
+    const MODEL_CONTEXT_WINDOW: i64 = 272_000;
+    const EFFECTIVE_CONTEXT_WINDOW: i64 = (MODEL_CONTEXT_WINDOW * 95) / 100;
 
     mount_sse_once_match(
         &server,
@@ -1486,7 +1487,7 @@ async fn context_window_error_sets_total_tokens_to_model_window() -> anyhow::Res
     let TestCodex { codex, .. } = test_codex()
         .with_config(|config| {
             config.model = Some("gpt-5.1".to_string());
-            config.model_context_window = Some(272_000);
+            config.model_context_window = MODEL_CONTEXT_WINDOW;
         })
         .build(&server)
         .await?;

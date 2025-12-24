@@ -293,7 +293,7 @@ mod tests {
     use crate::auth::AuthCredentialsStoreMode;
     use crate::config::Config;
     use crate::config::ConfigOverrides;
-    use crate::config::ConfigToml;
+
     use crate::features::Feature;
     use crate::model_provider_info::WireApi;
     use codex_protocol::openai_models::ModelsResponse;
@@ -357,7 +357,7 @@ mod tests {
 
         let codex_home = tempdir().expect("temp dir");
         let mut config = Config::load_from_base_config_with_overrides(
-            ConfigToml::default(),
+            crate::config::test_config_toml(),
             ConfigOverrides::default(),
             codex_home.path().to_path_buf(),
         )
@@ -406,7 +406,7 @@ mod tests {
 
         let codex_home = tempdir().expect("temp dir");
         let mut config = Config::load_from_base_config_with_overrides(
-            ConfigToml::default(),
+            crate::config::test_config_toml(),
             ConfigOverrides::default(),
             codex_home.path().to_path_buf(),
         )
@@ -462,7 +462,7 @@ mod tests {
 
         let codex_home = tempdir().expect("temp dir");
         let mut config = Config::load_from_base_config_with_overrides(
-            ConfigToml::default(),
+            crate::config::test_config_toml(),
             ConfigOverrides::default(),
             codex_home.path().to_path_buf(),
         )

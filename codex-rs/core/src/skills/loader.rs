@@ -286,7 +286,7 @@ fn extract_frontmatter(contents: &str) -> Option<String> {
 mod tests {
     use super::*;
     use crate::config::ConfigOverrides;
-    use crate::config::ConfigToml;
+
     use pretty_assertions::assert_eq;
     use std::path::Path;
     use std::process::Command;
@@ -294,7 +294,7 @@ mod tests {
 
     fn make_config(codex_home: &TempDir) -> Config {
         let mut config = Config::load_from_base_config_with_overrides(
-            ConfigToml::default(),
+            crate::config::test_config_toml(),
             ConfigOverrides::default(),
             codex_home.path().to_path_buf(),
         )

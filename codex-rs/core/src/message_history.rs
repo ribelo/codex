@@ -403,7 +403,7 @@ mod tests {
     use super::*;
     use crate::config::Config;
     use crate::config::ConfigOverrides;
-    use crate::config::ConfigToml;
+
     use codex_protocol::ConversationId;
     use pretty_assertions::assert_eq;
     use std::fs::File;
@@ -494,7 +494,7 @@ mod tests {
         let codex_home = TempDir::new().expect("create temp dir");
 
         let mut config = Config::load_from_base_config_with_overrides(
-            ConfigToml::default(),
+            crate::config::test_config_toml(),
             ConfigOverrides::default(),
             codex_home.path().to_path_buf(),
         )
@@ -542,7 +542,7 @@ mod tests {
         let codex_home = TempDir::new().expect("create temp dir");
 
         let mut config = Config::load_from_base_config_with_overrides(
-            ConfigToml::default(),
+            crate::config::test_config_toml(),
             ConfigOverrides::default(),
             codex_home.path().to_path_buf(),
         )

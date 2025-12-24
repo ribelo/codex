@@ -1876,7 +1876,7 @@ async fn auto_compact_triggers_after_function_call_over_95_percent_usage() {
     let mut config = load_default_config_for_test(&home);
     config.model_provider = model_provider;
     set_test_compact_prompt(&mut config);
-    config.model_context_window = Some(context_window);
+    config.model_context_window = context_window;
     config.model_auto_compact_token_limit = Some(limit);
 
     let codex = ConversationManager::with_models_provider(

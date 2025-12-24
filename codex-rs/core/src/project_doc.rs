@@ -238,7 +238,7 @@ fn merge_project_docs_with_skills(
 mod tests {
     use super::*;
     use crate::config::ConfigOverrides;
-    use crate::config::ConfigToml;
+
     use crate::skills::load_skills;
     use std::fs;
     use std::path::PathBuf;
@@ -252,7 +252,7 @@ mod tests {
     fn make_config(root: &TempDir, limit: usize, instructions: Option<&str>) -> Config {
         let codex_home = TempDir::new().unwrap();
         let mut config = Config::load_from_base_config_with_overrides(
-            ConfigToml::default(),
+            crate::config::test_config_toml(),
             ConfigOverrides::default(),
             codex_home.path().to_path_buf(),
         )

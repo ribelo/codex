@@ -1911,6 +1911,18 @@ impl ChatWidget {
     }
 
     fn flush_active_cell(&mut self) {
+        // Don't flush an in-progress ExecCell - it should stay active until the command completes.
+        // Flushing it early would create a static "Running" snapshot in history, then a separate
+        // "Ran" cell when the command finishes.
+        if let Some(exec_cell) = self
+            .active_cell
+            .as_ref()
+            .and_then(|c| c.as_any().downcast_ref::<ExecCell>())
+            && exec_cell.is_active()
+        {
+            return;
+        }
+
         if let Some(active) = self.active_cell.take() {
             self.needs_final_message_separator = true;
             self.app_event_tx.send(AppEvent::InsertHistoryCell(active));

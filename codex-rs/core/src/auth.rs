@@ -1452,7 +1452,7 @@ mod tests {
     use crate::auth::storage::get_auth_file;
     use crate::config::Config;
     use crate::config::ConfigOverrides;
-    use crate::config::ConfigToml;
+
     use crate::token_data::IdTokenInfo;
     use crate::token_data::KnownPlan as InternalKnownPlan;
     use crate::token_data::PlanType as InternalPlanType;
@@ -1746,7 +1746,7 @@ mod tests {
         forced_chatgpt_workspace_id: Option<String>,
     ) -> Config {
         let mut config = Config::load_from_base_config_with_overrides(
-            ConfigToml::default(),
+            crate::config::test_config_toml(),
             ConfigOverrides::default(),
             codex_home.to_path_buf(),
         )

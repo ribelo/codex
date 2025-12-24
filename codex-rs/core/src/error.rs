@@ -137,6 +137,9 @@ pub enum CodexErr {
     #[error("internal error; agent loop died unexpectedly")]
     InternalAgentDied,
 
+    #[error("Missing field: {0}")]
+    MissingField(String),
+
     #[error("Configuration error: {0}")]
     ConfigError(String),
 

@@ -77,11 +77,19 @@ pub const CONFIG_TOML_FILE: &str = "config.toml";
 pub(crate) fn test_config() -> Config {
     let codex_home = tempdir().expect("create temp dir");
     Config::load_from_base_config_with_overrides(
-        ConfigToml::default(),
+        test_config_toml(),
         ConfigOverrides::default(),
         codex_home.path().to_path_buf(),
     )
     .expect("load default test config")
+}
+
+#[cfg(test)]
+pub(crate) fn test_config_toml() -> ConfigToml {
+    ConfigToml {
+        model_context_window: Some(128_000),
+        ..Default::default()
+    }
 }
 
 /// Application configuration loaded from disk and merged with overrides.
@@ -97,7 +105,7 @@ pub struct Config {
     pub review_model: String,
 
     /// Size of the context window for the model, in tokens.
-    pub model_context_window: Option<i64>,
+    pub model_context_window: i64,
 
     /// Token usage threshold triggering auto-compaction of conversation history.
     pub model_auto_compact_token_limit: Option<i64>,
@@ -1175,7 +1183,13 @@ impl Config {
             review_model,
             model_context_window: config_profile
                 .model_context_window
-                .or(cfg.model_context_window),
+                .or(cfg.model_context_window)
+                .ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "model_context_window must be set in config.toml or selected profile",
+                    )
+                })?,
             model_auto_compact_token_limit: cfg.model_auto_compact_token_limit,
             model_provider_id,
             model_provider,
@@ -1586,7 +1600,7 @@ trust_level = "trusted"
         };
 
         let config = Config::load_from_base_config_with_overrides(
-            ConfigToml::default(),
+            test_config_toml(),
             overrides,
             temp_dir.path().to_path_buf(),
         )?;
@@ -1624,7 +1638,7 @@ trust_level = "trusted"
     #[test]
     fn config_defaults_to_file_cli_auth_store_mode() -> std::io::Result<()> {
         let codex_home = TempDir::new()?;
-        let cfg = ConfigToml::default();
+        let cfg = test_config_toml();
 
         let config = Config::load_from_base_config_with_overrides(
             cfg,
@@ -1645,6 +1659,7 @@ trust_level = "trusted"
         let codex_home = TempDir::new()?;
         let cfg = ConfigToml {
             cli_auth_credentials_store: Some(AuthCredentialsStoreMode::Keyring),
+            model_context_window: Some(128_000),
             ..Default::default()
         };
 
@@ -1665,7 +1680,7 @@ trust_level = "trusted"
     #[test]
     fn config_defaults_to_auto_oauth_store_mode() -> std::io::Result<()> {
         let codex_home = TempDir::new()?;
-        let cfg = ConfigToml::default();
+        let cfg = test_config_toml();
 
         let config = Config::load_from_base_config_with_overrides(
             cfg,
@@ -1695,6 +1710,7 @@ trust_level = "trusted"
         let cfg = ConfigToml {
             profiles,
             profile: Some("work".to_string()),
+            model_context_window: Some(128_000),
             ..Default::default()
         };
 
@@ -1724,6 +1740,7 @@ trust_level = "trusted"
             profiles,
             profile: Some("work".to_string()),
             sandbox_mode: Some(SandboxMode::ReadOnly),
+            model_context_window: Some(128_000),
             ..Default::default()
         };
 
@@ -1756,6 +1773,7 @@ trust_level = "trusted"
         let cfg = ConfigToml {
             profiles,
             profile: Some("work".to_string()),
+            model_context_window: Some(128_000),
             ..Default::default()
         };
 
@@ -1791,6 +1809,7 @@ trust_level = "trusted"
         entries.insert("apply_patch_freeform".to_string(), false);
         let cfg = ConfigToml {
             features: Some(crate::features::FeaturesToml { entries }),
+            model_context_window: Some(128_000),
             ..Default::default()
         };
 
@@ -1813,6 +1832,7 @@ trust_level = "trusted"
             experimental_use_unified_exec_tool: Some(true),
             experimental_use_rmcp_client: Some(true),
             experimental_use_freeform_apply_patch: Some(true),
+            model_context_window: Some(128_000),
             ..Default::default()
         };
 
@@ -1839,6 +1859,7 @@ trust_level = "trusted"
         let codex_home = TempDir::new()?;
         let cfg = ConfigToml {
             mcp_oauth_credentials_store: Some(OAuthCredentialsStoreMode::File),
+            model_context_window: Some(128_000),
             ..Default::default()
         };
 
@@ -1862,7 +1883,10 @@ trust_level = "trusted"
         let managed_path = codex_home.path().join("managed_config.toml");
         let config_path = codex_home.path().join(CONFIG_TOML_FILE);
 
-        std::fs::write(&config_path, "mcp_oauth_credentials_store = \"file\"\n")?;
+        std::fs::write(
+            &config_path,
+            "mcp_oauth_credentials_store = \"file\"\nmodel_context_window = 128000\n",
+        )?;
         std::fs::write(&managed_path, "mcp_oauth_credentials_store = \"keyring\"\n")?;
 
         let overrides = crate::config_loader::LoaderOverrides {
@@ -2789,7 +2813,7 @@ model = "gpt-5.1-codex"
         };
 
         let config = Config::load_from_base_config_with_overrides(
-            ConfigToml::default(),
+            test_config_toml(),
             overrides,
             codex_home.path().to_path_buf(),
         )?;
@@ -2813,6 +2837,7 @@ model = "gpt-5.1-codex"
 
         let cfg = ConfigToml {
             experimental_compact_prompt_file: Some(PathBuf::from("compact_prompt.txt")),
+            model_context_window: Some(128_000),
             ..Default::default()
         };
 
@@ -2839,6 +2864,7 @@ model = "gpt-5.1-codex"
         let toml = r#"
 model = "o3"
 approval_policy = "untrusted"
+model_context_window = 128000
 
 # Can be used to determine which profile to use if not specified by
 # `ConfigOverrides`.
@@ -2966,7 +2992,7 @@ model_verbosity = "high"
                     "zdr".to_string()
                 ],
                 review_model: OPENAI_DEFAULT_REVIEW_MODEL.to_string(),
-                model_context_window: None,
+                model_context_window: 128000,
                 model_auto_compact_token_limit: None,
                 handoff: HandoffConfig::default(),
                 model_provider_id: "openai".to_string(),
@@ -3050,7 +3076,7 @@ model_verbosity = "high"
                 "zdr".to_string(),
             ],
             review_model: OPENAI_DEFAULT_REVIEW_MODEL.to_string(),
-            model_context_window: None,
+            model_context_window: 128000,
             model_auto_compact_token_limit: None,
             handoff: HandoffConfig::default(),
             model_provider_id: "openai-chat-completions".to_string(),
@@ -3149,7 +3175,7 @@ model_verbosity = "high"
                 "zdr".to_string(),
             ],
             review_model: OPENAI_DEFAULT_REVIEW_MODEL.to_string(),
-            model_context_window: None,
+            model_context_window: 128000,
             model_auto_compact_token_limit: None,
             handoff: HandoffConfig::default(),
             model_provider_id: "openai".to_string(),
@@ -3234,7 +3260,7 @@ model_verbosity = "high"
                 "zdr".to_string(),
             ],
             review_model: OPENAI_DEFAULT_REVIEW_MODEL.to_string(),
-            model_context_window: None,
+            model_context_window: 128000,
             model_auto_compact_token_limit: None,
             handoff: HandoffConfig::default(),
             model_provider_id: "openai".to_string(),
@@ -3456,6 +3482,7 @@ trust_level = "untrusted"
 
         let cfg = ConfigToml {
             projects: Some(projects),
+            model_context_window: Some(128_000),
             ..Default::default()
         };
 

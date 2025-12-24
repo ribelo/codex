@@ -601,7 +601,6 @@ fn resolve_max_output_tokens(
 fn effective_context_window(config: &Config, model_family: &ModelFamily) -> i64 {
     config
         .model_context_window
-        .unwrap_or(model_family.context_window)
         .saturating_mul(model_family.effective_context_window_percent)
         / 100
 }
