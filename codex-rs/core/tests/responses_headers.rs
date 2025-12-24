@@ -10,7 +10,6 @@ use codex_core::Prompt;
 use codex_core::ResponseEvent;
 use codex_core::ResponseItem;
 use codex_core::WireApi;
-use codex_core::config::types::ReasoningSummaryFormat;
 use codex_core::openai_models::models_manager::ModelsManager;
 use codex_otel::otel_event_manager::OtelEventManager;
 use codex_protocol::ConversationId;
@@ -245,7 +244,6 @@ async fn responses_respects_model_family_overrides_from_config() {
     config.model = Some("gpt-3.5-turbo".to_string());
     config.model_provider_id = provider.name.clone();
     config.model_provider = provider.clone();
-    config.model_reasoning_summary_format = Some(ReasoningSummaryFormat::Experimental);
     config.model_reasoning_summary = ReasoningSummary::Detailed;
     let effort = config.model_reasoning_effort;
     let summary = config.model_reasoning_summary;

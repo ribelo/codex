@@ -9,7 +9,6 @@ use crate::config::types::Notifications;
 use crate::config::types::OtelConfig;
 use crate::config::types::OtelConfigToml;
 use crate::config::types::OtelExporterKind;
-use crate::config::types::ReasoningSummaryFormat;
 use crate::config::types::SandboxWorkspaceWrite;
 use crate::config::types::ShellEnvironmentPolicy;
 use crate::config::types::ShellEnvironmentPolicyToml;
@@ -245,9 +244,6 @@ pub struct Config {
     /// If not "none", the value to use for `reasoning.summary` when making a
     /// request using the Responses API.
     pub model_reasoning_summary: ReasoningSummary,
-
-    /// Optional override to force reasoning summary format for the configured model.
-    pub model_reasoning_summary_format: Option<ReasoningSummaryFormat>,
 
     /// Optional verbosity control for GPT-5 models (Responses API `text.verbosity`).
     pub model_verbosity: Option<Verbosity>,
@@ -674,9 +670,6 @@ pub struct ConfigToml {
     pub model_reasoning_summary: Option<ReasoningSummary>,
     /// Optional verbosity control for GPT-5 models (Responses API `text.verbosity`).
     pub model_verbosity: Option<Verbosity>,
-
-    /// Override to force reasoning summary format for the configured model.
-    pub model_reasoning_summary_format: Option<ReasoningSummaryFormat>,
 
     /// Base URL for requests to ChatGPT (as opposed to the OpenAI API).
     pub chatgpt_base_url: Option<String>,
@@ -1231,9 +1224,6 @@ impl Config {
                 .model_reasoning_summary
                 .or(cfg.model_reasoning_summary)
                 .unwrap_or_default(),
-            model_reasoning_summary_format: config_profile
-                .model_reasoning_summary_format
-                .or(cfg.model_reasoning_summary_format),
             model_verbosity: config_profile.model_verbosity.or(cfg.model_verbosity),
             chatgpt_base_url: config_profile
                 .chatgpt_base_url
@@ -3002,7 +2992,6 @@ model_verbosity = "high"
                 codex_linux_sandbox_exe: None,
                 model_reasoning_effort: Some(ReasoningEffort::High),
                 model_reasoning_summary: ReasoningSummary::Detailed,
-                model_reasoning_summary_format: None,
                 model_verbosity: None,
                 chatgpt_base_url: "https://chatgpt.com/backend-api/".to_string(),
                 base_instructions: None,
@@ -3084,7 +3073,6 @@ model_verbosity = "high"
             codex_linux_sandbox_exe: None,
             model_reasoning_effort: None,
             model_reasoning_summary: ReasoningSummary::default(),
-            model_reasoning_summary_format: None,
             model_verbosity: None,
             chatgpt_base_url: "https://chatgpt.com/backend-api/".to_string(),
             base_instructions: None,
@@ -3181,7 +3169,6 @@ model_verbosity = "high"
             codex_linux_sandbox_exe: None,
             model_reasoning_effort: None,
             model_reasoning_summary: ReasoningSummary::default(),
-            model_reasoning_summary_format: None,
             model_verbosity: None,
             chatgpt_base_url: "https://chatgpt.com/backend-api/".to_string(),
             base_instructions: None,
@@ -3264,7 +3251,6 @@ model_verbosity = "high"
             codex_linux_sandbox_exe: None,
             model_reasoning_effort: Some(ReasoningEffort::High),
             model_reasoning_summary: ReasoningSummary::Detailed,
-            model_reasoning_summary_format: None,
             model_verbosity: Some(Verbosity::High),
             chatgpt_base_url: "https://chatgpt.com/backend-api/".to_string(),
             base_instructions: None,

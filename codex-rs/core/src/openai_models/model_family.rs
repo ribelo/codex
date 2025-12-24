@@ -3,7 +3,6 @@ use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ReasoningEffort;
 
 use crate::config::Config;
-use crate::config::types::ReasoningSummaryFormat;
 use crate::tools::handlers::apply_patch::ApplyPatchToolType;
 use crate::truncate::DEFAULT_MCP_TOOL_OUTPUT_BYTES;
 use crate::truncate::DEFAULT_TOOL_OUTPUT_BYTES;
@@ -50,8 +49,8 @@ pub struct ModelFamily {
     // The reasoning effort to use for this model family when none is explicitly chosen.
     pub default_reasoning_effort: Option<ReasoningEffort>,
 
-    // Define if we need a special handling of reasoning summary
-    pub reasoning_summary_format: ReasoningSummaryFormat,
+    /// Whether to parse the reasoning summary header (e.g. "## Summary\n\n").
+    pub parse_reasoning_header: bool,
 
     /// Present if the model performs better when `apply_patch` is provided as
     /// a tool call instead of just a bash command
@@ -94,9 +93,6 @@ pub struct ModelFamily {
 
 impl ModelFamily {
     pub fn with_config_overrides(mut self, config: &Config) -> Self {
-        if let Some(reasoning_summary_format) = config.model_reasoning_summary_format.as_ref() {
-            self.reasoning_summary_format = reasoning_summary_format.clone();
-        }
         self.context_window = config.model_context_window;
         if let Some(auto_compact_token_limit) = config.model_auto_compact_token_limit {
             self.auto_compact_token_limit = auto_compact_token_limit;
@@ -139,7 +135,7 @@ macro_rules! model_family {
             context_window: CONTEXT_WINDOW_272K,
             auto_compact_token_limit: (CONTEXT_WINDOW_272K * 9) / 10,
             supports_reasoning_summaries: false,
-            reasoning_summary_format: ReasoningSummaryFormat::None,
+            parse_reasoning_header: false,
             apply_patch_tool_type: None,
             base_instructions: BASE_INSTRUCTIONS.to_string(),
             experimental_supported_tools: Vec::new(),
@@ -217,7 +213,7 @@ pub(in crate::openai_models) fn find_family_for_model(slug: &str) -> ModelFamily
         model_family!(
             slug, slug,
             supports_reasoning_summaries: true,
-            reasoning_summary_format: ReasoningSummaryFormat::Experimental,
+            parse_reasoning_header: true,
             base_instructions: GPT_5_1_INSTRUCTIONS.to_string(),
             apply_patch_tool_type: Some(ApplyPatchToolType::Freeform),
             experimental_supported_tools: vec![
@@ -238,7 +234,7 @@ pub(in crate::openai_models) fn find_family_for_model(slug: &str) -> ModelFamily
         model_family!(
             slug, slug,
             supports_reasoning_summaries: true,
-            reasoning_summary_format: ReasoningSummaryFormat::Experimental,
+            parse_reasoning_header: true,
             base_instructions: GPT_5_1_CODEX_MAX_INSTRUCTIONS.to_string(),
             apply_patch_tool_type: Some(ApplyPatchToolType::Freeform),
             shell_type: ConfigShellToolType::ShellCommand,
@@ -266,7 +262,7 @@ pub(in crate::openai_models) fn find_family_for_model(slug: &str) -> ModelFamily
         model_family!(
             slug, slug,
             supports_reasoning_summaries: true,
-            reasoning_summary_format: ReasoningSummaryFormat::Experimental,
+            parse_reasoning_header: true,
             base_instructions: GPT_5_1_CODEX_MAX_INSTRUCTIONS.to_string(),
             apply_patch_tool_type: Some(ApplyPatchToolType::Freeform),
             shell_type: ConfigShellToolType::ShellCommand,
@@ -278,7 +274,7 @@ pub(in crate::openai_models) fn find_family_for_model(slug: &str) -> ModelFamily
         model_family!(
             slug, slug,
             supports_reasoning_summaries: true,
-            reasoning_summary_format: ReasoningSummaryFormat::Experimental,
+            parse_reasoning_header: true,
             base_instructions: GPT_5_1_CODEX_MAX_INSTRUCTIONS.to_string(),
             apply_patch_tool_type: Some(ApplyPatchToolType::Freeform),
             shell_type: ConfigShellToolType::ShellCommand,
@@ -291,7 +287,7 @@ pub(in crate::openai_models) fn find_family_for_model(slug: &str) -> ModelFamily
         model_family!(
             slug, slug,
             supports_reasoning_summaries: true,
-            reasoning_summary_format: ReasoningSummaryFormat::Experimental,
+            parse_reasoning_header: true,
             base_instructions: GPT_5_1_INSTRUCTIONS.to_string(),
             apply_patch_tool_type: Some(ApplyPatchToolType::Freeform),
             shell_type: ConfigShellToolType::ShellCommand,
@@ -346,7 +342,7 @@ pub(in crate::openai_models) fn find_family_for_model(slug: &str) -> ModelFamily
                 slug, "gemini",
                 supports_reasoning_summaries: supports_reasoning,
                 default_reasoning_effort: supports_reasoning.then_some(ReasoningEffort::High),
-                reasoning_summary_format: ReasoningSummaryFormat::None,
+                parse_reasoning_header: false,
                 shell_type: ConfigShellToolType::ShellCommand,
                 base_instructions: PRAXIS_INSTRUCTIONS.to_string(),
                 apply_patch_tool_type: Some(ApplyPatchToolType::Function),
@@ -358,7 +354,7 @@ pub(in crate::openai_models) fn find_family_for_model(slug: &str) -> ModelFamily
                 slug, "gemini",
                 supports_reasoning_summaries: supports_reasoning,
                 default_reasoning_effort: supports_reasoning.then_some(ReasoningEffort::Medium),
-                reasoning_summary_format: ReasoningSummaryFormat::None,
+                parse_reasoning_header: false,
                 shell_type: ConfigShellToolType::ShellCommand,
                 base_instructions: PRAXIS_INSTRUCTIONS.to_string(),
                 apply_patch_tool_type: Some(ApplyPatchToolType::Function),
@@ -380,7 +376,7 @@ fn derive_default_model_family(model: &str) -> ModelFamily {
         context_window: CONTEXT_WINDOW_272K,
         auto_compact_token_limit: (CONTEXT_WINDOW_272K * 9) / 10,
         supports_reasoning_summaries: false,
-        reasoning_summary_format: ReasoningSummaryFormat::None,
+        parse_reasoning_header: false,
         // let's add apply patch to every model by default
         apply_patch_tool_type: Some(ApplyPatchToolType::Function),
         base_instructions: PRAXIS_INSTRUCTIONS.to_string(),

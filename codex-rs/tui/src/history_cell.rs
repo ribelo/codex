@@ -26,7 +26,6 @@ use base64::Engine;
 use codex_common::format_env_display::format_env_display;
 use codex_core::config::Config;
 use codex_core::config::types::McpServerTransportConfig;
-use codex_core::config::types::ReasoningSummaryFormat;
 use codex_core::protocol::FileChange;
 use codex_core::protocol::McpAuthStatus;
 use codex_core::protocol::McpInvocation;
@@ -2060,9 +2059,9 @@ pub(crate) fn new_view_image_tool_call(path: PathBuf, cwd: &Path) -> PlainHistor
 
 pub(crate) fn new_reasoning_summary_block(
     full_reasoning_buffer: String,
-    reasoning_summary_format: ReasoningSummaryFormat,
+    parse_header: bool,
 ) -> Box<dyn HistoryCell> {
-    if reasoning_summary_format == ReasoningSummaryFormat::Experimental {
+    if parse_header {
         // Experimental format is following:
         // ** header **
         //
@@ -2961,101 +2960,6 @@ mod tests {
         let rendered = render_lines(&lines).join("\n");
         insta::assert_snapshot!(rendered);
     }
-    #[test]
-    fn reasoning_summary_block() {
-        let reasoning_format = ReasoningSummaryFormat::Experimental;
-        let cell = new_reasoning_summary_block(
-            "**High level reasoning**\n\nDetailed reasoning goes here.".to_string(),
-            reasoning_format,
-        );
-
-        let rendered_display = render_lines(&cell.display_lines(80));
-        assert_eq!(rendered_display, vec!["• Detailed reasoning goes here."]);
-
-        let rendered_transcript = render_transcript(cell.as_ref());
-        assert_eq!(rendered_transcript, vec!["• Detailed reasoning goes here."]);
-    }
-
-    #[test]
-    fn reasoning_summary_block_returns_reasoning_cell_when_feature_disabled() {
-        let reasoning_format = ReasoningSummaryFormat::Experimental;
-        let cell = new_reasoning_summary_block(
-            "Detailed reasoning goes here.".to_string(),
-            reasoning_format,
-        );
-
-        let rendered = render_transcript(cell.as_ref());
-        assert_eq!(rendered, vec!["• Detailed reasoning goes here."]);
-    }
-
-    #[test]
-    fn reasoning_summary_block_respects_config_overrides() {
-        let mut config = test_config();
-        config.model = Some("gpt-3.5-turbo".to_string());
-        config.model_reasoning_summary_format = Some(ReasoningSummaryFormat::Experimental);
-        let model_family =
-            ModelsManager::construct_model_family_offline(&config.model.clone().unwrap(), &config);
-        assert_eq!(
-            model_family.reasoning_summary_format,
-            ReasoningSummaryFormat::Experimental
-        );
-
-        let cell = new_reasoning_summary_block(
-            "**High level reasoning**\n\nDetailed reasoning goes here.".to_string(),
-            model_family.reasoning_summary_format,
-        );
-
-        let rendered_display = render_lines(&cell.display_lines(80));
-        assert_eq!(rendered_display, vec!["• Detailed reasoning goes here."]);
-    }
-
-    #[test]
-    fn reasoning_summary_block_falls_back_when_header_is_missing() {
-        let reasoning_format = ReasoningSummaryFormat::Experimental;
-        let cell = new_reasoning_summary_block(
-            "**High level reasoning without closing".to_string(),
-            reasoning_format,
-        );
-
-        let rendered = render_transcript(cell.as_ref());
-        assert_eq!(rendered, vec!["• **High level reasoning without closing"]);
-    }
-
-    #[test]
-    fn reasoning_summary_block_falls_back_when_summary_is_missing() {
-        let reasoning_format = ReasoningSummaryFormat::Experimental;
-        let cell = new_reasoning_summary_block(
-            "**High level reasoning without closing**".to_string(),
-            reasoning_format.clone(),
-        );
-
-        let rendered = render_transcript(cell.as_ref());
-        assert_eq!(rendered, vec!["• High level reasoning without closing"]);
-
-        let cell = new_reasoning_summary_block(
-            "**High level reasoning without closing**\n\n  ".to_string(),
-            reasoning_format,
-        );
-
-        let rendered = render_transcript(cell.as_ref());
-        assert_eq!(rendered, vec!["• High level reasoning without closing"]);
-    }
-
-    #[test]
-    fn reasoning_summary_block_splits_header_and_summary_when_present() {
-        let reasoning_format = ReasoningSummaryFormat::Experimental;
-        let cell = new_reasoning_summary_block(
-            "**High level plan**\n\nWe should fix the bug next.".to_string(),
-            reasoning_format,
-        );
-
-        let rendered_display = render_lines(&cell.display_lines(80));
-        assert_eq!(rendered_display, vec!["• We should fix the bug next."]);
-
-        let rendered_transcript = render_transcript(cell.as_ref());
-        assert_eq!(rendered_transcript, vec!["• We should fix the bug next."]);
-    }
-
     #[test]
     fn deprecation_notice_renders_summary_with_details() {
         let cell = new_deprecation_notice(

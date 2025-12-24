@@ -547,7 +547,7 @@ impl ChatWidget {
 
     fn on_agent_reasoning_final(&mut self) {
         let streamed_reasoning = self.finalize_reasoning_stream();
-        let reasoning_summary_format = self.get_model_family().reasoning_summary_format;
+        let parse_reasoning_header = self.get_model_family().parse_reasoning_header;
 
         // At the end of a reasoning block, record transcript-only content.
         self.full_reasoning_buffer.push_str(&self.reasoning_buffer);
@@ -557,7 +557,7 @@ impl ChatWidget {
         if !streamed_reasoning && !self.reasoning_buffer.is_empty() {
             let cell = history_cell::new_reasoning_summary_block(
                 self.reasoning_buffer.clone(),
-                reasoning_summary_format,
+                parse_reasoning_header,
             );
             self.add_boxed_history(cell);
         }
