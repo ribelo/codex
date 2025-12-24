@@ -440,3 +440,12 @@ When upstream shows changes to files like these, **skip them**:
 - `codex-rs/lmstudio/` - we don't use this
 - `codex-rs/execpolicy-legacy/` - we removed legacy execpolicy
 - Any `*_test.rs` files for code we don't have
+
+## Breaking Changes Policy
+
+**We do NOT care about backward compatibility.** This is a personal fork. We break things freely.
+
+- Do NOT add deprecated fields, aliases, or compatibility shims
+- Do NOT preserve old behavior "just in case"
+- If we remove something, it's gone - users adapt or it breaks
+- Breaking changes are FINE - just document what changed in the commit message
