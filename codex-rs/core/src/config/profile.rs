@@ -4,7 +4,6 @@ use toml::Table as TomlTable;
 
 use crate::config::types::ReasoningSummaryFormat;
 use crate::protocol::AskForApproval;
-use codex_protocol::config_types::ReasoningDisplay;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::config_types::SandboxMode;
 use codex_protocol::config_types::Verbosity;
@@ -25,7 +24,6 @@ pub struct ConfigProfile {
     pub model_reasoning_effort: Option<ReasoningEffort>,
     pub model_reasoning_summary: Option<ReasoningSummary>,
     pub model_verbosity: Option<Verbosity>,
-    pub reasoning_display: Option<ReasoningDisplay>,
     pub model_supports_reasoning_summaries: Option<bool>,
     pub model_reasoning_summary_format: Option<ReasoningSummaryFormat>,
     pub chatgpt_base_url: Option<String>,

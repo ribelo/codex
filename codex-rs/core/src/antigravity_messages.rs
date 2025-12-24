@@ -208,7 +208,6 @@ pub(crate) async fn stream_antigravity_messages(
                     stream,
                     tx_event,
                     provider.stream_idle_timeout(),
-                    config.reasoning_display,
                     otel_event_manager.clone(),
                 ));
                 return Ok(ResponseStream { rx_event });

@@ -5,7 +5,6 @@ use std::env;
 use std::time::Duration;
 
 use codex_otel::otel_event_manager::OtelEventManager;
-use codex_protocol::config_types::ReasoningDisplay;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ReasoningEffort;
@@ -496,7 +495,6 @@ pub(crate) async fn stream_gemini_messages(
                     stream,
                     tx_event,
                     provider.stream_idle_timeout(),
-                    config.reasoning_display,
                     otel_event_manager.clone(),
                 ));
                 return Ok(ResponseStream { rx_event });
@@ -1279,7 +1277,6 @@ pub(crate) async fn process_gemini_sse<S, E>(
     stream: S,
     tx_event: mpsc::Sender<Result<ResponseEvent>>,
     idle_timeout: Duration,
-    _reasoning_display: ReasoningDisplay,
     otel_event_manager: OtelEventManager,
 ) where
     S: futures::Stream<Item = std::result::Result<Bytes, E>> + Unpin + Eventsource,
@@ -1795,6 +1792,7 @@ mod tests {
     use crate::auth::AuthDotJson;
     use crate::token_data::GeminiTokenData;
     use codex_app_server_protocol::AuthMode;
+    use codex_protocol::config_types::ReasoningDisplay;
     use futures::TryStreamExt;
     use pretty_assertions::assert_eq;
     use tokio::sync::mpsc;

@@ -188,7 +188,6 @@ pub async fn run_main(
         developer_instructions: None,
         compact_prompt: None,
         include_apply_patch_tool: None,
-        reasoning_display: None,
         tools_web_search_request: None,
         additional_writable_roots: additional_dirs,
     };

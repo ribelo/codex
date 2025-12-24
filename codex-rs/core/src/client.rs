@@ -20,7 +20,6 @@ use codex_api::error::ApiError;
 use codex_app_server_protocol::AuthMode;
 use codex_otel::otel_event_manager::OtelEventManager;
 use codex_protocol::ConversationId;
-use codex_protocol::config_types::ReasoningDisplay;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
@@ -172,17 +171,11 @@ impl ModelClient {
             WireApi::Chat => {
                 let api_stream = self.stream_chat_completions(prompt).await?;
 
-                if self.config.reasoning_display == ReasoningDisplay::Raw {
-                    Ok(map_response_stream(
-                        api_stream.streaming_mode(),
-                        self.otel_event_manager.clone(),
-                    ))
-                } else {
-                    Ok(map_response_stream(
-                        api_stream.aggregate(),
-                        self.otel_event_manager.clone(),
-                    ))
-                }
+                // Always use streaming mode for raw reasoning display
+                Ok(map_response_stream(
+                    api_stream.streaming_mode(),
+                    self.otel_event_manager.clone(),
+                ))
             }
         }
     }

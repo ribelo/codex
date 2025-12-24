@@ -35,7 +35,6 @@ use codex_app_server_protocol::Tools;
 use codex_app_server_protocol::UserSavedConfig;
 use codex_git::GhostSnapshotConfig;
 use codex_protocol::config_types::ForcedLoginMethod;
-use codex_protocol::config_types::ReasoningDisplay;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::config_types::SandboxMode;
 use codex_protocol::config_types::TrustLevel;
@@ -133,8 +132,6 @@ pub struct Config {
     pub forced_auto_mode_downgraded_on_windows: bool,
 
     pub shell_environment_policy: ShellEnvironmentPolicy,
-
-    pub reasoning_display: ReasoningDisplay,
 
     /// User-provided instructions from AGENTS.md.
     pub user_instructions: Option<String>,
@@ -676,8 +673,6 @@ pub struct ConfigToml {
     #[serde(default)]
     pub handoff: Option<HandoffConfig>,
 
-    pub reasoning_display: Option<ReasoningDisplay>,
-
     pub model_reasoning_effort: Option<ReasoningEffort>,
     pub model_reasoning_summary: Option<ReasoningSummary>,
     /// Optional verbosity control for GPT-5 models (Responses API `text.verbosity`).
@@ -914,7 +909,6 @@ pub struct ConfigOverrides {
     pub developer_instructions: Option<String>,
     pub compact_prompt: Option<String>,
     pub include_apply_patch_tool: Option<bool>,
-    pub reasoning_display: Option<ReasoningDisplay>,
     pub tools_web_search_request: Option<bool>,
     /// Additional directories that should be treated as writable roots for this session.
     pub additional_writable_roots: Vec<PathBuf>,
@@ -944,7 +938,6 @@ impl Config {
             developer_instructions,
             compact_prompt,
             include_apply_patch_tool: include_apply_patch_tool_override,
-            reasoning_display,
             tools_web_search_request: override_tools_web_search_request,
             additional_writable_roots,
         } = overrides;
@@ -1237,10 +1230,6 @@ impl Config {
             file_opener: cfg.file_opener.unwrap_or(UriBasedFileOpener::VsCode),
             codex_linux_sandbox_exe,
 
-            reasoning_display: reasoning_display
-                .or(config_profile.reasoning_display)
-                .or(cfg.reasoning_display)
-                .unwrap_or_default(),
             model_reasoning_effort: config_profile
                 .model_reasoning_effort
                 .or(cfg.model_reasoning_effort),
@@ -3020,7 +3009,6 @@ model_verbosity = "high"
                 history: History::default(),
                 file_opener: UriBasedFileOpener::VsCode,
                 codex_linux_sandbox_exe: None,
-                reasoning_display: ReasoningDisplay::Auto,
                 model_reasoning_effort: Some(ReasoningEffort::High),
                 model_reasoning_summary: ReasoningSummary::Detailed,
                 model_supports_reasoning_summaries: None,
@@ -3104,7 +3092,6 @@ model_verbosity = "high"
             history: History::default(),
             file_opener: UriBasedFileOpener::VsCode,
             codex_linux_sandbox_exe: None,
-            reasoning_display: ReasoningDisplay::Auto,
             model_reasoning_effort: None,
             model_reasoning_summary: ReasoningSummary::default(),
             model_supports_reasoning_summaries: None,
@@ -3203,7 +3190,6 @@ model_verbosity = "high"
             history: History::default(),
             file_opener: UriBasedFileOpener::VsCode,
             codex_linux_sandbox_exe: None,
-            reasoning_display: ReasoningDisplay::Auto,
             model_reasoning_effort: None,
             model_reasoning_summary: ReasoningSummary::default(),
             model_supports_reasoning_summaries: None,
@@ -3288,7 +3274,6 @@ model_verbosity = "high"
             history: History::default(),
             file_opener: UriBasedFileOpener::VsCode,
             codex_linux_sandbox_exe: None,
-            reasoning_display: ReasoningDisplay::Auto,
             model_reasoning_effort: Some(ReasoningEffort::High),
             model_reasoning_summary: ReasoningSummary::Detailed,
             model_supports_reasoning_summaries: None,

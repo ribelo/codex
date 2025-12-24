@@ -690,7 +690,6 @@ impl Session {
             notifier: UserNotifier::new(config.notify.clone()),
             rollout: Mutex::new(Some(rollout_recorder)),
             user_shell: Arc::new(default_shell),
-            reasoning_display: config.reasoning_display,
             auth_manager: Arc::clone(&auth_manager),
             otel_event_manager,
             models_manager: Arc::clone(&models_manager),
@@ -1555,7 +1554,7 @@ impl Session {
     }
 
     fn reasoning_display(&self) -> ReasoningDisplay {
-        self.services.reasoning_display
+        ReasoningDisplay::Raw
     }
 
     async fn cancel_mcp_startup(&self) {
@@ -3293,7 +3292,6 @@ mod tests {
             notifier: UserNotifier::new(None),
             rollout: Mutex::new(None),
             user_shell: Arc::new(default_user_shell()),
-            reasoning_display: config.reasoning_display,
             auth_manager: auth_manager.clone(),
             otel_event_manager: otel_event_manager.clone(),
             models_manager,
@@ -3384,7 +3382,6 @@ mod tests {
             notifier: UserNotifier::new(None),
             rollout: Mutex::new(None),
             user_shell: Arc::new(default_user_shell()),
-            reasoning_display: config.reasoning_display,
             auth_manager: Arc::clone(&auth_manager),
             otel_event_manager: otel_event_manager.clone(),
             models_manager,

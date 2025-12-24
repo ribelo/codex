@@ -22,7 +22,6 @@ use codex_core::protocol::TurnAbortReason;
 use codex_core::protocol::TurnDiffEvent;
 use codex_core::protocol::WarningEvent;
 use codex_core::protocol::WebSearchEndEvent;
-use codex_protocol::config_types::ReasoningDisplay;
 use codex_protocol::num_format::format_with_separators;
 use owo_colors::OwoColorize;
 use owo_colors::Style;
@@ -57,7 +56,6 @@ pub(crate) struct EventProcessorWithHumanOutput {
     cyan: Style,
     yellow: Style,
 
-    reasoning_display: ReasoningDisplay,
     last_message_path: Option<PathBuf>,
     last_total_token_usage: Option<codex_core::protocol::TokenUsageInfo>,
     final_message: Option<String>,
@@ -82,7 +80,6 @@ impl EventProcessorWithHumanOutput {
                 green: Style::new().green(),
                 cyan: Style::new().cyan(),
                 yellow: Style::new().yellow(),
-                reasoning_display: config.reasoning_display,
                 last_message_path,
                 last_total_token_usage: None,
                 final_message: None,
@@ -98,7 +95,6 @@ impl EventProcessorWithHumanOutput {
                 green: Style::new(),
                 cyan: Style::new(),
                 yellow: Style::new(),
-                reasoning_display: config.reasoning_display,
                 last_message_path,
                 last_total_token_usage: None,
                 final_message: None,
@@ -258,23 +254,18 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                 // Ignore in exec mode.
             }
 
-            EventMsg::AgentReasoningSectionBreak(_) => match self.reasoning_display {
-                ReasoningDisplay::None => {
-                    return CodexStatus::Running;
-                }
-                ReasoningDisplay::Auto | ReasoningDisplay::Raw => {
-                    eprintln!();
-                }
-            },
+            EventMsg::AgentReasoningSectionBreak(_) => {
+                // Always show raw reasoning
+                eprintln!();
+            }
             EventMsg::AgentReasoningRawContent(AgentReasoningRawContentEvent { text }) => {
-                if matches!(self.reasoning_display, ReasoningDisplay::Raw) {
-                    ts_msg!(
-                        self,
-                        "{}\n{}",
-                        "thinking".style(self.italic).style(self.magenta),
-                        text,
-                    );
-                }
+                // Always show raw reasoning
+                ts_msg!(
+                    self,
+                    "{}\n{}",
+                    "thinking".style(self.italic).style(self.magenta),
+                    text,
+                );
             }
             EventMsg::AgentMessage(AgentMessageEvent { message }) => {
                 ts_msg!(
@@ -487,14 +478,9 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                 eprintln!("{unified_diff}");
             }
             EventMsg::AgentReasoning(agent_reasoning_event) => {
-                if matches!(self.reasoning_display, ReasoningDisplay::Auto) {
-                    ts_msg!(
-                        self,
-                        "{}\n{}",
-                        "thinking".style(self.italic).style(self.magenta),
-                        agent_reasoning_event.text,
-                    );
-                }
+                // With Raw display, we show raw content instead of summaries.
+                // Summarized reasoning is only shown in Auto mode, which is no longer supported.
+                let _ = agent_reasoning_event;
             }
             EventMsg::SessionConfigured(session_configured_event) => {
                 let SessionConfiguredEvent {

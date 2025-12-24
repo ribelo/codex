@@ -14,7 +14,6 @@ use codex_core::WireApi;
 use codex_core::openai_models::models_manager::ModelsManager;
 use codex_otel::otel_event_manager::OtelEventManager;
 use codex_protocol::ConversationId;
-use codex_protocol::config_types::ReasoningDisplay;
 use codex_protocol::models::ReasoningItemContent;
 use core_test_support::load_default_config_for_test;
 use core_test_support::skip_if_no_network;
@@ -68,7 +67,6 @@ async fn run_stream_with_bytes(sse_body: &[u8]) -> Vec<ResponseEvent> {
     let mut config = load_default_config_for_test(&codex_home);
     config.model_provider_id = provider.name.clone();
     config.model_provider = provider.clone();
-    config.reasoning_display = ReasoningDisplay::Raw;
     let effort = config.model_reasoning_effort;
     let summary = config.model_reasoning_summary;
     let config = Arc::new(config);

@@ -1,7 +1,6 @@
 use anyhow::Result;
 use codex_core::protocol::EventMsg;
 use codex_core::protocol::Op;
-use codex_protocol::config_types::ReasoningDisplay;
 use codex_protocol::user_input::UserInput;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
@@ -69,9 +68,7 @@ async fn resume_includes_initial_messages_from_reasoning_events() -> Result<()> 
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
-    let mut builder = test_codex().with_config(|config| {
-        config.reasoning_display = ReasoningDisplay::Raw;
-    });
+    let mut builder = test_codex().with_config(|config| {});
     let initial = builder.build(&server).await?;
     let codex = Arc::clone(&initial.codex);
     let home = initial.home.clone();
