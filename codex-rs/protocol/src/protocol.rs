@@ -532,6 +532,9 @@ pub enum EventMsg {
     /// Raw chain-of-thought from agent.
     AgentReasoningRawContent(AgentReasoningRawContentEvent),
 
+    /// Subagent file changes successfully merged.
+    SubagentChangesMerged(SubagentChangesMergedEvent),
+
     /// Agent reasoning content delta event from agent.
     AgentReasoningRawContentDelta(AgentReasoningRawContentDeltaEvent),
     /// Signaled when the model begins a new reasoning summary section (e.g., a new titled block).
@@ -1059,6 +1062,13 @@ pub struct AgentReasoningRawContentEvent {
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
 pub struct AgentReasoningRawContentDeltaEvent {
     pub delta: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema)]
+pub struct SubagentChangesMergedEvent {
+    pub subagent_name: String,
+    pub task_description: String,
+    pub files_changed: Vec<crate::subagent_changes::FileChangeSummary>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
@@ -1892,8 +1902,7 @@ pub enum TurnAbortReason {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::items::UserMessageItem;
-    use crate::items::WebSearchItem;
+
     use anyhow::Result;
     use pretty_assertions::assert_eq;
     use serde_json::json;

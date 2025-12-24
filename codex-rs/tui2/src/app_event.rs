@@ -79,11 +79,6 @@ pub(crate) enum AppEvent {
         models: Vec<ModelPreset>,
     },
 
-    /// Open the confirmation prompt before enabling full access mode.
-    OpenFullAccessConfirmation {
-        preset: ApprovalPreset,
-    },
-
     /// Open the Windows world-writable directories warning.
     /// If `preset` is `Some`, the confirmation will apply the provided
     /// approval/sandbox configuration on Continue; if `None`, it performs no
@@ -117,18 +112,12 @@ pub(crate) enum AppEvent {
     /// Update the current sandbox policy in the running app and widget.
     UpdateSandboxPolicy(SandboxPolicy),
 
-    /// Update whether the full access warning prompt has been acknowledged.
-    UpdateFullAccessWarningAcknowledged(bool),
-
     /// Update whether the world-writable directories warning has been acknowledged.
     #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     UpdateWorldWritableWarningAcknowledged(bool),
 
     /// Update whether the rate limit switch prompt has been acknowledged for the session.
     UpdateRateLimitSwitchPromptHidden(bool),
-
-    /// Persist the acknowledgement flag for the full access warning prompt.
-    PersistFullAccessWarningAcknowledged,
 
     /// Persist the acknowledgement flag for the world-writable directories warning.
     #[cfg_attr(not(target_os = "windows"), allow(dead_code))]

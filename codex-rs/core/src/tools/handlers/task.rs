@@ -113,6 +113,12 @@ pub fn create_task_tool(codex_home: &Path, allowed_subagents: Option<&[String]>)
         },
     );
     properties.insert(
+        "agent_name".to_string(),
+        JsonSchema::String {
+            description: Some("Optional alias for the subagent".to_string()),
+        },
+    );
+    properties.insert(
         "session_id".to_string(),
         JsonSchema::String {
             description: Some("Existing session ID to continue".to_string()),
@@ -140,6 +146,8 @@ struct TaskArgs {
     description: String,
     prompt: String,
     subagent_name: String,
+    #[allow(dead_code)] // Kept for backwards compatibility with tools that pass it
+    agent_name: Option<String>,
     session_id: Option<String>,
 }
 
@@ -686,6 +694,7 @@ impl ToolHandler for TaskHandler {
             let pending = PendingSubagentResult {
                 invocation_order,
                 subagent_name: args.subagent_name.clone(),
+                task_description: args.description.clone(),
                 session_id: session_id.clone(),
                 call_id: invocation.call_id.clone(),
                 result: final_output.clone(),

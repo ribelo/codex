@@ -31,6 +31,7 @@ use codex_core::protocol::FileChange;
 use codex_core::protocol::McpAuthStatus;
 use codex_core::protocol::McpInvocation;
 use codex_core::protocol::SessionConfiguredEvent;
+use codex_protocol::FileChangeSummary;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use codex_protocol::plan_tool::PlanItemArg;
 use codex_protocol::plan_tool::StepStatus;
@@ -1174,6 +1175,86 @@ pub(crate) struct SubagentTaskCell {
     children: Vec<SubagentTaskCell>,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct SubagentChangesMergedCell {
+    pub subagent_name: String,
+    pub task_description: String,
+    pub files_changed: Vec<FileChangeSummary>,
+    pub cwd: PathBuf,
+}
+
+impl HistoryCell for SubagentChangesMergedCell {
+    fn display_lines(&self, _width: u16) -> Vec<Line<'static>> {
+        let mut lines = Vec::new();
+
+        // Header: • Subagent general (task description) changes merged (+N -M)
+        let mut header_spans: Vec<Span<'static>> = vec![
+            "• ".dim(),
+            "Subagent ".into(),
+            self.subagent_name.clone().magenta(),
+        ];
+
+        // Add task description in parentheses
+        if !self.task_description.is_empty() {
+            header_spans.push(" (".dim());
+            // Truncate long descriptions
+            let desc = if self.task_description.len() > 50 {
+                format!("{}...", &self.task_description[..47])
+            } else {
+                self.task_description.clone()
+            };
+            header_spans.push(desc.into());
+            header_spans.push(")".dim());
+        }
+
+        header_spans.push(" changes merged".into());
+
+        // Calculate totals
+        let total_insertions: i32 = self.files_changed.iter().map(|f| f.insertions).sum();
+        let total_deletions: i32 = self.files_changed.iter().map(|f| f.deletions).sum();
+
+        if !self.files_changed.is_empty() {
+            header_spans.push(" (".into());
+            header_spans.push(format!("+{total_insertions}").green());
+            header_spans.push(" ".into());
+            header_spans.push(format!("-{total_deletions}").red());
+            header_spans.push(")".into());
+        }
+
+        lines.push(Line::from(header_spans));
+
+        // Files list:   └ M tui/src/app.rs (+2 -1)
+        for file in &self.files_changed {
+            let status = if file.insertions > 0 && file.deletions > 0 {
+                "M".yellow()
+            } else if file.insertions > 0 {
+                "A".green()
+            } else {
+                "D".red()
+            };
+
+            let rel_path = display_path_for(Path::new(&file.path), &self.cwd);
+
+            let file_spans = vec![
+                "  └ ".dim(),
+                status,
+                " ".into(),
+                rel_path.dim(),
+                " ".into(),
+                "(".dim(),
+                format!("+{}", file.insertions).green(),
+                " ".into(),
+                format!("-{}", file.deletions).red(),
+                ")".dim(),
+            ];
+
+            lines.push(Line::from(file_spans));
+        }
+
+        lines
+    }
+}
+
 impl SubagentTaskCell {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
@@ -1563,6 +1644,20 @@ pub(crate) fn new_subagent_task_cell(
         state,
         animations_enabled,
     )
+}
+
+pub(crate) fn new_subagent_changes_merged_cell(
+    subagent_name: String,
+    task_description: String,
+    files_changed: Vec<FileChangeSummary>,
+    cwd: PathBuf,
+) -> SubagentChangesMergedCell {
+    SubagentChangesMergedCell {
+        subagent_name,
+        task_description,
+        files_changed,
+        cwd,
+    }
 }
 
 pub(crate) fn new_web_search_call(query: String) -> PlainHistoryCell {

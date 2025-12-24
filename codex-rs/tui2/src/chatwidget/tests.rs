@@ -310,7 +310,7 @@ fn token_count_none_resets_context_indicator() {
 fn context_indicator_shows_used_tokens_when_window_unknown() {
     let (mut chat, _rx, _ops) = make_chatwidget_manual(Some("unknown-model"));
 
-    chat.config.model_context_window = None;
+    chat.config.model_context_window = 0;
     let auto_compact_limit = 200_000;
     chat.config.model_auto_compact_token_limit = Some(auto_compact_limit);
 
@@ -1801,7 +1801,6 @@ fn model_selection_popup_snapshot() {
 fn approvals_selection_popup_snapshot() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None);
 
-    chat.config.notices.hide_full_access_warning = None;
     chat.open_approvals_popup();
 
     let popup = render_bottom_popup(&chat, 80);
@@ -1834,20 +1833,6 @@ fn preset_matching_ignores_extra_writable_roots() {
         !ChatWidget::preset_matches_current(AskForApproval::Never, &current_sandbox, &preset),
         "approval mismatch should prevent matching the preset"
     );
-}
-
-#[test]
-fn full_access_confirmation_popup_snapshot() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None);
-
-    let preset = builtin_approval_presets()
-        .into_iter()
-        .find(|preset| preset.id == "full-access")
-        .expect("full access preset");
-    chat.open_full_access_confirmation(preset);
-
-    let popup = render_bottom_popup(&chat, 80);
-    assert_snapshot!("full_access_confirmation_popup", popup);
 }
 
 #[cfg(target_os = "windows")]

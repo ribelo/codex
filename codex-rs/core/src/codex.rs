@@ -971,8 +971,7 @@ impl Session {
         turn_context: &TurnContext,
         item: TurnItem,
     ) {
-        let display = self.reasoning_display();
-        for event in item.as_legacy_events(display) {
+        for event in item.as_legacy_events(self.reasoning_display()) {
             self.send_event(turn_context, event).await;
         }
     }
@@ -2807,20 +2806,15 @@ async fn try_run_turn(
 
                 match result.changes.status {
                     SubagentChangesStatus::Applied => {
-                        let files: Vec<_> = result
-                            .changes
-                            .files_changed
-                            .iter()
-                            .map(|f| f.path.as_str())
-                            .collect();
-                        let message = format!(
-                            "Subagent {} changes merged: {}",
-                            result.subagent_name,
-                            files.join(", ")
-                        );
                         sess.send_event(
                             &turn_context,
-                            EventMsg::AgentMessage(AgentMessageEvent { message }),
+                            EventMsg::SubagentChangesMerged(
+                                codex_protocol::protocol::SubagentChangesMergedEvent {
+                                    subagent_name: result.subagent_name,
+                                    task_description: result.task_description,
+                                    files_changed: result.changes.files_changed,
+                                },
+                            ),
                         )
                         .await;
                     }
@@ -2871,7 +2865,6 @@ pub(super) fn get_last_assistant_message_from_turn(responses: &[ResponseItem]) -
 #[cfg(test)]
 pub(crate) use tests::make_session_and_context;
 
-use crate::protocol::AgentMessageEvent;
 #[cfg(test)]
 pub(crate) use tests::make_session_and_context_with_rx;
 

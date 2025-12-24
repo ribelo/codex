@@ -1,8 +1,10 @@
+use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
+use ts_rs::TS;
 
 /// Status of subagent's file changes after merge attempt
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum SubagentChangesStatus {
     /// Changes applied successfully to parent worktree
@@ -14,7 +16,7 @@ pub enum SubagentChangesStatus {
 }
 
 /// Summary of a single file change
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema, TS)]
 pub struct FileChangeSummary {
     pub path: String,
     pub insertions: i32,
@@ -22,7 +24,7 @@ pub struct FileChangeSummary {
 }
 
 /// Subagent file changes info, separate from subagent's response
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema, TS)]
 pub struct SubagentChanges {
     pub status: SubagentChangesStatus,
     /// List of changed files (empty if no_changes or conflict)

@@ -800,7 +800,7 @@ fn status_snapshot_cached_limits_hide_credits_without_flag() {
 fn status_context_window_uses_last_usage() {
     let temp_home = TempDir::new().expect("temp home");
     let mut config = test_config(&temp_home);
-    config.model_context_window = Some(272_000);
+    config.model_context_window = 272_000;
 
     let auth_manager = test_auth_manager(&config);
     let total_usage = TokenUsage {

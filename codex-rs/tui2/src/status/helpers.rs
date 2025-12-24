@@ -111,13 +111,13 @@ pub(crate) fn compose_account_display(
     // Get Gemini OAuth accounts
     let gemini_accounts = auth
         .as_ref()
-        .map(|a| a.gemini_account_emails())
+        .map(codex_core::CodexAuth::gemini_account_emails)
         .unwrap_or_default();
 
     // Get Antigravity OAuth accounts
     let antigravity_accounts = auth
         .as_ref()
-        .map(|a| a.antigravity_account_emails())
+        .map(codex_core::CodexAuth::antigravity_account_emails)
         .unwrap_or_default();
 
     // Check if GEMINI_API_KEY env var is set

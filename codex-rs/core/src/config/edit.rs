@@ -22,8 +22,6 @@ pub enum ConfigEdit {
         model: Option<String>,
         effort: Option<ReasoningEffort>,
     },
-    /// Toggle the acknowledgement flag under `[notice]`.
-    SetNoticeHideFullAccessWarning(bool),
     /// Toggle the Windows world-writable directories warning acknowledgement flag.
     SetNoticeHideWorldWritableWarning(bool),
     /// Toggle the rate limit model nudge acknowledgement flag.
@@ -241,11 +239,6 @@ impl ConfigDocument {
                 );
                 mutated
             }),
-            ConfigEdit::SetNoticeHideFullAccessWarning(acknowledged) => Ok(self.write_value(
-                Scope::Global,
-                &[Notice::TABLE_KEY, "hide_full_access_warning"],
-                value(*acknowledged),
-            )),
             ConfigEdit::SetNoticeHideWorldWritableWarning(acknowledged) => Ok(self.write_value(
                 Scope::Global,
                 &[Notice::TABLE_KEY, "hide_world_writable_warning"],
@@ -492,12 +485,6 @@ impl ConfigEditsBuilder {
             model: model.map(ToOwned::to_owned),
             effort,
         });
-        self
-    }
-
-    pub fn set_hide_full_access_warning(mut self, acknowledged: bool) -> Self {
-        self.edits
-            .push(ConfigEdit::SetNoticeHideFullAccessWarning(acknowledged));
         self
     }
 
@@ -772,40 +759,6 @@ model = "gpt-5.1-codex"
             std::fs::read_to_string(codex_home.join(CONFIG_TOML_FILE)).expect("read config");
         let expected = r#"[profiles."team a"]
 model = "o4-mini"
-"#;
-        assert_eq!(contents, expected);
-    }
-
-    #[test]
-    fn blocking_set_hide_full_access_warning_preserves_table() {
-        let tmp = tempdir().expect("tmpdir");
-        let codex_home = tmp.path();
-        std::fs::write(
-            codex_home.join(CONFIG_TOML_FILE),
-            r#"# Global comment
-
-[notice]
-# keep me
-existing = "value"
-"#,
-        )
-        .expect("seed");
-
-        apply_blocking(
-            codex_home,
-            None,
-            &[ConfigEdit::SetNoticeHideFullAccessWarning(true)],
-        )
-        .expect("persist");
-
-        let contents =
-            std::fs::read_to_string(codex_home.join(CONFIG_TOML_FILE)).expect("read config");
-        let expected = r#"# Global comment
-
-[notice]
-# keep me
-existing = "value"
-hide_full_access_warning = true
 "#;
         assert_eq!(contents, expected);
     }
@@ -1091,7 +1044,7 @@ model_reasoning_effort = "high"
 
         rt.block_on(async {
             ConfigEditsBuilder::new(&codex_home)
-                .set_hide_full_access_warning(true)
+                .set_hide_world_writable_warning(true)
                 .apply()
                 .await
                 .expect("persist");
@@ -1102,7 +1055,7 @@ model_reasoning_effort = "high"
             .expect("parse config")
             .get("notice")
             .and_then(|item| item.as_table())
-            .and_then(|tbl| tbl.get("hide_full_access_warning"))
+            .and_then(|tbl| tbl.get("hide_world_writable_warning"))
             .and_then(toml::Value::as_bool);
         assert_eq!(notice, Some(true));
     }

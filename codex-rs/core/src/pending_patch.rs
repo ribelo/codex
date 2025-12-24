@@ -9,6 +9,8 @@ pub struct PendingSubagentResult {
     pub invocation_order: u32,
     /// The subagent type
     pub subagent_name: String,
+    /// Task description for this subagent invocation
+    pub task_description: String,
     /// Session ID
     pub session_id: String,
     /// Call ID for this tool invocation

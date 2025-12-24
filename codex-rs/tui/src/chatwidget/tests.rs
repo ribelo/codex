@@ -344,7 +344,10 @@ fn context_indicator_shows_used_tokens_when_window_unknown() {
     // which we set to None. So the fallback to model family context window happens
     // in a different code path. Let's just verify we get a valid percent.
     let pct = percent.unwrap();
-    assert!(pct >= 0 && pct <= 100, "percent should be valid: got {pct}");
+    assert!(
+        (0..=100).contains(&pct),
+        "percent should be valid: got {pct}"
+    );
 }
 
 #[cfg_attr(
@@ -1814,7 +1817,6 @@ fn model_selection_popup_snapshot() {
 fn approvals_selection_popup_snapshot() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None);
 
-    chat.config.notices.hide_full_access_warning = None;
     chat.open_approvals_popup();
 
     let popup = render_bottom_popup(&chat, 80);
@@ -1847,20 +1849,6 @@ fn preset_matching_ignores_extra_writable_roots() {
         !ChatWidget::preset_matches_current(AskForApproval::Never, &current_sandbox, &preset),
         "approval mismatch should prevent matching the preset"
     );
-}
-
-#[test]
-fn full_access_confirmation_popup_snapshot() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None);
-
-    let preset = builtin_approval_presets()
-        .into_iter()
-        .find(|preset| preset.id == "full-access")
-        .expect("full access preset");
-    chat.open_full_access_confirmation(preset);
-
-    let popup = render_bottom_popup(&chat, 80);
-    assert_snapshot!("full_access_confirmation_popup", popup);
 }
 
 #[cfg(target_os = "windows")]

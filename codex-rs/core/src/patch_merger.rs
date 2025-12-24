@@ -12,6 +12,7 @@ pub struct MergeResult {
     pub call_id: String,
     pub session_id: String,
     pub subagent_name: String,
+    pub task_description: String,
     pub changes: SubagentChanges,
 }
 
@@ -103,6 +104,7 @@ pub async fn merge_pending_patches(
             call_id: p.call_id,
             session_id: p.session_id,
             subagent_name: p.subagent_name,
+            task_description: p.task_description,
             changes,
         });
     }

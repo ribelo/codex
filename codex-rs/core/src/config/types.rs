@@ -424,8 +424,6 @@ pub struct HandoffConfig {
 #[derive(Deserialize, Debug, Clone, PartialEq, Default)]
 #[serde(deny_unknown_fields)]
 pub struct Notice {
-    /// Tracks whether the user has acknowledged the full access warning prompt.
-    pub hide_full_access_warning: Option<bool>,
     /// Tracks whether the user has acknowledged the Windows world-writable directories warning.
     pub hide_world_writable_warning: Option<bool>,
     /// Tracks whether the user opted out of the rate limit model switch reminder.

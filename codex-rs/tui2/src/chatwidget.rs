@@ -1834,6 +1834,18 @@ impl ChatWidget {
             EventMsg::ListSkillsResponse(_) => {}
             EventMsg::HandoffDraft(_) | EventMsg::HandoffCompleted(_) => {}
             EventMsg::AgentMessage(AgentMessageEvent { message }) => self.on_agent_message(message),
+            EventMsg::SubagentChangesMerged(SubagentChangesMergedEvent {
+                subagent_name,
+                task_description,
+                files_changed,
+            }) => {
+                self.add_to_history(history_cell::new_subagent_changes_merged_cell(
+                    subagent_name,
+                    task_description,
+                    files_changed,
+                    self.config.cwd.clone(),
+                ));
+            }
             EventMsg::AgentMessageDelta(AgentMessageDeltaEvent { delta }) => {
                 self.on_agent_message_delta(delta)
             }
@@ -2618,20 +2630,7 @@ impl ChatWidget {
             let name = preset.label.to_string();
             let description_text = preset.description;
             let description = Some(description_text.to_string());
-            let requires_confirmation = preset.id == "full-access"
-                && !self
-                    .config
-                    .notices
-                    .hide_full_access_warning
-                    .unwrap_or(false);
-            let actions: Vec<SelectionAction> = if requires_confirmation {
-                let preset_clone = preset.clone();
-                vec![Box::new(move |tx| {
-                    tx.send(AppEvent::OpenFullAccessConfirmation {
-                        preset: preset_clone.clone(),
-                    });
-                })]
-            } else if preset.id == "auto" {
+            let actions: Vec<SelectionAction> = if preset.id == "auto" {
                 #[cfg(target_os = "windows")]
                 {
                     if codex_core::get_platform_sandbox().is_none() {
@@ -2752,70 +2751,6 @@ impl ChatWidget {
     #[allow(dead_code)]
     pub(crate) fn world_writable_warning_details(&self) -> Option<(Vec<String>, usize, bool)> {
         None
-    }
-
-    pub(crate) fn open_full_access_confirmation(&mut self, preset: ApprovalPreset) {
-        let approval = preset.approval;
-        let sandbox = preset.sandbox;
-        let mut header_children: Vec<Box<dyn Renderable>> = Vec::new();
-        let title_line = Line::from("Enable full access?").bold();
-        let info_line = Line::from(vec![
-            "When Codex runs with full access, it can edit any file on your computer and run commands with network, without your approval. "
-                .into(),
-            "Exercise caution when enabling full access. This significantly increases the risk of data loss, leaks, or unexpected behavior."
-                .fg(Color::Red),
-        ]);
-        header_children.push(Box::new(title_line));
-        header_children.push(Box::new(
-            Paragraph::new(vec![info_line]).wrap(Wrap { trim: false }),
-        ));
-        let header = ColumnRenderable::with(header_children);
-
-        let mut accept_actions = Self::approval_preset_actions(approval, sandbox.clone());
-        accept_actions.push(Box::new(|tx| {
-            tx.send(AppEvent::UpdateFullAccessWarningAcknowledged(true));
-        }));
-
-        let mut accept_and_remember_actions = Self::approval_preset_actions(approval, sandbox);
-        accept_and_remember_actions.push(Box::new(|tx| {
-            tx.send(AppEvent::UpdateFullAccessWarningAcknowledged(true));
-            tx.send(AppEvent::PersistFullAccessWarningAcknowledged);
-        }));
-
-        let deny_actions: Vec<SelectionAction> = vec![Box::new(|tx| {
-            tx.send(AppEvent::OpenApprovalsPopup);
-        })];
-
-        let items = vec![
-            SelectionItem {
-                name: "Yes, continue anyway".to_string(),
-                description: Some("Apply full access for this session".to_string()),
-                actions: accept_actions,
-                dismiss_on_select: true,
-                ..Default::default()
-            },
-            SelectionItem {
-                name: "Yes, and don't ask again".to_string(),
-                description: Some("Enable full access and remember this choice".to_string()),
-                actions: accept_and_remember_actions,
-                dismiss_on_select: true,
-                ..Default::default()
-            },
-            SelectionItem {
-                name: "Cancel".to_string(),
-                description: Some("Go back without enabling full access".to_string()),
-                actions: deny_actions,
-                dismiss_on_select: true,
-                ..Default::default()
-            },
-        ];
-
-        self.bottom_pane.show_selection_view(SelectionViewParams {
-            footer_hint: Some(standard_popup_hint_line()),
-            items,
-            header: Box::new(header),
-            ..Default::default()
-        });
     }
 
     #[cfg(target_os = "windows")]
@@ -3021,10 +2956,6 @@ impl ChatWidget {
         if should_clear_downgrade {
             self.config.forced_auto_mode_downgraded_on_windows = false;
         }
-    }
-
-    pub(crate) fn set_full_access_warning_acknowledged(&mut self, acknowledged: bool) {
-        self.config.notices.hide_full_access_warning = Some(acknowledged);
     }
 
     pub(crate) fn set_world_writable_warning_acknowledged(&mut self, acknowledged: bool) {
@@ -3596,3 +3527,4 @@ pub(crate) fn show_review_commit_picker_with_entries(
 
 #[cfg(test)]
 pub(crate) mod tests;
+use codex_core::protocol::SubagentChangesMergedEvent;

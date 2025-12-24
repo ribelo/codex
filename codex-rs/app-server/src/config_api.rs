@@ -838,8 +838,6 @@ approval_policy = "on-request"
 
 [notice]
 # Preserve this comment
-hide_full_access_warning = true
-
 [features]
 unified_exec = true
 "#;
@@ -864,8 +862,6 @@ approval_policy = "on-request"
 
 [notice]
 # Preserve this comment
-hide_full_access_warning = true
-
 [features]
 unified_exec = true
 remote_compaction = true
