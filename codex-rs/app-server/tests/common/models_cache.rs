@@ -26,7 +26,7 @@ fn preset_to_info(preset: &ModelPreset, priority: i32) -> ModelInfo {
         minimal_client_version: ClientVersion(0, 1, 0),
         supported_in_api: true,
         priority,
-        upgrade: preset.upgrade.as_ref().map(|u| u.id.clone()),
+        upgrade: preset.upgrade.clone(),
         base_instructions: None,
     }
 }

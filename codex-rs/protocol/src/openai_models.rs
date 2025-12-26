@@ -44,14 +44,6 @@ pub struct ReasoningEffortPreset {
     /// Short human description shown next to the effort in UIs.
     pub description: String,
 }
-
-#[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema, PartialEq)]
-pub struct ModelUpgrade {
-    pub id: String,
-    pub reasoning_effort_mapping: Option<HashMap<ReasoningEffort, ReasoningEffort>>,
-    pub migration_config_key: String,
-}
-
 /// Metadata describing a Codex-supported model.
 #[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema, PartialEq)]
 pub struct ModelPreset {
@@ -70,7 +62,7 @@ pub struct ModelPreset {
     /// Whether this is the default model for new users.
     pub is_default: bool,
     /// recommended upgrade model
-    pub upgrade: Option<ModelUpgrade>,
+    pub upgrade: Option<String>,
     /// Whether this preset should appear in the picker UI.
     pub show_in_picker: bool,
     /// whether this model is supported in the api
@@ -163,13 +155,7 @@ impl From<ModelInfo> for ModelPreset {
             default_reasoning_effort: info.default_reasoning_level,
             supported_reasoning_efforts: info.supported_reasoning_levels.clone(),
             is_default: false, // default is the highest priority available model
-            upgrade: info.upgrade.as_ref().map(|upgrade_slug| ModelUpgrade {
-                id: upgrade_slug.clone(),
-                reasoning_effort_mapping: reasoning_effort_mapping_from_presets(
-                    &info.supported_reasoning_levels,
-                ),
-                migration_config_key: info.slug.clone(),
-            }),
+            upgrade: info.upgrade.clone(),
             show_in_picker: info.visibility == ModelVisibility::List,
             supported_in_api: info.supported_in_api,
         }

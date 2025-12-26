@@ -1154,6 +1154,8 @@ pub(crate) struct SubagentTaskCell {
     /// The tool_call_id of the parent "task" tool invocation.
     #[allow(dead_code)]
     parent_call_id: String,
+    /// Session ID for the subagent (for resumability)
+    session_id: Option<String>,
     /// The subagent type (slug) that is handling this task.
     subagent_name: String,
     /// Description of the task being delegated.
@@ -1258,6 +1260,7 @@ impl SubagentTaskCell {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         parent_call_id: String,
+        session_id: Option<String>,
         subagent_name: String,
         task_description: String,
         delegation_id: Option<String>,
@@ -1268,6 +1271,7 @@ impl SubagentTaskCell {
     ) -> Self {
         Self {
             parent_call_id,
+            session_id,
             subagent_name,
             task_description,
             delegation_id,
@@ -1361,27 +1365,41 @@ impl HistoryCell for SubagentTaskCell {
                 SubagentTaskStatus::Running => "Running with profile:",
                 _ => "Ran with profile:",
             };
-            Line::from(vec![
+            let mut header_spans = vec![
                 indent.into(),
                 bullet,
                 " ".into(),
                 action.bold(),
                 " ".into(),
                 profile_name.trim().to_string().magenta(),
-            ])
+            ];
+            if let Some(ref sid) = self.session_id {
+                let short_id = if sid.len() > 12 { &sid[..12] } else { sid };
+                header_spans.push(" (".dim());
+                header_spans.push(short_id.to_string().dim());
+                header_spans.push(")".dim());
+            }
+            Line::from(header_spans)
         } else {
             let action = match status {
                 SubagentTaskStatus::Running => "Delegating to",
                 _ => "Delegated to",
             };
-            Line::from(vec![
+            let mut header_spans = vec![
                 indent.into(),
                 bullet,
                 " ".into(),
                 action.bold(),
                 " @".magenta(),
                 self.subagent_name.clone().magenta(),
-            ])
+            ];
+            if let Some(ref sid) = self.session_id {
+                let short_id = if sid.len() > 12 { &sid[..12] } else { sid };
+                header_spans.push(" (".dim());
+                header_spans.push(short_id.to_string().dim());
+                header_spans.push(")".dim());
+            }
+            Line::from(header_spans)
         };
         lines.push(header);
 
@@ -1625,6 +1643,7 @@ impl HistoryCell for SubagentTaskCell {
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn new_subagent_task_cell(
     parent_call_id: String,
+    session_id: Option<String>,
     subagent_name: String,
     task_description: String,
     delegation_id: Option<String>,
@@ -1635,6 +1654,7 @@ pub(crate) fn new_subagent_task_cell(
 ) -> SubagentTaskCell {
     SubagentTaskCell::new(
         parent_call_id,
+        session_id,
         subagent_name,
         task_description,
         delegation_id,

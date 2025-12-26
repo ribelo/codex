@@ -55,7 +55,6 @@ pub mod live_wrap;
 mod markdown;
 mod markdown_render;
 mod markdown_stream;
-mod model_migration;
 pub mod onboarding;
 mod pager_overlay;
 pub mod public_widgets;
@@ -335,6 +334,7 @@ async fn run_ratatui_app(
                         token_usage: codex_core::protocol::TokenUsage::default(),
                         conversation_id: None,
                         update_action: Some(action),
+                        profile: None,
                     });
                 }
             }
@@ -374,6 +374,7 @@ async fn run_ratatui_app(
                 token_usage: codex_core::protocol::TokenUsage::default(),
                 conversation_id: None,
                 update_action: None,
+                profile: None,
             });
         }
         // if the user acknowledged windows or made an explicit decision ato trust the directory, reload the config accordingly
@@ -409,6 +410,7 @@ async fn run_ratatui_app(
                     token_usage: codex_core::protocol::TokenUsage::default(),
                     conversation_id: None,
                     update_action: None,
+                    profile: None,
                 });
             }
         }
@@ -447,6 +449,7 @@ async fn run_ratatui_app(
                     token_usage: codex_core::protocol::TokenUsage::default(),
                     conversation_id: None,
                     update_action: None,
+                    profile: None,
                 });
             }
             other => other,

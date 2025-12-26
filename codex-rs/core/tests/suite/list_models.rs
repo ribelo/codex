@@ -3,7 +3,6 @@ use codex_core::CodexAuth;
 use codex_core::ConversationManager;
 use codex_core::built_in_model_providers;
 use codex_protocol::openai_models::ModelPreset;
-use codex_protocol::openai_models::ModelUpgrade;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::openai_models::ReasoningEffortPreset;
 use core_test_support::load_default_config_for_test;
@@ -126,11 +125,7 @@ fn gpt_5_1_codex_max() -> ModelPreset {
             ),
         ],
         is_default: false,
-        upgrade: Some(ModelUpgrade {
-            id: "caribou".to_string(),
-            reasoning_effort_mapping: None,
-            migration_config_key: "hide_gpt-5.1-codex-max_migration_prompt".to_string(),
-        }),
+        upgrade: None,
         show_in_picker: true,
         supported_in_api: true,
     }
@@ -158,11 +153,7 @@ fn gpt_5_1_codex() -> ModelPreset {
             ),
         ],
         is_default: false,
-        upgrade: Some(ModelUpgrade {
-            id: "caribou".to_string(),
-            reasoning_effort_mapping: None,
-            migration_config_key: "hide_gpt-5.1-codex-max_migration_prompt".to_string(),
-        }),
+        upgrade: None,
         show_in_picker: true,
         supported_in_api: true,
     }
@@ -220,11 +211,7 @@ fn gpt_5_2() -> ModelPreset {
             ),
         ],
         is_default: false,
-        upgrade: Some(ModelUpgrade {
-            id: "caribou".to_string(),
-            reasoning_effort_mapping: None,
-            migration_config_key: "hide_gpt5_1_migration_prompt".to_string(),
-        }),
+        upgrade: None,
         show_in_picker: true,
         supported_in_api: true,
     }
@@ -252,11 +239,7 @@ fn gpt_5_1() -> ModelPreset {
             ),
         ],
         is_default: false,
-        upgrade: Some(ModelUpgrade {
-            id: "caribou".to_string(),
-            reasoning_effort_mapping: None,
-            migration_config_key: "hide_gpt5_1_migration_prompt".to_string(),
-        }),
+        upgrade: None,
         show_in_picker: true,
         supported_in_api: true,
     }
