@@ -319,6 +319,7 @@ fn format_exit_messages(exit_info: AppExitInfo, color_enabled: bool) -> Vec<Stri
     let AppExitInfo {
         token_usage,
         conversation_id,
+        profile,
         ..
     } = exit_info;
 
@@ -332,7 +333,11 @@ fn format_exit_messages(exit_info: AppExitInfo, color_enabled: bool) -> Vec<Stri
     )];
 
     if let Some(session_id) = conversation_id {
-        let resume_cmd = format!("codex resume {session_id}");
+        let resume_cmd = if let Some(ref p) = profile {
+            format!("codex --profile {p} resume {session_id}")
+        } else {
+            format!("codex resume {session_id}")
+        };
         let command = if color_enabled {
             resume_cmd.cyan().to_string()
         } else {
@@ -1015,6 +1020,7 @@ mod tests {
                 .map(ConversationId::from_string)
                 .map(Result::unwrap),
             update_action: None,
+            profile: None,
         }
     }
 
@@ -1024,6 +1030,7 @@ mod tests {
             token_usage: TokenUsage::default(),
             conversation_id: None,
             update_action: None,
+            profile: None,
         };
         let lines = format_exit_messages(exit_info, false);
         assert!(lines.is_empty());
