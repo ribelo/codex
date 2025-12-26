@@ -70,6 +70,7 @@ use crate::client_common::Prompt;
 use crate::client_common::ResponseEvent;
 use crate::compact::collect_user_messages;
 use crate::config::Config;
+use crate::config::ShellConfig;
 use crate::config::types::ShellEnvironmentPolicy;
 use crate::context_manager::ContextManager;
 use crate::environment_context::EnvironmentContext;
@@ -331,6 +332,7 @@ pub(crate) struct TurnContext {
     pub(crate) approval_policy: AskForApproval,
     pub(crate) sandbox_policy: SandboxPolicy,
     pub(crate) shell_environment_policy: ShellEnvironmentPolicy,
+    pub(crate) shell: ShellConfig,
     pub(crate) tools_config: ToolsConfig,
     pub(crate) final_output_json_schema: Option<Value>,
     pub(crate) codex_linux_sandbox_exe: Option<PathBuf>,
@@ -539,6 +541,7 @@ impl Session {
             approval_policy: session_configuration.approval_policy,
             sandbox_policy: session_configuration.sandbox_policy.clone(),
             shell_environment_policy: per_turn_config.shell_environment_policy.clone(),
+            shell: per_turn_config.shell.clone(),
             tools_config,
             final_output_json_schema: None,
             codex_linux_sandbox_exe: per_turn_config.codex_linux_sandbox_exe.clone(),

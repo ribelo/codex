@@ -38,10 +38,14 @@ impl ShellCommandHandler {
         let shell = session.user_shell();
         let command = Self::base_command(shell.as_ref(), &params.command, params.login);
 
+        let timeout_ms = params
+            .timeout_ms
+            .unwrap_or_else(|| turn_context.shell.timeout_for(&params.command));
+
         ExecParams {
             command,
             cwd: turn_context.resolve_path(params.workdir.clone()),
-            expiration: params.timeout_ms.into(),
+            expiration: timeout_ms.into(),
             env: create_env(&turn_context.shell_environment_policy),
             sandbox_permissions: params.sandbox_permissions.unwrap_or_default(),
             justification: params.justification,

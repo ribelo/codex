@@ -561,6 +561,26 @@ impl From<ShellEnvironmentPolicyToml> for ShellEnvironmentPolicy {
     }
 }
 
+#[derive(Deserialize, Debug, Clone, PartialEq, Default)]
+#[serde(deny_unknown_fields)]
+pub struct ShellConfigToml {
+    /// Default timeout for shell commands in milliseconds. Falls back to 10,000 if not set.
+    pub default_timeout_ms: Option<u64>,
+
+    /// List of pattern-based timeout overrides. First match wins.
+    #[serde(default)]
+    pub timeout_overrides: Vec<ShellTimeoutOverrideToml>,
+}
+
+#[derive(Deserialize, Debug, Clone, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ShellTimeoutOverrideToml {
+    /// Regex pattern to match against the command string.
+    pub pattern: String,
+    /// Timeout in milliseconds for commands matching this pattern.
+    pub timeout_ms: u64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

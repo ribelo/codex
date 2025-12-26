@@ -10,6 +10,7 @@ use crate::config::types::OtelConfig;
 use crate::config::types::OtelConfigToml;
 use crate::config::types::OtelExporterKind;
 use crate::config::types::SandboxWorkspaceWrite;
+use crate::config::types::ShellConfigToml;
 use crate::config::types::ShellEnvironmentPolicy;
 use crate::config::types::ShellEnvironmentPolicyToml;
 use crate::config::types::Tui;
@@ -43,6 +44,7 @@ use codex_rmcp_client::OAuthCredentialsStoreMode;
 use codex_utils_absolute_path::AbsolutePathBufGuard;
 use dirs::home_dir;
 use dunce::canonicalize;
+use regex::Regex;
 use serde::Deserialize;
 use similar::DiffableStr;
 use std::collections::BTreeMap;
@@ -131,6 +133,9 @@ pub struct Config {
     pub forced_auto_mode_downgraded_on_windows: bool,
 
     pub shell_environment_policy: ShellEnvironmentPolicy,
+
+    /// Shell execution configuration (timeouts, etc.)
+    pub shell: ShellConfig,
 
     /// User-provided instructions from AGENTS.md.
     pub user_instructions: Option<String>,
@@ -675,6 +680,9 @@ pub struct ConfigToml {
     /// Nested tools section for feature toggles
     pub tools: Option<ToolsToml>,
 
+    #[serde(default)]
+    pub shell: ShellConfigToml,
+
     /// Centralized feature flags (new). Prefer this over individual toggles.
     #[serde(default)]
     pub features: Option<FeaturesToml>,
@@ -876,6 +884,73 @@ impl ConfigToml {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct ShellConfig {
+    pub default_timeout_ms: u64,
+    pub timeout_overrides: Vec<ShellTimeoutOverride>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ShellTimeoutOverride {
+    pub pattern: String,
+    pub regex: Regex,
+    pub timeout_ms: u64,
+}
+
+impl PartialEq for ShellConfig {
+    fn eq(&self, other: &Self) -> bool {
+        self.default_timeout_ms == other.default_timeout_ms
+            && self.timeout_overrides == other.timeout_overrides
+    }
+}
+
+impl PartialEq for ShellTimeoutOverride {
+    fn eq(&self, other: &Self) -> bool {
+        self.pattern == other.pattern && self.timeout_ms == other.timeout_ms
+    }
+}
+
+impl Default for ShellConfig {
+    fn default() -> Self {
+        Self {
+            default_timeout_ms: 10_000,
+            timeout_overrides: Vec::new(),
+        }
+    }
+}
+
+impl ShellConfig {
+    /// Returns the configured timeout for a command string.
+    /// Checks overrides in order, returns first match or default.
+    pub fn timeout_for(&self, command: &str) -> u64 {
+        for entry in &self.timeout_overrides {
+            if entry.regex.is_match(command) {
+                return entry.timeout_ms;
+            }
+        }
+        self.default_timeout_ms
+    }
+}
+
+impl TryFrom<ShellConfigToml> for ShellConfig {
+    type Error = regex::Error;
+
+    fn try_from(toml: ShellConfigToml) -> Result<Self, Self::Error> {
+        let mut overrides = Vec::new();
+        for item in toml.timeout_overrides {
+            overrides.push(ShellTimeoutOverride {
+                regex: Regex::new(&item.pattern)?,
+                pattern: item.pattern,
+                timeout_ms: item.timeout_ms,
+            });
+        }
+        Ok(Self {
+            default_timeout_ms: toml.default_timeout_ms.unwrap_or(10_000),
+            timeout_overrides: overrides,
+        })
+    }
+}
+
 /// Optional overrides for user configuration (e.g., from CLI flags).
 #[derive(Default, Debug, Clone)]
 pub struct ConfigOverrides {
@@ -1061,6 +1136,13 @@ impl Config {
         )
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
 
+        let shell = ShellConfig::try_from(cfg.shell.clone()).map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("Invalid shell timeout regex: {e}"),
+            )
+        })?;
+
         let shell_environment_policy = cfg.shell_environment_policy.into();
 
         let history = cfg.history.unwrap_or_default();
@@ -1176,6 +1258,7 @@ impl Config {
             did_user_set_custom_approval_policy_or_sandbox_mode,
             forced_auto_mode_downgraded_on_windows,
             shell_environment_policy,
+            shell,
             notify: cfg.notify,
             user_instructions,
             base_instructions,
@@ -3001,6 +3084,7 @@ model_verbosity = "high"
                 tui_notifications: Default::default(),
                 animations: true,
                 show_tooltips: true,
+                shell: ShellConfig::default(),
                 otel: OtelConfig::default(),
                 ghost_snapshot: GhostSnapshotConfig::default(),
             },
@@ -3081,6 +3165,7 @@ model_verbosity = "high"
             tui_notifications: Default::default(),
             animations: true,
             show_tooltips: true,
+            shell: ShellConfig::default(),
             otel: OtelConfig::default(),
             ghost_snapshot: GhostSnapshotConfig::default(),
         };
@@ -3176,6 +3261,7 @@ model_verbosity = "high"
             tui_notifications: Default::default(),
             animations: true,
             show_tooltips: true,
+            shell: ShellConfig::default(),
             otel: OtelConfig::default(),
             ghost_snapshot: GhostSnapshotConfig::default(),
         };
@@ -3257,6 +3343,7 @@ model_verbosity = "high"
             tui_notifications: Default::default(),
             animations: true,
             show_tooltips: true,
+            shell: ShellConfig::default(),
             otel: OtelConfig::default(),
             ghost_snapshot: GhostSnapshotConfig::default(),
         };
@@ -3501,5 +3588,73 @@ mod notifications_tests {
             parsed.tui.notifications,
             Notifications::Custom(ref v) if v == &vec!["foo".to_string()]
         );
+    }
+}
+
+#[cfg(test)]
+mod shell_config_tests {
+    use super::*;
+    use crate::config::types::ShellConfigToml;
+    use crate::config::types::ShellTimeoutOverrideToml;
+    use regex::Regex;
+
+    #[test]
+    fn shell_config_timeout_resolution() {
+        let config = ShellConfig {
+            default_timeout_ms: 10_000,
+            timeout_overrides: vec![
+                ShellTimeoutOverride {
+                    pattern: "^cargo build".to_string(),
+                    regex: Regex::new("^cargo build").unwrap(),
+                    timeout_ms: 300_000,
+                },
+                ShellTimeoutOverride {
+                    pattern: "^cargo".to_string(),
+                    regex: Regex::new("^cargo").unwrap(),
+                    timeout_ms: 180_000,
+                },
+            ],
+        };
+
+        // Specific pattern wins over generic
+        assert_eq!(config.timeout_for("cargo build --release"), 300_000);
+
+        // Generic cargo pattern
+        assert_eq!(config.timeout_for("cargo test"), 180_000);
+
+        // No match, falls back to default
+        assert_eq!(config.timeout_for("ls -la"), 10_000);
+
+        // Anchored pattern doesn't match mid-string
+        assert_eq!(config.timeout_for("echo cargo"), 10_000);
+    }
+
+    #[test]
+    fn shell_config_try_from_toml() {
+        let toml = ShellConfigToml {
+            default_timeout_ms: Some(30_000),
+            timeout_overrides: vec![ShellTimeoutOverrideToml {
+                pattern: "^npm".to_string(),
+                timeout_ms: 120_000,
+            }],
+        };
+
+        let config = ShellConfig::try_from(toml).unwrap();
+        assert_eq!(config.default_timeout_ms, 30_000);
+        assert_eq!(config.timeout_overrides.len(), 1);
+        assert_eq!(config.timeout_for("npm install"), 120_000);
+    }
+
+    #[test]
+    fn shell_config_invalid_regex_fails() {
+        let toml = ShellConfigToml {
+            default_timeout_ms: None,
+            timeout_overrides: vec![ShellTimeoutOverrideToml {
+                pattern: "[invalid".to_string(),
+                timeout_ms: 1000,
+            }],
+        };
+
+        assert!(ShellConfig::try_from(toml).is_err());
     }
 }
