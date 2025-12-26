@@ -691,6 +691,9 @@ pub struct SubagentEventPayload {
     /// Nesting depth (0 = top-level, 1 = first nested, etc.)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub depth: Option<i32>,
+    /// The session ID of the subagent session.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
     /// The wrapped inner event from the subagent.
     pub inner: Box<EventMsg>,
 }

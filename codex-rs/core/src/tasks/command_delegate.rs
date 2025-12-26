@@ -161,6 +161,7 @@ impl SessionTask for CommandDelegateTask {
                 EventMsg::TaskStarted(TaskStartedEvent {
                     model_context_window: None,
                 }),
+                None,
             );
             parent.send_event(ctx.as_ref(), wrapped).await;
         }
@@ -169,7 +170,7 @@ impl SessionTask for CommandDelegateTask {
             text: self.prompt.clone(),
         }];
 
-        let rx = match run_codex_conversation_one_shot(
+        let (rx, conversation_id) = match run_codex_conversation_one_shot(
             "command",
             sub_config,
             session.auth_manager(),
@@ -182,7 +183,7 @@ impl SessionTask for CommandDelegateTask {
         )
         .await
         {
-            Ok(io) => io.rx_event,
+            Ok((io, conversation_id)) => (io.rx_event, conversation_id),
             Err(e) => {
                 parent
                     .send_event(
@@ -196,6 +197,8 @@ impl SessionTask for CommandDelegateTask {
                 return None;
             }
         };
+
+        let session_id = Some(conversation_id.to_string());
 
         let mut output: Option<String> = None;
         while let Ok(Event { id: _, msg }) = rx.recv().await {
@@ -224,6 +227,7 @@ impl SessionTask for CommandDelegateTask {
                                     None,
                                     Some(0),
                                     EventMsg::TaskComplete(ev),
+                                    session_id.clone(),
                                 ),
                             )
                             .await;
@@ -241,6 +245,7 @@ impl SessionTask for CommandDelegateTask {
                                     None,
                                     Some(0),
                                     EventMsg::TurnAborted(ev),
+                                    session_id.clone(),
                                 ),
                             )
                             .await;
@@ -266,6 +271,7 @@ impl SessionTask for CommandDelegateTask {
                                     None,
                                     Some(0),
                                     msg,
+                                    session_id.clone(),
                                 ),
                             )
                             .await;
@@ -341,6 +347,7 @@ fn wrap_subagent_event(
     parent_delegation_id: Option<String>,
     depth: Option<i32>,
     inner: EventMsg,
+    session_id: Option<String>,
 ) -> EventMsg {
     EventMsg::SubagentEvent(SubagentEventPayload {
         parent_call_id: parent_call_id.to_string(),
@@ -350,6 +357,7 @@ fn wrap_subagent_event(
         parent_delegation_id,
         depth,
         inner: Box::new(inner),
+        session_id,
     })
 }
 

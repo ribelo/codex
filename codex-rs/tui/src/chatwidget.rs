@@ -80,11 +80,8 @@ use crossterm::event::KeyModifiers;
 use rand::Rng;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::Color;
 use ratatui::style::Stylize;
 use ratatui::text::Line;
-use ratatui::widgets::Paragraph;
-use ratatui::widgets::Wrap;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::task::JoinHandle;
 use tracing::debug;
@@ -2228,6 +2225,7 @@ impl ChatWidget {
             parent_delegation_id,
             depth,
             inner,
+            session_id,
         } = payload;
 
         // Get or create the shared state for this subagent task
@@ -2256,6 +2254,7 @@ impl ChatWidget {
 
             let cell = history_cell::new_subagent_task_cell(
                 parent_call_id.clone(),
+                session_id.clone(),
                 subagent_name.clone(),
                 task_description,
                 delegation_id.clone(),

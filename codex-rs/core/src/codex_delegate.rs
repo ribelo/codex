@@ -4,6 +4,7 @@ use std::sync::atomic::AtomicU64;
 use async_channel::Receiver;
 use async_channel::Sender;
 use codex_async_utils::OrCancelExt;
+use codex_protocol::ConversationId;
 use codex_protocol::protocol::ApplyPatchApprovalRequestEvent;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
@@ -42,11 +43,14 @@ pub(crate) async fn run_codex_conversation_interactive(
     parent_ctx: Arc<TurnContext>,
     cancel_token: CancellationToken,
     initial_history: Option<InitialHistory>,
-) -> Result<Codex, CodexErr> {
+) -> Result<(Codex, ConversationId), CodexErr> {
     let (tx_sub, rx_sub) = async_channel::bounded(SUBMISSION_CHANNEL_CAPACITY);
     let (tx_ops, rx_ops) = async_channel::bounded(SUBMISSION_CHANNEL_CAPACITY);
 
-    let CodexSpawnOk { codex, .. } = Codex::spawn(
+    let CodexSpawnOk {
+        codex,
+        conversation_id,
+    } = Codex::spawn(
         config,
         auth_manager,
         models_manager,
@@ -84,11 +88,14 @@ pub(crate) async fn run_codex_conversation_interactive(
         forward_ops(codex_for_ops, rx_ops, cancel_token_ops).await;
     });
 
-    Ok(Codex {
-        next_id: AtomicU64::new(0),
-        tx_sub: tx_ops,
-        rx_event: rx_sub,
-    })
+    Ok((
+        Codex {
+            next_id: AtomicU64::new(0),
+            tx_sub: tx_ops,
+            rx_event: rx_sub,
+        },
+        conversation_id,
+    ))
 }
 
 /// Convenience wrapper for one-time use with an initial prompt.
@@ -105,11 +112,11 @@ pub(crate) async fn run_codex_conversation_one_shot(
     parent_ctx: Arc<TurnContext>,
     cancel_token: CancellationToken,
     initial_history: Option<InitialHistory>,
-) -> Result<Codex, CodexErr> {
+) -> Result<(Codex, ConversationId), CodexErr> {
     // Use a child token so we can stop the delegate after completion without
     // requiring the caller to cancel the parent token.
     let child_cancel = cancel_token.child_token();
-    let io = run_codex_conversation_interactive(
+    let (io, conversation_id) = run_codex_conversation_interactive(
         subagent_name,
         config,
         auth_manager,
@@ -154,11 +161,14 @@ pub(crate) async fn run_codex_conversation_one_shot(
     let (tx_closed, rx_closed) = async_channel::bounded(SUBMISSION_CHANNEL_CAPACITY);
     drop(rx_closed);
 
-    Ok(Codex {
-        next_id: AtomicU64::new(0),
-        rx_event: rx_bridge,
-        tx_sub: tx_closed,
-    })
+    Ok((
+        Codex {
+            next_id: AtomicU64::new(0),
+            rx_event: rx_bridge,
+            tx_sub: tx_closed,
+        },
+        conversation_id,
+    ))
 }
 
 async fn forward_events(

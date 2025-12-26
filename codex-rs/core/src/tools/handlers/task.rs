@@ -161,6 +161,7 @@ fn wrap_subagent_event(
     delegation_id: Option<String>,
     parent_delegation_id: Option<String>,
     depth: Option<i32>,
+    session_id: Option<String>,
     inner: EventMsg,
 ) -> EventMsg {
     EventMsg::SubagentEvent(SubagentEventPayload {
@@ -170,6 +171,7 @@ fn wrap_subagent_event(
         delegation_id,
         parent_delegation_id,
         depth,
+        session_id,
         inner: Box::new(inner),
     })
 }
@@ -249,7 +251,8 @@ impl ToolHandler for TaskHandler {
             )));
         }
 
-        let session_id = args
+        let is_new_session = args.session_id.is_none();
+        let mut session_id = args
             .session_id
             .unwrap_or_else(|| Uuid::new_v4().to_string());
 
@@ -483,7 +486,7 @@ impl ToolHandler for TaskHandler {
 
                 let session_token = CancellationToken::new();
 
-                let codex = run_codex_conversation_interactive(
+                let (codex, conversation_id) = run_codex_conversation_interactive(
                     &args.subagent_name,
                     sub_config,
                     invocation.session.services.auth_manager.clone(),
@@ -497,6 +500,10 @@ impl ToolHandler for TaskHandler {
                 .map_err(|e| FunctionCallError::Fatal(format!("Failed to spawn subagent: {e}")))?;
 
                 let codex_arc = Arc::new(codex);
+                if is_new_session {
+                    session_id = conversation_id.to_string();
+                }
+
                 let session = SubagentSession {
                     codex: codex_arc.clone(),
                     cancellation_token: session_token,
@@ -550,6 +557,7 @@ impl ToolHandler for TaskHandler {
             delegation_id.clone(),
             parent_delegation_id.clone(),
             depth,
+            Some(session_id.clone()),
             EventMsg::TaskStarted(TaskStartedEvent {
                 model_context_window: None,
             }),
@@ -609,6 +617,7 @@ impl ToolHandler for TaskHandler {
                             delegation_id.clone(),
                             parent_delegation_id.clone(),
                             depth,
+                            Some(session_id.clone()),
                             EventMsg::TaskComplete(tc),
                         );
                         invocation
@@ -618,7 +627,11 @@ impl ToolHandler for TaskHandler {
                         break Ok((final_output, last_tool_output));
                     }
                     EventMsg::TurnAborted(ta) => {
-                        let reason_str = format!("Turn aborted: {:?}", ta.reason);
+                        let abort_response = serde_json::json!({
+                            "error": format!("Turn aborted: {:?}", ta.reason),
+                            "session_id": session_id,
+                            "can_resume": true,
+                        });
                         // Send a wrapped TurnAborted so the TUI can mark the cell as failed
 
                         let wrapped = wrap_subagent_event(
@@ -628,13 +641,16 @@ impl ToolHandler for TaskHandler {
                             delegation_id.clone(),
                             parent_delegation_id.clone(),
                             depth,
+                            Some(session_id.clone()),
                             EventMsg::TurnAborted(ta),
                         );
                         invocation
                             .session
                             .send_event(invocation.turn.as_ref(), wrapped)
                             .await;
-                        break Err(FunctionCallError::RespondToModel(reason_str));
+                        break Err(FunctionCallError::RespondToModel(
+                            abort_response.to_string(),
+                        ));
                     }
                     EventMsg::ExecCommandBegin(_)
                     | EventMsg::ExecCommandEnd(_)
@@ -652,6 +668,7 @@ impl ToolHandler for TaskHandler {
                             delegation_id.clone(),
                             parent_delegation_id.clone(),
                             depth,
+                            Some(session_id.clone()),
                             event.msg,
                         );
                         invocation
