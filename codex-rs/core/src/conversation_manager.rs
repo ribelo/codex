@@ -321,9 +321,14 @@ fn truncate_before_nth_user_message(history: InitialHistory, n: usize) -> Initia
     // Work directly on rollout items, and cut the vector at the nth user message input.
     let items: Vec<RolloutItem> = history.get_rollout_items();
 
+    let last_session_pos = items
+        .iter()
+        .rposition(|item| matches!(item, RolloutItem::SessionMeta(_)))
+        .unwrap_or(0);
+
     // Find indices of user message inputs in rollout order.
     let mut user_positions: Vec<usize> = Vec::new();
-    for (idx, item) in items.iter().enumerate() {
+    for (idx, item) in items.iter().enumerate().skip(last_session_pos) {
         if let RolloutItem::ResponseItem(item @ ResponseItem::Message { .. }) = item
             && matches!(
                 crate::event_mapping::parse_turn_item(item),
@@ -494,6 +499,46 @@ mod tests {
 
         assert_eq!(
             serde_json::to_value(&got_items).unwrap(),
+            serde_json::to_value(&expected).unwrap()
+        );
+    }
+
+    #[test]
+    fn skips_user_messages_before_last_session_meta() {
+        use codex_protocol::protocol::SessionMeta;
+        use codex_protocol::protocol::SessionMetaLine;
+
+        // Create a history with: old_user, old_assistant, SessionMeta, new_user, new_assistant
+        let old_user = user_msg("old question");
+        let old_assistant = assistant_msg("old answer");
+        let session_meta = RolloutItem::SessionMeta(SessionMetaLine {
+            meta: SessionMeta::default(),
+            git: None,
+        });
+        let new_user = user_msg("new question");
+        let new_assistant = assistant_msg("new answer");
+
+        let items = vec![
+            RolloutItem::ResponseItem(old_user.clone()),
+            RolloutItem::ResponseItem(old_assistant.clone()),
+            session_meta.clone(),
+            RolloutItem::ResponseItem(new_user.clone()),
+            RolloutItem::ResponseItem(new_assistant.clone()),
+        ];
+
+        // When we truncate at user message 0, we should cut before new_user
+        // (since old_user is before the last SessionMeta and should be ignored)
+        let truncated = truncate_before_nth_user_message(InitialHistory::Forked(items.clone()), 0);
+        let got = truncated.get_rollout_items();
+
+        // Should include everything before the first user message after SessionMeta
+        let expected = vec![
+            RolloutItem::ResponseItem(old_user),
+            RolloutItem::ResponseItem(old_assistant),
+            session_meta,
+        ];
+        assert_eq!(
+            serde_json::to_value(&got).unwrap(),
             serde_json::to_value(&expected).unwrap()
         );
     }
