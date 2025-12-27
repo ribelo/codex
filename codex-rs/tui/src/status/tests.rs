@@ -23,8 +23,10 @@ use std::path::PathBuf;
 use tempfile::TempDir;
 
 fn test_config(temp_home: &TempDir) -> Config {
+    let mut config_toml = ConfigToml::default();
+    config_toml.model_context_window = Some(128_000);
     Config::load_from_base_config_with_overrides(
-        ConfigToml::default(),
+        config_toml,
         ConfigOverrides::default(),
         temp_home.path().to_path_buf(),
     )

@@ -2192,8 +2192,10 @@ mod tests {
     use mcp_types::ToolInputSchema;
 
     fn test_config() -> Config {
+        let mut config_toml = ConfigToml::default();
+        config_toml.model_context_window = Some(128_000);
         Config::load_from_base_config_with_overrides(
-            ConfigToml::default(),
+            config_toml,
             ConfigOverrides::default(),
             std::env::temp_dir(),
         )
@@ -3007,6 +3009,7 @@ mod tests {
 
         let cell = new_subagent_task_cell(
             "call-1".to_string(),
+            None,
             "explorer".to_string(),
             "Find all test files".to_string(),
             Some("delegation-1".to_string()),
@@ -3035,6 +3038,7 @@ mod tests {
 
         let cell = new_subagent_task_cell(
             "call-1".to_string(),
+            None,
             "profile:kimi".to_string(),
             "Find current Bitcoin (BTC) price".to_string(),
             Some("delegation-1".to_string()),
@@ -3063,6 +3067,7 @@ mod tests {
 
         let cell = new_subagent_task_cell(
             "call-2".to_string(),
+            None,
             "explorer".to_string(),
             "Search for API endpoints".to_string(),
             Some("delegation-2".to_string()),
@@ -3094,6 +3099,7 @@ mod tests {
 
         let cell = new_subagent_task_cell(
             "call-3".to_string(),
+            None,
             "explorer".to_string(),
             "List directory contents".to_string(),
             Some("delegation-3".to_string()),
@@ -3125,6 +3131,7 @@ mod tests {
 
         let cell = new_subagent_task_cell(
             "call-1".to_string(),
+            None,
             "profile:kimi".to_string(),
             long_description.to_string(),
             Some("delegation-1".to_string()),
@@ -3176,6 +3183,7 @@ mod tests {
 
         let cell = new_subagent_task_cell(
             "call-1".to_string(),
+            None,
             "explorer".to_string(),
             "Test task".to_string(),
             Some("delegation-1".to_string()),
@@ -3223,6 +3231,7 @@ mod tests {
 
         let cell = new_subagent_task_cell(
             "call-1".to_string(),
+            None,
             "explorer".to_string(),
             "Test".to_string(),
             Some("delegation-1".to_string()),
@@ -3258,6 +3267,7 @@ mod tests {
 
         let cell = new_subagent_task_cell(
             "call-1".to_string(),
+            None,
             "explorer".to_string(),
             "Test task".to_string(),
             None,
@@ -3319,6 +3329,7 @@ mod tests {
         // Create child cells
         let child1 = new_subagent_task_cell(
             "child-call-1".to_string(),
+            None,
             "finder".to_string(),
             "First finder call".to_string(),
             Some("child-del-1".to_string()),
@@ -3329,6 +3340,7 @@ mod tests {
         );
         let child2 = new_subagent_task_cell(
             "child-call-2".to_string(),
+            None,
             "finder".to_string(),
             "Second finder call".to_string(),
             Some("child-del-2".to_string()),
@@ -3347,6 +3359,7 @@ mod tests {
 
         let mut parent = new_subagent_task_cell(
             "parent-call".to_string(),
+            None,
             "general".to_string(),
             "Run two finder calls".to_string(),
             Some("parent-del".to_string()),

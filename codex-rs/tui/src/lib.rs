@@ -585,8 +585,10 @@ mod tests {
     #[serial]
     fn windows_skips_trust_prompt_without_sandbox() -> std::io::Result<()> {
         let temp_dir = TempDir::new()?;
+        let mut config_toml = ConfigToml::default();
+        config_toml.model_context_window = Some(128_000);
         let mut config = Config::load_from_base_config_with_overrides(
-            ConfigToml::default(),
+            config_toml,
             ConfigOverrides::default(),
             temp_dir.path().to_path_buf(),
         )?;
@@ -612,8 +614,10 @@ mod tests {
     #[serial]
     fn windows_shows_trust_prompt_with_sandbox() -> std::io::Result<()> {
         let temp_dir = TempDir::new()?;
+        let mut config_toml = ConfigToml::default();
+        config_toml.model_context_window = Some(128_000);
         let mut config = Config::load_from_base_config_with_overrides(
-            ConfigToml::default(),
+            config_toml,
             ConfigOverrides::default(),
             temp_dir.path().to_path_buf(),
         )?;
@@ -639,8 +643,10 @@ mod tests {
     fn untrusted_project_skips_trust_prompt() -> std::io::Result<()> {
         use codex_protocol::config_types::TrustLevel;
         let temp_dir = TempDir::new()?;
+        let mut config_toml = ConfigToml::default();
+        config_toml.model_context_window = Some(128_000);
         let mut config = Config::load_from_base_config_with_overrides(
-            ConfigToml::default(),
+            config_toml,
             ConfigOverrides::default(),
             temp_dir.path().to_path_buf(),
         )?;

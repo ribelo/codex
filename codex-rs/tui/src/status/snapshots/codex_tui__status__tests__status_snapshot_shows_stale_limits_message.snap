@@ -19,7 +19,7 @@ expression: sanitized
 │                                                                       │
 │ Usage                                                                 │
 │  Token usage:      1.9K total  (1K input + 900 output)                │
-│  Context window:   100% left (2.25K used / 272K)                      │
+│  Context window:   100% left (2.25K used / 128K)                      │
 │                                                                       │
 │ OpenAI                                                                │
 │  API Key:          OPENAI_API_KEY                                     │

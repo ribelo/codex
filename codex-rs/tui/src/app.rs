@@ -1212,7 +1212,7 @@ impl App {
                 kind: KeyEventKind::Press,
                 ..
             } if self.backtrack.primed
-                && self.backtrack.nth_user_message != usize::MAX
+                && self.backtrack.nth_backtrack_position != usize::MAX
                 && self.chat_widget.composer_is_empty() =>
             {
                 // Delegate to helper for clarity; preserves behavior.
@@ -1269,7 +1269,7 @@ impl App {
 mod tests {
     use super::*;
     use crate::app_backtrack::BacktrackState;
-    use crate::app_backtrack::user_count;
+    use crate::app_backtrack::backtrack_count;
     use crate::chatwidget::tests::make_chatwidget_manual_with_sender;
     use crate::file_search::FileSearchManager;
     use crate::history_cell::AgentMessageCell;
@@ -1452,11 +1452,12 @@ mod tests {
             agent_cell("answer edited"),
         ];
 
-        assert_eq!(user_count(&app.transcript_cells), 2);
+        assert_eq!(backtrack_count(&app.transcript_cells), 2);
 
         app.backtrack.base_id = Some(ConversationId::new());
         app.backtrack.primed = true;
-        app.backtrack.nth_user_message = user_count(&app.transcript_cells).saturating_sub(1);
+        app.backtrack.nth_backtrack_position =
+            backtrack_count(&app.transcript_cells).saturating_sub(1);
 
         app.confirm_backtrack_from_main();
 

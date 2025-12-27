@@ -76,9 +76,11 @@ fn set_windows_sandbox_enabled(enabled: bool) {
 
 fn test_config() -> Config {
     // Use base defaults to avoid depending on host state.
+    let mut config_toml = ConfigToml::default();
+    config_toml.model_context_window = Some(128_000);
 
     Config::load_from_base_config_with_overrides(
-        ConfigToml::default(),
+        config_toml,
         ConfigOverrides::default(),
         std::env::temp_dir(),
     )
