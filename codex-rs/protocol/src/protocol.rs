@@ -1072,6 +1072,8 @@ pub struct SubagentChangesMergedEvent {
     pub subagent_name: String,
     pub task_description: String,
     pub files_changed: Vec<crate::subagent_changes::FileChangeSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]

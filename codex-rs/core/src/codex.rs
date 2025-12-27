@@ -2811,6 +2811,7 @@ async fn try_run_turn(
                                     subagent_name: result.subagent_name,
                                     task_description: result.task_description,
                                     files_changed: result.changes.files_changed,
+                                    session_id: Some(result.session_id),
                                 },
                             ),
                         )

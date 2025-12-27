@@ -487,49 +487,44 @@ pub(crate) struct SubagentChangesMergedCell {
     pub task_description: String,
     pub files_changed: Vec<FileChangeSummary>,
     pub cwd: PathBuf,
+    pub session_id: Option<String>,
 }
 
 impl HistoryCell for SubagentChangesMergedCell {
     fn display_lines(&self, _width: u16) -> Vec<Line<'static>> {
         let mut lines = Vec::new();
 
-        // Header: • Subagent general (task description) changes merged (+N -M)
-        let mut header_spans: Vec<Span<'static>> = vec![
-            "• ".dim(),
-            "Subagent ".into(),
-            self.subagent_name.clone().magenta(),
-        ];
-
-        // Add task description in parentheses
-        if !self.task_description.is_empty() {
-            header_spans.push(" (".dim());
-            // Truncate long descriptions
-            let desc = if self.task_description.len() > 50 {
-                format!("{}...", &self.task_description[..47])
-            } else {
-                self.task_description.clone()
-            };
-            header_spans.push(desc.into());
-            header_spans.push(")".dim());
-        }
-
-        header_spans.push(" changes merged".into());
-
         // Calculate totals
         let total_insertions: i32 = self.files_changed.iter().map(|f| f.insertions).sum();
         let total_deletions: i32 = self.files_changed.iter().map(|f| f.deletions).sum();
 
-        if !self.files_changed.is_empty() {
-            header_spans.push(" (".into());
-            header_spans.push(format!("+{total_insertions}").green());
-            header_spans.push(" ".into());
-            header_spans.push(format!("-{total_deletions}").red());
-            header_spans.push(")".into());
+        // Header: • @subagent changes merged +N -M #session_id
+        let mut header_spans: Vec<Span<'static>> = vec![
+            "• ".into(),
+            "@".magenta(),
+            self.subagent_name.clone().magenta(),
+            " changes merged ".into(),
+            format!("+{total_insertions}").green(),
+            " ".into(),
+            format!("-{total_deletions}").red(),
+        ];
+
+        // Add session ID at the end
+        if let Some(ref sid) = self.session_id {
+            let short_id = sid.clone();
+            header_spans.push(" #".dim());
+            header_spans.push(short_id.dim());
         }
 
         lines.push(Line::from(header_spans));
 
-        // Files list:   └ M tui/src/app.rs (+2 -1)
+        // Task description line
+        lines.push(Line::from(vec![
+            "  └ ".dim(),
+            truncate_text(&self.task_description, 60).dim(),
+        ]));
+
+        // Files (4-space indent)
         for file in &self.files_changed {
             let status = if file.insertions > 0 && file.deletions > 0 {
                 "M".yellow()
@@ -542,16 +537,14 @@ impl HistoryCell for SubagentChangesMergedCell {
             let rel_path = display_path_for(Path::new(&file.path), &self.cwd);
 
             let file_spans = vec![
-                "  └ ".dim(),
+                "    ".into(),
                 status,
                 " ".into(),
                 rel_path.dim(),
                 " ".into(),
-                "(".dim(),
                 format!("+{}", file.insertions).green(),
                 " ".into(),
                 format!("-{}", file.deletions).red(),
-                ")".dim(),
             ];
 
             lines.push(Line::from(file_spans));
@@ -1107,12 +1100,14 @@ pub(crate) fn new_subagent_changes_merged_cell(
     task_description: String,
     files_changed: Vec<FileChangeSummary>,
     cwd: PathBuf,
+    session_id: Option<String>,
 ) -> SubagentChangesMergedCell {
     SubagentChangesMergedCell {
         subagent_name,
         task_description,
         files_changed,
         cwd,
+        session_id,
     }
 }
 

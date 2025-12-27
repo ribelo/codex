@@ -1835,12 +1835,14 @@ impl ChatWidget {
                 subagent_name,
                 task_description,
                 files_changed,
+                session_id,
             }) => {
                 self.add_to_history(history_cell::new_subagent_changes_merged_cell(
                     subagent_name,
                     task_description,
                     files_changed,
                     self.config.cwd.clone(),
+                    session_id,
                 ));
             }
             EventMsg::AgentMessageDelta(AgentMessageDeltaEvent { delta }) => {
