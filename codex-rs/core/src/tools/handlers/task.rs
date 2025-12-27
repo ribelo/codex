@@ -39,7 +39,6 @@ use crate::codex_delegate::run_codex_conversation_interactive;
 use crate::function_tool::FunctionCallError;
 use crate::model_provider_info::ProviderKind;
 use crate::model_provider_info::built_in_model_providers;
-use crate::pending_patch::PendingSubagentResult;
 use crate::subagents::SubagentRegistry;
 use crate::subagents::SubagentSandboxPolicy;
 use crate::subagents::SubagentSession;
@@ -48,10 +47,13 @@ use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
 use crate::tools::registry::ToolHandler;
 use crate::tools::spec::JsonSchema;
+use crate::worktree_manager::PatchApplyResult;
 use crate::worktree_manager::WorktreeManager;
+use codex_protocol::FileChangeSummary;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
+use codex_protocol::protocol::SubagentChangesMergedEvent;
 use codex_protocol::protocol::SubagentEventPayload;
 use codex_protocol::protocol::TaskStartedEvent;
 use codex_protocol::protocol::WarningEvent;
@@ -207,7 +209,7 @@ impl ToolHandler for TaskHandler {
             .map_err(|e| FunctionCallError::Fatal(format!("Failed to parse arguments: {e}")))?;
 
         let turn = &invocation.turn;
-        let invocation_order = invocation
+        let _invocation_order = invocation
             .turn
             .task_invocation_counter
             .fetch_add(1, Ordering::SeqCst);
@@ -693,9 +695,10 @@ impl ToolHandler for TaskHandler {
             }
         };
 
-        // Handle changes based on isolation mode
-        let (changes_status, environment_note) = if let Some(handle) = worktree_handle {
-            // Isolated mode: Generate diff and queue for merge
+        let (changes_status, files_changed, conflicted_files, patch_path) = if let Some(handle) =
+            worktree_handle
+        {
+            // Isolated mode: Generate diff and apply immediately
             let diff = match worktree_manager.generate_diff(&handle).await {
                 Ok(d) => d,
                 Err(e) => {
@@ -707,37 +710,132 @@ impl ToolHandler for TaskHandler {
                 }
             };
 
-            // Collect for deferred merge instead of applying immediately
-            let pending = PendingSubagentResult {
-                invocation_order,
-                subagent_name: args.subagent_name.clone(),
-                task_description: args.description.clone(),
-                session_id: session_id.clone(),
-                call_id: invocation.call_id.clone(),
-                result: final_output.clone(),
-                last_tool_output: last_tool_output.clone(),
-                diff,
-                worktree_handle: handle,
-                parent_worktree: parent_worktree.clone(),
-            };
+            // Acquire repo lock to prevent parallel merge races
+            let _lock = invocation.turn.repo_lock.lock().await;
 
-            invocation
-                .turn
-                .pending_subagent_results
-                .lock()
-                .await
-                .push(pending);
+            // Apply patch immediately
+            let task_id = format!(
+                "{}-{}-{}",
+                args.subagent_name, session_id, invocation.call_id
+            );
+            let apply_result = worktree_manager
+                .apply_patch(&diff.patch, &parent_worktree, &task_id)
+                .await;
 
-            (
-                "pending",
-                "Worktree isolation active: Repository changes are captured and will be merged at end of turn. External file changes (if any) were applied immediately and are not tracked.",
-            )
+            // Always cleanup worktree after merge attempt
+            let _ = worktree_manager.cleanup(&handle).await;
+
+            // Build response based on result
+            match apply_result {
+                Ok(PatchApplyResult::Applied) => {
+                    // Emit SubagentChangesMerged event
+                    invocation
+                        .session
+                        .send_event(
+                            invocation.turn.as_ref(),
+                            EventMsg::SubagentChangesMerged(SubagentChangesMergedEvent {
+                                subagent_name: args.subagent_name.clone(),
+                                task_description: args.description.clone(),
+                                files_changed: diff
+                                    .files_changed
+                                    .iter()
+                                    .map(|f| FileChangeSummary {
+                                        path: f.path.clone(),
+                                        insertions: f.insertions,
+                                        deletions: f.deletions,
+                                    })
+                                    .collect(),
+                                session_id: Some(session_id.clone()),
+                            }),
+                        )
+                        .await;
+                    ("applied", Some(diff.files_changed), None, None)
+                }
+                Ok(PatchApplyResult::NoChanges) => ("no_changes", None, None, None),
+                Ok(PatchApplyResult::AppliedWithConflicts { conflicted_files }) => {
+                    // Emit event + warning
+                    invocation
+                        .session
+                        .send_event(
+                            invocation.turn.as_ref(),
+                            EventMsg::SubagentChangesMerged(SubagentChangesMergedEvent {
+                                subagent_name: args.subagent_name.clone(),
+                                task_description: args.description.clone(),
+                                files_changed: diff
+                                    .files_changed
+                                    .iter()
+                                    .map(|f| FileChangeSummary {
+                                        path: f.path.clone(),
+                                        insertions: f.insertions,
+                                        deletions: f.deletions,
+                                    })
+                                    .collect(),
+                                session_id: Some(session_id.clone()),
+                            }),
+                        )
+                        .await;
+                    let warning = format!(
+                        "Subagent {} changes were applied with conflicts in: {}",
+                        args.subagent_name,
+                        conflicted_files.join(", ")
+                    );
+                    invocation
+                        .session
+                        .send_event(
+                            invocation.turn.as_ref(),
+                            EventMsg::Warning(WarningEvent { message: warning }),
+                        )
+                        .await;
+                    (
+                        "conflict",
+                        Some(diff.files_changed),
+                        Some(conflicted_files),
+                        None,
+                    )
+                }
+                Ok(PatchApplyResult::Conflict { patch_path }) => {
+                    let warning = format!(
+                        "Subagent {} changes could not be merged. Patch saved to: {}",
+                        args.subagent_name,
+                        patch_path.display()
+                    );
+                    invocation
+                        .session
+                        .send_event(
+                            invocation.turn.as_ref(),
+                            EventMsg::Warning(WarningEvent { message: warning }),
+                        )
+                        .await;
+                    (
+                        "failed",
+                        None,
+                        None,
+                        Some(patch_path.to_string_lossy().to_string()),
+                    )
+                }
+                Err(e) => {
+                    let warning = format!("Subagent {} merge failed: {}", args.subagent_name, e);
+                    invocation
+                        .session
+                        .send_event(
+                            invocation.turn.as_ref(),
+                            EventMsg::Warning(WarningEvent { message: warning }),
+                        )
+                        .await;
+                    ("failed", None, None, None)
+                }
+            }
         } else {
             // Direct mode: Changes were applied immediately, no isolation
-            (
-                "applied",
-                "No worktree isolation: All file changes were applied immediately to the user's system.",
-            )
+            ("applied", None, None, None)
+        };
+
+        let environment_note = match changes_status {
+            "applied" => "Changes applied successfully to parent worktree.",
+            "no_changes" => "Subagent completed but made no file changes.",
+            "conflict" => "Changes applied but contain conflict markers that need resolution.",
+            "failed" => "Changes could not be applied. See patch file if available.",
+            _ => "Unknown status.",
         };
 
         // Build a structured response that includes the session_id for follow-up calls
@@ -747,6 +845,9 @@ impl ToolHandler for TaskHandler {
             "last_tool_output": last_tool_output,
             "changes": changes_status,
             "environment_note": environment_note,
+            "files_changed": files_changed,
+            "conflicted_files": conflicted_files,
+            "patch_path": patch_path,
         });
 
         Ok(ToolOutput::Function {

@@ -9,6 +9,8 @@ use ts_rs::TS;
 pub enum SubagentChangesStatus {
     /// Changes applied successfully to parent worktree
     Applied,
+    /// Changes applied with conflict markers left in files
+    AppliedWithConflicts,
     /// Merge conflict - patch saved to patch_path
     Conflict,
     /// Subagent made no file changes
@@ -33,6 +35,9 @@ pub struct SubagentChanges {
     /// Path to saved patch file (only present if conflict)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub patch_path: Option<String>,
+    /// List of files that have conflict markers (only present if applied_with_conflicts)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conflicted_files: Option<Vec<String>>,
 }
 
 #[cfg(test)]
@@ -49,6 +54,7 @@ mod tests {
                 deletions: 3,
             }],
             patch_path: None,
+            conflicted_files: None,
         };
         let json = serde_json::to_string(&changes).unwrap();
         let parsed: SubagentChanges = serde_json::from_str(&json).unwrap();
@@ -61,6 +67,7 @@ mod tests {
             status: SubagentChangesStatus::Conflict,
             files_changed: vec![],
             patch_path: Some(".codex/patches/abc123.diff".to_string()),
+            conflicted_files: None,
         };
         let json = serde_json::to_string(&changes).unwrap();
         assert!(json.contains("\"status\":\"conflict\""));
@@ -75,11 +82,31 @@ mod tests {
             status: SubagentChangesStatus::NoChanges,
             files_changed: vec![],
             patch_path: None,
+            conflicted_files: None,
         };
         let json = serde_json::to_string(&changes).unwrap();
         // Empty vec and None should be skipped
         assert!(!json.contains("files_changed"));
         assert!(!json.contains("patch_path"));
+        let parsed: SubagentChanges = serde_json::from_str(&json).unwrap();
+        assert_eq!(changes, parsed);
+    }
+
+    #[test]
+    fn test_subagent_changes_applied_with_conflicts_serialization() {
+        let changes = SubagentChanges {
+            status: SubagentChangesStatus::AppliedWithConflicts,
+            files_changed: vec![FileChangeSummary {
+                path: "src/main.rs".to_string(),
+                insertions: 5,
+                deletions: 2,
+            }],
+            patch_path: None,
+            conflicted_files: Some(vec!["src/main.rs".to_string()]),
+        };
+        let json = serde_json::to_string(&changes).unwrap();
+        assert!(json.contains("\"status\":\"applied_with_conflicts\""));
+        assert!(json.contains("\"conflicted_files\""));
         let parsed: SubagentChanges = serde_json::from_str(&json).unwrap();
         assert_eq!(changes, parsed);
     }

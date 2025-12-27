@@ -1,6 +1,8 @@
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::bail;
+use codex_protocol::FileChangeSummary;
+use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -9,14 +11,6 @@ use std::sync::atomic::Ordering;
 pub use tokio::process::Command;
 use tracing::warn;
 use uuid::Uuid;
-
-/// Summary of a single file change (matches protocol type)
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FileChangeSummary {
-    pub path: String,
-    pub insertions: i32,
-    pub deletions: i32,
-}
 
 /// Result of creating a worktree
 #[derive(Debug)]
@@ -76,6 +70,11 @@ pub enum PatchApplyResult {
     Applied,
     /// No changes to apply
     NoChanges,
+    /// Patch applied with conflict markers left in files
+    AppliedWithConflicts {
+        /// Files that contain conflict markers
+        conflicted_files: Vec<String>,
+    },
     /// Conflict - patch saved to file
     Conflict { patch_path: PathBuf },
 }
@@ -270,6 +269,12 @@ impl WorktreeManager {
     }
 
     /// Apply patch to target directory.
+    ///
+    /// Uses a hybrid approach:
+    /// 1. Try clean `git apply` first (fast path)
+    /// 2. On failure, fall back to `git apply --3way` (leaves conflict markers)
+    /// 3. Detect conflicts via `git diff --check`
+    /// 4. Hard failures save patch file as fallback
     pub async fn apply_patch(
         &self,
         patch: &str,
@@ -285,24 +290,7 @@ impl WorktreeManager {
         tokio::fs::create_dir_all(&self.patches_dir).await?;
         tokio::fs::write(&patch_file, patch).await?;
 
-        // Check if patch applies: git apply --check
-        let check_output = Command::new("git")
-            .arg("apply")
-            .arg("--check")
-            .arg(&patch_file)
-            .current_dir(target_dir)
-            .output()
-            .await
-            .context("Failed to check patch")?;
-
-        if !check_output.status.success() {
-            // Conflict - keep the patch file
-            return Ok(PatchApplyResult::Conflict {
-                patch_path: patch_file,
-            });
-        }
-
-        // Apply patch: git apply
+        // 1. Try clean git apply (fast path)
         let apply_output = Command::new("git")
             .arg("apply")
             .arg(&patch_file)
@@ -311,16 +299,66 @@ impl WorktreeManager {
             .await
             .context("Failed to apply patch")?;
 
-        if !apply_output.status.success() {
-            // Unexpected failure after check passed
-            return Ok(PatchApplyResult::Conflict {
-                patch_path: patch_file,
-            });
+        if apply_output.status.success() {
+            // Clean apply succeeded
+            let _ = tokio::fs::remove_file(&patch_file).await;
+            return Ok(PatchApplyResult::Applied);
         }
-        // Clean up patch file on success
-        let _ = tokio::fs::remove_file(&patch_file).await;
-        Ok(PatchApplyResult::Applied)
+
+        // 2. Fall back to git apply --3way
+        let threeway_output = Command::new("git")
+            .args(["apply", "--3way"])
+            .arg(&patch_file)
+            .current_dir(target_dir)
+            .output()
+            .await
+            .context("Failed to run git apply --3way")?;
+
+        if threeway_output.status.success() {
+            // 3way merge resolved automatically
+            let _ = tokio::fs::remove_file(&patch_file).await;
+            return Ok(PatchApplyResult::Applied);
+        }
+
+        // 3. Check if we have conflict markers (soft failure) or hard failure
+        let conflicted_files = Self::detect_conflict_markers(target_dir).await?;
+
+        if !conflicted_files.is_empty() {
+            // Soft failure: conflicts left in files for agent to resolve
+            let _ = tokio::fs::remove_file(&patch_file).await;
+            return Ok(PatchApplyResult::AppliedWithConflicts { conflicted_files });
+        }
+
+        // 4. Hard failure: save patch file
+        Ok(PatchApplyResult::Conflict {
+            patch_path: patch_file,
+        })
     }
+
+    /// Detect files with conflict markers using `git diff --check`
+    async fn detect_conflict_markers(target_dir: &Path) -> Result<Vec<String>> {
+        let output = Command::new("git")
+            .args(["diff", "--check"])
+            .current_dir(target_dir)
+            .output()
+            .await
+            .context("Failed to run git diff --check")?;
+
+        // git diff --check exits non-zero if markers found
+        // Output format: "filename:line: leftover conflict marker"
+        let stdout = String::from_utf8_lossy(&output.stdout);
+
+        let files: Vec<String> = stdout
+            .lines()
+            .filter(|line| line.contains("leftover conflict marker"))
+            .filter_map(|line| line.split(':').next().map(|s| s.to_string()))
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+
+        Ok(files)
+    }
+
     /// Remove worktree and cleanup.
     pub async fn cleanup(&self, handle: &WorktreeHandle) -> Result<()> {
         if handle.cleaned_up.swap(true, Ordering::SeqCst) {
