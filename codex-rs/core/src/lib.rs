@@ -96,6 +96,7 @@ pub use rollout::list::ConversationsPage;
 pub use rollout::list::Cursor;
 pub use rollout::list::parse_cursor;
 pub use rollout::list::read_head_for_summary;
+pub use rollout::list_session_children;
 mod function_tool;
 mod state;
 mod tasks;

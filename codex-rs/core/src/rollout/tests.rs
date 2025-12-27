@@ -17,6 +17,7 @@ use crate::rollout::list::ConversationItem;
 use crate::rollout::list::ConversationsPage;
 use crate::rollout::list::Cursor;
 use crate::rollout::list::get_conversations;
+use crate::rollout::list::list_session_children;
 use anyhow::Result;
 use codex_protocol::ConversationId;
 use codex_protocol::models::ContentItem;
@@ -27,6 +28,8 @@ use codex_protocol::protocol::RolloutLine;
 use codex_protocol::protocol::SessionMeta;
 use codex_protocol::protocol::SessionMetaLine;
 use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::SubAgentKind;
+use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::UserMessageEvent;
 
 const NO_SOURCE_FILTER: &[SessionSource] = &[];
@@ -123,6 +126,20 @@ fn write_session_file_with_provider(
         writeln!(file, "{rec}")?;
     }
     Ok((dt, uuid))
+}
+
+fn write_subagent_session_file(
+    root: &Path,
+    ts_str: &str,
+    uuid: Uuid,
+    parent_id: ConversationId,
+    agent_kind: SubAgentKind,
+) -> std::io::Result<(OffsetDateTime, Uuid)> {
+    let source = SessionSource::SubAgent(SubAgentSource {
+        parent_id,
+        kind: agent_kind,
+    });
+    write_session_file(root, ts_str, uuid, 2, Some(source))
 }
 
 #[tokio::test]
@@ -916,4 +933,165 @@ async fn test_model_provider_filter_selects_only_matching_sessions() -> Result<(
     assert_eq!(all_sessions.items.len(), 3);
 
     Ok(())
+}
+
+#[tokio::test]
+async fn test_list_session_children_finds_direct_children() {
+    let temp = TempDir::new().unwrap();
+    let home = temp.path();
+
+    // Create parent session
+    let parent_uuid = Uuid::from_u128(1);
+    write_session_file(
+        home,
+        "2025-01-01T10-00-00",
+        parent_uuid,
+        2,
+        Some(SessionSource::VSCode),
+    )
+    .unwrap();
+
+    // Convert parent uuid to ConversationId
+    let parent_id = ConversationId::from_string(&parent_uuid.to_string()).unwrap();
+
+    // Create child sessions
+    let child1_uuid = Uuid::from_u128(2);
+    let child2_uuid = Uuid::from_u128(3);
+    write_subagent_session_file(
+        home,
+        "2025-01-01T10-01-00",
+        child1_uuid,
+        parent_id.clone(),
+        SubAgentKind::Other("finder".to_string()),
+    )
+    .unwrap();
+    write_subagent_session_file(
+        home,
+        "2025-01-01T10-02-00",
+        child2_uuid,
+        parent_id.clone(),
+        SubAgentKind::Review,
+    )
+    .unwrap();
+
+    // Create unrelated session (different parent)
+    let other_parent_id = ConversationId::from_string(&Uuid::from_u128(99).to_string()).unwrap();
+    let unrelated_uuid = Uuid::from_u128(4);
+    write_subagent_session_file(
+        home,
+        "2025-01-01T10-03-00",
+        unrelated_uuid,
+        other_parent_id,
+        SubAgentKind::Compact,
+    )
+    .unwrap();
+
+    // Query children
+    let children = list_session_children(home, parent_id).await.unwrap();
+
+    // Should find exactly 2 children
+    assert_eq!(children.len(), 2);
+
+    // Verify paths contain the right UUIDs
+    let child_uuids: Vec<String> = children
+        .iter()
+        .map(|c| c.path.file_name().unwrap().to_string_lossy().to_string())
+        .collect();
+    assert!(
+        child_uuids
+            .iter()
+            .any(|p| p.contains(&child1_uuid.to_string()))
+    );
+    assert!(
+        child_uuids
+            .iter()
+            .any(|p| p.contains(&child2_uuid.to_string()))
+    );
+}
+
+#[tokio::test]
+async fn test_list_session_children_excludes_grandchildren() {
+    let temp = TempDir::new().unwrap();
+    let home = temp.path();
+
+    // Parent -> Child -> Grandchild hierarchy
+    let parent_uuid = Uuid::from_u128(1);
+    let child_uuid = Uuid::from_u128(2);
+    let grandchild_uuid = Uuid::from_u128(3);
+
+    write_session_file(
+        home,
+        "2025-01-01T10-00-00",
+        parent_uuid,
+        2,
+        Some(SessionSource::Cli),
+    )
+    .unwrap();
+
+    let parent_id = ConversationId::from_string(&parent_uuid.to_string()).unwrap();
+    let child_id = ConversationId::from_string(&child_uuid.to_string()).unwrap();
+
+    write_subagent_session_file(
+        home,
+        "2025-01-01T10-01-00",
+        child_uuid,
+        parent_id.clone(),
+        SubAgentKind::Other("rush".to_string()),
+    )
+    .unwrap();
+
+    write_subagent_session_file(
+        home,
+        "2025-01-01T10-02-00",
+        grandchild_uuid,
+        child_id.clone(), // Parent is the child, not the root
+        SubAgentKind::Review,
+    )
+    .unwrap();
+
+    // Query children of parent
+    let parent_children = list_session_children(home, parent_id).await.unwrap();
+
+    // Should only find the direct child, not grandchild
+    assert_eq!(parent_children.len(), 1);
+    assert!(
+        parent_children[0]
+            .path
+            .to_string_lossy()
+            .contains(&child_uuid.to_string())
+    );
+
+    // Query children of child
+    let child_children = list_session_children(home, child_id).await.unwrap();
+
+    // Should find the grandchild
+    assert_eq!(child_children.len(), 1);
+    assert!(
+        child_children[0]
+            .path
+            .to_string_lossy()
+            .contains(&grandchild_uuid.to_string())
+    );
+}
+
+#[tokio::test]
+async fn test_list_session_children_returns_empty_when_no_children() {
+    let temp = TempDir::new().unwrap();
+    let home = temp.path();
+
+    let parent_uuid = Uuid::from_u128(1);
+    write_session_file(
+        home,
+        "2025-01-01T10-00-00",
+        parent_uuid,
+        2,
+        Some(SessionSource::VSCode),
+    )
+    .unwrap();
+
+    let parent_id = ConversationId::from_string(&parent_uuid.to_string()).unwrap();
+
+    let children = list_session_children(home, parent_id).await.unwrap();
+
+    assert!(children.is_empty());
 }

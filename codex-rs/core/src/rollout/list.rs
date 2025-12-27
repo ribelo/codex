@@ -16,6 +16,7 @@ use uuid::Uuid;
 use super::SESSIONS_SUBDIR;
 use crate::protocol::EventMsg;
 use codex_file_search as file_search;
+use codex_protocol::ConversationId;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::RolloutLine;
 use codex_protocol::protocol::SessionSource;
@@ -52,6 +53,7 @@ struct HeadTailSummary {
     saw_session_meta: bool,
     saw_user_event: bool,
     source: Option<SessionSource>,
+    parent_id: Option<ConversationId>,
     model_provider: Option<String>,
     created_at: Option<String>,
     updated_at: Option<String>,
@@ -398,6 +400,7 @@ async fn read_head_summary(path: &Path, head_limit: usize) -> io::Result<HeadTai
         match rollout_line.item {
             RolloutItem::SessionMeta(session_meta_line) => {
                 summary.source = Some(session_meta_line.meta.source.clone());
+                summary.parent_id = session_meta_line.meta.source.parent_id();
                 summary.model_provider = session_meta_line.meta.model_provider.clone();
                 summary.created_at = summary
                     .created_at
@@ -444,6 +447,97 @@ async fn read_head_summary(path: &Path, head_limit: usize) -> io::Result<HeadTai
 pub async fn read_head_for_summary(path: &Path) -> io::Result<Vec<serde_json::Value>> {
     let summary = read_head_summary(path, HEAD_RECORD_LIMIT).await?;
     Ok(summary.head)
+}
+
+/// Returns direct children of the given parent session.
+/// Scans all session files and filters by parent_id in SessionMeta.
+/// Unlike get_conversations, this returns all matching children without pagination
+/// since we expect relatively few children per parent.
+pub async fn list_session_children(
+    codex_home: &Path,
+    parent_id: ConversationId,
+) -> io::Result<Vec<ConversationItem>> {
+    let mut root = codex_home.to_path_buf();
+    root.push(SESSIONS_SUBDIR);
+
+    if !root.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut items: Vec<ConversationItem> = Vec::new();
+    let mut scanned_files = 0usize;
+
+    let year_dirs = collect_dirs_desc(&root, |s| s.parse::<u16>().ok()).await?;
+
+    'outer: for (_year, year_path) in year_dirs.iter() {
+        if scanned_files >= MAX_SCAN_FILES {
+            break;
+        }
+        let month_dirs = collect_dirs_desc(year_path, |s| s.parse::<u8>().ok()).await?;
+        for (_month, month_path) in month_dirs.iter() {
+            if scanned_files >= MAX_SCAN_FILES {
+                break 'outer;
+            }
+            let day_dirs = collect_dirs_desc(month_path, |s| s.parse::<u8>().ok()).await?;
+            for (_day, day_path) in day_dirs.iter() {
+                if scanned_files >= MAX_SCAN_FILES {
+                    break 'outer;
+                }
+                let day_files = collect_files(day_path, |name_str, path| {
+                    if !name_str.starts_with("rollout-") || !name_str.ends_with(".jsonl") {
+                        return None;
+                    }
+                    parse_timestamp_uuid_from_filename(name_str)
+                        .map(|(ts, id)| (ts, id, path.to_path_buf()))
+                })
+                .await?;
+
+                for (_ts, _sid, path) in day_files.into_iter() {
+                    scanned_files += 1;
+                    if scanned_files >= MAX_SCAN_FILES {
+                        break 'outer;
+                    }
+
+                    // Read head and check if parent_id matches
+                    let summary = read_head_summary(&path, HEAD_RECORD_LIMIT)
+                        .await
+                        .unwrap_or_default();
+
+                    // Only include if this session's parent_id matches our target
+                    if summary.parent_id != Some(parent_id) {
+                        continue;
+                    }
+
+                    // Must have session meta and at least one user message
+                    if summary.saw_session_meta && summary.saw_user_event {
+                        let HeadTailSummary {
+                            head,
+                            created_at,
+                            mut updated_at,
+                            ..
+                        } = summary;
+                        if updated_at.is_none() {
+                            updated_at = file_modified_rfc3339(&path)
+                                .await
+                                .unwrap_or(None)
+                                .or_else(|| created_at.clone());
+                        }
+                        items.push(ConversationItem {
+                            path,
+                            head,
+                            created_at,
+                            updated_at,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    // Sort by created_at descending (newest first)
+    items.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+
+    Ok(items)
 }
 
 async fn file_modified_rfc3339(path: &Path) -> io::Result<Option<String>> {

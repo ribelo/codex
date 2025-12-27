@@ -88,7 +88,10 @@ async fn responses_stream_includes_subagent_header_on_review() {
         effort,
         summary,
         conversation_id,
-        SessionSource::SubAgent(codex_protocol::protocol::SubAgentSource::Review),
+        SessionSource::SubAgent(codex_protocol::protocol::SubAgentSource {
+            parent_id: conversation_id,
+            kind: codex_protocol::protocol::SubAgentKind::Review,
+        }),
     );
 
     let mut prompt = Prompt::default();
@@ -182,9 +185,10 @@ async fn responses_stream_includes_subagent_header_on_other() {
         effort,
         summary,
         conversation_id,
-        SessionSource::SubAgent(codex_protocol::protocol::SubAgentSource::Other(
-            "my-task".to_string(),
-        )),
+        SessionSource::SubAgent(codex_protocol::protocol::SubAgentSource {
+            parent_id: conversation_id,
+            kind: codex_protocol::protocol::SubAgentKind::Other("my-task".to_string()),
+        }),
     );
 
     let mut prompt = Prompt::default();
@@ -274,9 +278,10 @@ async fn responses_respects_model_family_overrides_from_config() {
         effort,
         summary,
         conversation_id,
-        SessionSource::SubAgent(codex_protocol::protocol::SubAgentSource::Other(
-            "override-check".to_string(),
-        )),
+        SessionSource::SubAgent(codex_protocol::protocol::SubAgentSource {
+            parent_id: conversation_id,
+            kind: codex_protocol::protocol::SubAgentKind::Other("override-check".to_string()),
+        }),
     );
 
     let mut prompt = Prompt::default();

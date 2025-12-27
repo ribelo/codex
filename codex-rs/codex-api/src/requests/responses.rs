@@ -211,6 +211,7 @@ mod tests {
 
     #[test]
     fn azure_default_store_attaches_ids_and_headers() {
+        let conversation_id = codex_protocol::ConversationId::new();
         let provider = provider("azure", "https://example.openai.azure.com/v1");
         let input = vec![
             ResponseItem::Message {
@@ -227,7 +228,10 @@ mod tests {
 
         let request = ResponsesRequestBuilder::new("gpt-test", "inst", &input)
             .conversation(Some("conv-1".into()))
-            .session_source(Some(SessionSource::SubAgent(SubAgentSource::Review)))
+            .session_source(Some(SessionSource::SubAgent(SubAgentSource {
+                parent_id: conversation_id,
+                kind: codex_protocol::protocol::SubAgentKind::Review,
+            })))
             .build(&provider)
             .expect("request");
 

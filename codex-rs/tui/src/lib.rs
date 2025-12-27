@@ -438,7 +438,9 @@ async fn run_ratatui_app(
             &mut tui,
             &config.codex_home,
             &config.model_provider_id,
-            cli.resume_show_all,
+            resume_picker::PickerMode::Resume {
+                show_all: cli.resume_show_all,
+            },
         )
         .await?
         {

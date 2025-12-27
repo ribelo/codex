@@ -11,6 +11,7 @@ use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ExecApprovalRequestEvent;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::SubAgentKind;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::Submission;
 use codex_protocol::user_input::UserInput;
@@ -55,7 +56,10 @@ pub(crate) async fn run_codex_conversation_interactive(
         auth_manager,
         models_manager,
         initial_history.unwrap_or(InitialHistory::New),
-        SessionSource::SubAgent(SubAgentSource::Other(subagent_name.to_string())),
+        SessionSource::SubAgent(SubAgentSource {
+            parent_id: parent_session.conversation_id,
+            kind: SubAgentKind::Other(subagent_name.to_string()),
+        }),
         Some(parent_session.services.mcp_connection_manager.clone()),
         Arc::clone(&parent_session.services.skills_manager),
     )

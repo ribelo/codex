@@ -15,8 +15,8 @@ pub(crate) fn subagent_header(source: &Option<SessionSource>) -> Option<String> 
     let SessionSource::SubAgent(sub) = source.as_ref()? else {
         return None;
     };
-    match sub {
-        codex_protocol::protocol::SubAgentSource::Other(label) => Some(label.clone()),
+    match &sub.kind {
+        codex_protocol::protocol::SubAgentKind::Other(label) => Some(label.clone()),
         other => Some(
             serde_json::to_value(other)
                 .ok()

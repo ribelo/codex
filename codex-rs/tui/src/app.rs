@@ -235,7 +235,9 @@ impl App {
             .construct_model_family(model.as_str(), &config)
             .await;
         let mut chat_widget = match resume_selection {
-            ResumeSelection::StartFresh | ResumeSelection::Exit => {
+            ResumeSelection::StartFresh
+            | ResumeSelection::Exit
+            | ResumeSelection::ViewTranscript(_) => {
                 let init = crate::chatwidget::ChatWidgetInit {
                     config: config.clone(),
                     frame_requester: tui.frame_requester(),
@@ -544,7 +546,7 @@ impl App {
                     tui,
                     &self.config.codex_home,
                     &self.config.model_provider_id,
-                    false,
+                    crate::resume_picker::PickerMode::Resume { show_all: false },
                 )
                 .await?
                 {
@@ -607,10 +609,54 @@ impl App {
                             }
                         }
                     }
-                    ResumeSelection::Exit | ResumeSelection::StartFresh => {}
+                    ResumeSelection::Exit
+                    | ResumeSelection::StartFresh
+                    | ResumeSelection::ViewTranscript(_) => {}
                 }
 
                 // Leaving alt-screen may blank the inline viewport; force a redraw either way.
+                tui.frame_requester().schedule_frame();
+            }
+            AppEvent::OpenChildrenPicker(parent_id) => {
+                match crate::resume_picker::run_resume_picker(
+                    tui,
+                    &self.config.codex_home,
+                    &self.config.model_provider_id,
+                    crate::resume_picker::PickerMode::Children { parent_id },
+                )
+                .await?
+                {
+                    ResumeSelection::ViewTranscript(path) => {
+                        // Load rollout and display in transcript overlay
+                        match crate::resume_picker::rollout_to_cells(&path).await {
+                            Ok(cells) => {
+                                if cells.is_empty() {
+                                    tracing::info!(
+                                        "No transcript content found in {}",
+                                        path.display()
+                                    );
+                                } else {
+                                    self.overlay = Some(Overlay::new_transcript(cells));
+                                    tui.frame_requester().schedule_frame();
+                                }
+                            }
+                            Err(e) => {
+                                tracing::error!(
+                                    "Failed to load transcript from {}: {}",
+                                    path.display(),
+                                    e
+                                );
+                            }
+                        }
+                    }
+                    ResumeSelection::Resume(path) => {
+                        // Shouldn't happen in Children mode, but handle anyway
+                        tracing::warn!("Resume selected in children mode: {}", path.display());
+                    }
+                    ResumeSelection::Exit | ResumeSelection::StartFresh => {}
+                }
+
+                // Leaving alt-screen may blank the viewport; force a redraw
                 tui.frame_requester().schedule_frame();
             }
             AppEvent::InsertHistoryCell(cell) => {

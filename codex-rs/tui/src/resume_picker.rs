@@ -11,6 +11,7 @@ use codex_core::Cursor;
 use codex_core::INTERACTIVE_SESSION_SOURCES;
 use codex_core::RolloutRecorder;
 use codex_protocol::items::TurnItem;
+use codex_protocol::protocol::SubAgentKind;
 use color_eyre::eyre::Result;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
@@ -32,16 +33,34 @@ use crate::text_formatting::truncate_text;
 use crate::tui::FrameRequester;
 use crate::tui::Tui;
 use crate::tui::TuiEvent;
+use codex_core::list_session_children;
+use codex_protocol::ConversationId;
+use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SessionMetaLine;
+
+use crate::history_cell::AgentMessageCell;
+use crate::history_cell::HistoryCell;
+use crate::history_cell::UserHistoryCell;
 
 const PAGE_SIZE: usize = 25;
 const LOAD_NEAR_THRESHOLD: usize = 5;
+
+/// Mode for the picker - either resuming sessions or browsing children
+#[derive(Clone, Debug, PartialEq)]
+pub enum PickerMode {
+    /// Standard resume picker - shows interactive sessions filtered by CWD/provider
+    Resume { show_all: bool },
+    /// Children picker - shows subagent sessions with given parent_id
+    Children { parent_id: ConversationId },
+}
 
 #[derive(Debug, Clone)]
 pub enum ResumeSelection {
     StartFresh,
     Resume(PathBuf),
+    ViewTranscript(PathBuf),
     Exit,
 }
 
@@ -52,6 +71,7 @@ struct PageLoadRequest {
     request_token: usize,
     search_token: Option<usize>,
     default_provider: String,
+    mode: PickerMode,
 }
 
 type PageLoader = Arc<dyn Fn(PageLoadRequest) + Send + Sync>;
@@ -71,32 +91,49 @@ pub async fn run_resume_picker(
     tui: &mut Tui,
     codex_home: &Path,
     default_provider: &str,
-    show_all: bool,
+    mode: PickerMode,
 ) -> Result<ResumeSelection> {
     let alt = AltScreenGuard::enter(tui);
     let (bg_tx, bg_rx) = mpsc::unbounded_channel();
 
     let default_provider = default_provider.to_string();
-    let filter_cwd = if show_all {
-        None
-    } else {
-        std::env::current_dir().ok()
+    let filter_cwd = match &mode {
+        PickerMode::Resume { show_all: true } => None,
+        PickerMode::Resume { show_all: false } => std::env::current_dir().ok(),
+        PickerMode::Children { .. } => None,
     };
 
+    let mode_for_loader = mode.clone();
     let loader_tx = bg_tx.clone();
     let page_loader: PageLoader = Arc::new(move |request: PageLoadRequest| {
         let tx = loader_tx.clone();
         tokio::spawn(async move {
-            let provider_filter = vec![request.default_provider.clone()];
-            let page = RolloutRecorder::list_conversations(
-                &request.codex_home,
-                PAGE_SIZE,
-                request.cursor.as_ref(),
-                INTERACTIVE_SESSION_SOURCES,
-                Some(provider_filter.as_slice()),
-                request.default_provider.as_str(),
-            )
-            .await;
+            let page = match &request.mode {
+                PickerMode::Resume { .. } => {
+                    let provider_filter = vec![request.default_provider.clone()];
+                    RolloutRecorder::list_conversations(
+                        &request.codex_home,
+                        PAGE_SIZE,
+                        request.cursor.as_ref(),
+                        INTERACTIVE_SESSION_SOURCES,
+                        Some(provider_filter.as_slice()),
+                        request.default_provider.as_str(),
+                    )
+                    .await
+                }
+                PickerMode::Children { parent_id } => {
+                    // Use list_session_children - returns Vec, we wrap in ConversationsPage
+                    match list_session_children(&request.codex_home, *parent_id).await {
+                        Ok(items) => Ok(ConversationsPage {
+                            items,
+                            next_cursor: None, // No pagination for children
+                            num_scanned_files: 0,
+                            reached_scan_cap: false,
+                        }),
+                        Err(e) => Err(e),
+                    }
+                }
+            };
             let _ = tx.send(BackgroundEvent::PageLoaded {
                 request_token: request.request_token,
                 search_token: request.search_token,
@@ -110,7 +147,7 @@ pub async fn run_resume_picker(
         alt.tui.frame_requester(),
         page_loader,
         default_provider.clone(),
-        show_all,
+        mode,
         filter_cwd,
     );
     state.start_initial_load();
@@ -187,8 +224,12 @@ struct PickerState {
     page_loader: PageLoader,
     view_rows: Option<usize>,
     default_provider: String,
-    show_all: bool,
+    mode: PickerMode,
     filter_cwd: Option<PathBuf>,
+    /// Navigation stack for hierarchy - stores (parent_id, label) for breadcrumb
+    breadcrumbs: Vec<(ConversationId, String)>,
+    /// SubAgentKind for display in Children mode (extracted from source)
+    agent_kind: Option<SubAgentKind>,
 }
 
 struct PaginationState {
@@ -256,7 +297,7 @@ impl PickerState {
         requester: FrameRequester,
         page_loader: PageLoader,
         default_provider: String,
-        show_all: bool,
+        mode: PickerMode,
         filter_cwd: Option<PathBuf>,
     ) -> Self {
         Self {
@@ -280,8 +321,10 @@ impl PickerState {
             page_loader,
             view_rows: None,
             default_provider,
-            show_all,
+            mode,
             filter_cwd,
+            breadcrumbs: Vec::new(),
+            agent_kind: None,
         }
     }
 
@@ -301,7 +344,77 @@ impl PickerState {
             }
             KeyCode::Enter => {
                 if let Some(row) = self.filtered_rows.get(self.selected) {
-                    return Ok(Some(ResumeSelection::Resume(row.path.clone())));
+                    match &self.mode {
+                        PickerMode::Resume { .. } => {
+                            return Ok(Some(ResumeSelection::Resume(row.path.clone())));
+                        }
+                        PickerMode::Children { .. } => {
+                            return Ok(Some(ResumeSelection::ViewTranscript(row.path.clone())));
+                        }
+                    }
+                }
+            }
+            KeyCode::Right | KeyCode::Char('l') => {
+                // Drill into selected session's children
+                if let PickerMode::Children { .. } = &self.mode {
+                    if let Some(row) = self.filtered_rows.get(self.selected) {
+                        // Extract conversation_id from the selected row's path
+                        if let Some(conversation_id) = extract_conversation_id_from_path(&row.path)
+                        {
+                            let label = row.preview.chars().take(20).collect::<String>();
+                            self.breadcrumbs.push((
+                                match &self.mode {
+                                    PickerMode::Children { parent_id } => *parent_id,
+                                    _ => conversation_id,
+                                },
+                                label,
+                            ));
+                            self.mode = PickerMode::Children {
+                                parent_id: conversation_id,
+                            };
+                            // Reset state and reload
+                            self.all_rows.clear();
+                            self.filtered_rows.clear();
+                            self.seen_paths.clear();
+                            self.selected = 0;
+                            self.scroll_top = 0;
+                            self.pagination = PaginationState {
+                                next_cursor: None,
+                                num_scanned_files: 0,
+                                reached_scan_cap: false,
+                                loading: LoadingState::Idle,
+                            };
+                            self.start_initial_load();
+                            self.request_frame();
+                        }
+                    }
+                }
+            }
+            KeyCode::Left | KeyCode::Char('h') => {
+                // Go back up the hierarchy
+                if let PickerMode::Children { .. } = &self.mode {
+                    if let Some((prev_parent_id, _label)) = self.breadcrumbs.pop() {
+                        self.mode = PickerMode::Children {
+                            parent_id: prev_parent_id,
+                        };
+                        // Reset state and reload
+                        self.all_rows.clear();
+                        self.filtered_rows.clear();
+                        self.seen_paths.clear();
+                        self.selected = 0;
+                        self.scroll_top = 0;
+                        self.pagination = PaginationState {
+                            next_cursor: None,
+                            num_scanned_files: 0,
+                            reached_scan_cap: false,
+                            loading: LoadingState::Idle,
+                        };
+                        self.start_initial_load();
+                        self.request_frame();
+                    } else {
+                        // No more history - exit picker
+                        return Ok(Some(ResumeSelection::Exit));
+                    }
                 }
             }
             KeyCode::Up => {
@@ -367,20 +480,33 @@ impl PickerState {
         self.search_state = SearchState::Idle;
         self.selected = 0;
 
+        self.load_page_at_cursor(None, LoadTrigger::Scroll);
+    }
+
+    fn load_page_at_cursor(&mut self, cursor: Option<Cursor>, trigger: LoadTrigger) {
+        if self.pagination.loading.is_pending() {
+            return;
+        }
         let request_token = self.allocate_request_token();
+        let search_token = match trigger {
+            LoadTrigger::Scroll => None,
+            LoadTrigger::Search { token } => Some(token),
+        };
         self.pagination.loading = LoadingState::Pending(PendingLoad {
             request_token,
-            search_token: None,
+            search_token,
         });
         self.request_frame();
 
-        (self.page_loader)(PageLoadRequest {
+        let request = PageLoadRequest {
             codex_home: self.codex_home.clone(),
-            cursor: None,
+            cursor,
             request_token,
-            search_token: None,
+            search_token,
             default_provider: self.default_provider.clone(),
-        });
+            mode: self.mode.clone(),
+        };
+        (self.page_loader)(request);
     }
 
     fn handle_background_event(&mut self, event: BackgroundEvent) -> Result<()> {
@@ -463,7 +589,7 @@ impl PickerState {
     }
 
     fn row_matches_filter(&self, row: &Row) -> bool {
-        if self.show_all {
+        if matches!(self.mode, PickerMode::Resume { show_all: true }) {
             return true;
         }
         let Some(filter_cwd) = self.filter_cwd.as_ref() else {
@@ -610,6 +736,7 @@ impl PickerState {
             request_token,
             search_token,
             default_provider: self.default_provider.clone(),
+            mode: self.mode.clone(),
         });
     }
 
@@ -699,6 +826,19 @@ fn preview_from_head(head: &[serde_json::Value]) -> Option<String> {
         })
 }
 
+/// Extract ConversationId from a rollout file path.
+/// Path format: .../rollout-YYYY-MM-DDThh-mm-ss-<uuid>.jsonl
+fn extract_conversation_id_from_path(path: &Path) -> Option<ConversationId> {
+    let file_name = path.file_name()?.to_str()?;
+    let core = file_name.strip_prefix("rollout-")?.strip_suffix(".jsonl")?;
+    // Scan from the right for a '-' such that the suffix parses as a UUID.
+    // UUIDs contain hyphens, so we try each dash position until we find a valid UUID.
+    core.match_indices('-').rev().find_map(|(i, _)| {
+        let candidate = &core[i + 1..];
+        ConversationId::from_string(candidate).ok()
+    })
+}
+
 fn draw_picker(tui: &mut Tui, state: &PickerState) -> std::io::Result<()> {
     // Render full-screen overlay
     let height = tui.terminal.size()?.height;
@@ -727,7 +867,7 @@ fn draw_picker(tui: &mut Tui, state: &PickerState) -> std::io::Result<()> {
         };
         frame.render_widget_ref(Line::from(q), search);
 
-        let metrics = calculate_column_metrics(&state.filtered_rows, state.show_all);
+        let metrics = calculate_column_metrics(&state.filtered_rows, &state.mode);
 
         // Column headers and list
         render_column_headers(frame, columns, &metrics);
@@ -898,6 +1038,62 @@ fn render_empty_state_line(state: &PickerState) -> Line<'static> {
     vec!["No sessions yet".italic().dim()].into()
 }
 
+/// Load a rollout file and convert to displayable HistoryCell items.
+/// Only handles text messages for simplicity.
+pub(crate) async fn rollout_to_cells(
+    path: &std::path::Path,
+) -> std::io::Result<Vec<Arc<dyn HistoryCell>>> {
+    let history = RolloutRecorder::get_rollout_history(path).await?;
+    let items = history.get_rollout_items();
+
+    let mut cells: Vec<Arc<dyn HistoryCell>> = Vec::new();
+    let mut is_first_assistant = true;
+
+    for item in items {
+        match item {
+            RolloutItem::ResponseItem(resp_item) => {
+                if let ResponseItem::Message { role, content, .. } = resp_item {
+                    if role == "user" {
+                        // Extract text from content items
+                        let text: String = content
+                            .iter()
+                            .filter_map(|c| match c {
+                                ContentItem::InputText { text } => Some(text.clone()),
+                                _ => None,
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        if !text.is_empty() {
+                            cells.push(Arc::new(UserHistoryCell { message: text }));
+                        }
+                    } else if role == "assistant" {
+                        // Extract text from content items
+                        let text: String = content
+                            .iter()
+                            .filter_map(|c| match c {
+                                ContentItem::OutputText { text, .. } => Some(text.clone()),
+                                _ => None,
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        if !text.is_empty() {
+                            let lines: Vec<Line<'static>> =
+                                text.lines().map(|l| Line::from(l.to_string())).collect();
+                            cells.push(Arc::new(AgentMessageCell::new(lines, is_first_assistant)));
+                            is_first_assistant = false;
+                        }
+                    }
+                }
+            }
+            _ => {
+                // Skip other items (SessionMeta, EventMsg, etc.)
+            }
+        }
+    }
+
+    Ok(cells)
+}
+
 fn human_time_ago(ts: DateTime<Utc>) -> String {
     let now = Utc::now();
     let delta = now - ts;
@@ -989,7 +1185,7 @@ struct ColumnMetrics {
     labels: Vec<(String, String, String)>,
 }
 
-fn calculate_column_metrics(rows: &[Row], include_cwd: bool) -> ColumnMetrics {
+fn calculate_column_metrics(rows: &[Row], mode: &PickerMode) -> ColumnMetrics {
     fn right_elide(s: &str, max: usize) -> String {
         if s.chars().count() <= max {
             return s.to_string();
@@ -1008,6 +1204,8 @@ fn calculate_column_metrics(rows: &[Row], include_cwd: bool) -> ColumnMetrics {
             .collect();
         format!("…{tail}")
     }
+
+    let include_cwd = matches!(mode, PickerMode::Resume { show_all: true });
 
     let mut labels: Vec<(String, String, String)> = Vec::with_capacity(rows.len());
     let mut max_updated_width = UnicodeWidthStr::width("Updated");
@@ -1203,7 +1401,7 @@ mod tests {
             FrameRequester::test_dummy(),
             loader,
             String::from("openai"),
-            true,
+            PickerMode::Resume { show_all: true },
             None,
         );
 
@@ -1241,7 +1439,7 @@ mod tests {
         state.scroll_top = 0;
         state.update_view_rows(3);
 
-        let metrics = calculate_column_metrics(&state.filtered_rows, state.show_all);
+        let metrics = calculate_column_metrics(&state.filtered_rows, &state.mode);
 
         let width: u16 = 80;
         let height: u16 = 6;
@@ -1352,7 +1550,7 @@ mod tests {
             FrameRequester::test_dummy(),
             loader,
             String::from("openai"),
-            true,
+            PickerMode::Resume { show_all: true },
             None,
         );
 
@@ -1374,7 +1572,7 @@ mod tests {
         state.scroll_top = 0;
         state.update_view_rows(4);
 
-        let metrics = calculate_column_metrics(&state.filtered_rows, state.show_all);
+        let metrics = calculate_column_metrics(&state.filtered_rows, &state.mode);
 
         let width: u16 = 80;
         let height: u16 = 9;
@@ -1431,7 +1629,7 @@ mod tests {
             FrameRequester::test_dummy(),
             loader,
             String::from("openai"),
-            true,
+            PickerMode::Resume { show_all: true },
             None,
         );
 
@@ -1499,7 +1697,7 @@ mod tests {
             FrameRequester::test_dummy(),
             loader,
             String::from("openai"),
-            true,
+            PickerMode::Resume { show_all: true },
             None,
         );
         state.reset_pagination();
@@ -1530,7 +1728,7 @@ mod tests {
             FrameRequester::test_dummy(),
             loader,
             String::from("openai"),
-            true,
+            PickerMode::Resume { show_all: true },
             None,
         );
 
@@ -1580,7 +1778,7 @@ mod tests {
             FrameRequester::test_dummy(),
             loader,
             String::from("openai"),
-            true,
+            PickerMode::Resume { show_all: true },
             None,
         );
 
@@ -1626,7 +1824,7 @@ mod tests {
             FrameRequester::test_dummy(),
             loader,
             String::from("openai"),
-            true,
+            PickerMode::Resume { show_all: true },
             None,
         );
         state.reset_pagination();

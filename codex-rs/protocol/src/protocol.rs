@@ -1250,13 +1250,23 @@ pub enum SessionSource {
     Unknown,
 }
 
+/// The type/kind of subagent (review, compact, custom name)
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(rename_all = "snake_case")]
-pub enum SubAgentSource {
+pub enum SubAgentKind {
     Review,
     Compact,
     Other(String),
+}
+
+/// Information about a subagent session, including its parent linkage
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema, TS)]
+pub struct SubAgentSource {
+    /// The conversation ID of the parent session that spawned this subagent
+    pub parent_id: ConversationId,
+    /// The type of subagent
+    pub kind: SubAgentKind,
 }
 
 impl fmt::Display for SessionSource {
@@ -1273,12 +1283,29 @@ impl fmt::Display for SessionSource {
     }
 }
 
-impl fmt::Display for SubAgentSource {
+impl fmt::Display for SubAgentKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            SubAgentSource::Review => f.write_str("review"),
-            SubAgentSource::Compact => f.write_str("compact"),
-            SubAgentSource::Other(other) => f.write_str(other),
+            SubAgentKind::Review => f.write_str("review"),
+            SubAgentKind::Compact => f.write_str("compact"),
+            SubAgentKind::Other(other) => f.write_str(other),
+        }
+    }
+}
+
+impl fmt::Display for SubAgentSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.kind)
+    }
+}
+
+impl SessionSource {
+    /// Returns the parent_id if this is a SubAgent or Handoff session.
+    pub fn parent_id(&self) -> Option<ConversationId> {
+        match self {
+            SessionSource::SubAgent(sub) => Some(sub.parent_id),
+            SessionSource::Handoff { parent_id, .. } => Some(*parent_id),
+            _ => None,
         }
     }
 }

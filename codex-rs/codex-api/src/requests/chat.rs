@@ -333,6 +333,7 @@ mod tests {
 
     #[test]
     fn attaches_conversation_and_subagent_headers() {
+        let conversation_id = codex_protocol::ConversationId::new();
         let prompt_input = vec![ResponseItem::Message {
             id: None,
             role: "user".to_string(),
@@ -342,7 +343,10 @@ mod tests {
         }];
         let req = ChatRequestBuilder::new("gpt-test", "inst", &prompt_input, &[])
             .conversation_id(Some("conv-1".into()))
-            .session_source(Some(SessionSource::SubAgent(SubAgentSource::Review)))
+            .session_source(Some(SessionSource::SubAgent(SubAgentSource {
+                parent_id: conversation_id,
+                kind: codex_protocol::protocol::SubAgentKind::Review,
+            })))
             .build(&provider())
             .expect("request");
 

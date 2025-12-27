@@ -20,6 +20,7 @@ pub enum SlashCommand {
     Handoff,
     New,
     Resume,
+    Children,
     Init,
     Compact,
     Undo,
@@ -46,6 +47,7 @@ impl SlashCommand {
             SlashCommand::Review => "review my current changes and find issues",
             SlashCommand::Handoff => "continue work in a new focused thread",
             SlashCommand::Resume => "resume a saved chat",
+            SlashCommand::Children => "browse subagent sessions spawned from this session",
             SlashCommand::Undo => "ask Codex to undo a turn",
             SlashCommand::Quit | SlashCommand::Exit => "exit Codex",
             SlashCommand::Diff => "show git diff (including untracked files)",
@@ -73,6 +75,7 @@ impl SlashCommand {
         match self {
             SlashCommand::New
             | SlashCommand::Resume
+            | SlashCommand::Children
             | SlashCommand::Init
             | SlashCommand::Compact
             | SlashCommand::Undo
