@@ -1333,6 +1333,7 @@ impl HistoryCell for SubagentTaskCell {
         // Indentation based on depth
         let indent = "  ".repeat(self.depth as usize);
         let content_indent = format!("{indent}  ");
+        let activity_indent = format!("{indent}    ");
 
         // Lock state
         let (status, items, final_message) = if let Ok(state) = self.state.lock() {
@@ -1438,7 +1439,7 @@ impl HistoryCell for SubagentTaskCell {
                         None => "·".dim(),
                     };
                     lines.push(Line::from(vec![
-                        content_indent.clone().into(),
+                        activity_indent.clone().into(),
                         indicator,
                         " ".into(),
                         truncate_text(&activity.summary, wrap_width.saturating_sub(2)).dim(),
@@ -1447,7 +1448,7 @@ impl HistoryCell for SubagentTaskCell {
                 SubagentLogEntry::Child(idx) => {
                     if skipped_block_count > 0 {
                         lines.push(Line::from(vec![
-                            content_indent.clone().into(),
+                            activity_indent.clone().into(),
                             format!("... +{skipped_block_count} more").dim().italic(),
                         ]));
                         skipped_block_count = 0;
@@ -1461,7 +1462,7 @@ impl HistoryCell for SubagentTaskCell {
 
         if skipped_block_count > 0 {
             lines.push(Line::from(vec![
-                content_indent.clone().into(),
+                activity_indent.clone().into(),
                 format!("... +{skipped_block_count} more").dim().italic(),
             ]));
         }
@@ -1472,7 +1473,7 @@ impl HistoryCell for SubagentTaskCell {
             if !trimmed.is_empty() {
                 let single_line = trimmed.replace('\n', " ");
                 lines.push(Line::from(vec![
-                    content_indent.into(),
+                    activity_indent.into(),
                     "↩ ".dim(),
                     truncate_text(&single_line, wrap_width.saturating_sub(2)).dim(),
                 ]));
@@ -1488,6 +1489,7 @@ impl HistoryCell for SubagentTaskCell {
         // Indentation based on depth
         let indent = "  ".repeat(self.depth as usize);
         let content_indent = format!("{indent}  ");
+        let activity_indent = format!("{indent}    ");
 
         // Lock state
         let (status, items, final_message) = if let Ok(state) = self.state.lock() {
@@ -1578,14 +1580,14 @@ impl HistoryCell for SubagentTaskCell {
                     {
                         if idx == 0 {
                             lines.push(Line::from(vec![
-                                content_indent.clone().into(),
+                                activity_indent.clone().into(),
                                 indicator.clone(),
                                 " ".into(),
                                 segment.to_string().dim(),
                             ]));
                         } else {
                             lines.push(Line::from(vec![
-                                content_indent.clone().into(),
+                                activity_indent.clone().into(),
                                 "  ".into(),
                                 segment.to_string().dim(),
                             ]));
@@ -1608,13 +1610,13 @@ impl HistoryCell for SubagentTaskCell {
                 for (idx, segment) in textwrap::wrap(trimmed, msg_wrap_width).iter().enumerate() {
                     if idx == 0 {
                         lines.push(Line::from(vec![
-                            content_indent.clone().into(),
+                            activity_indent.clone().into(),
                             "↩ ".dim(),
                             segment.to_string().dim(),
                         ]));
                     } else {
                         lines.push(Line::from(vec![
-                            content_indent.clone().into(),
+                            activity_indent.clone().into(),
                             "  ".into(),
                             segment.to_string().dim(),
                         ]));
@@ -3108,7 +3110,7 @@ mod tests {
         insta::assert_snapshot!(rendered.join("\n"), @r"
         • Delegated to @explorer
           └ List directory contents
-          ✓ Run ls -la
+            ✓ Run ls -la
         ");
     }
 
