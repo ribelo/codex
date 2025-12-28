@@ -61,16 +61,19 @@ use codex_protocol::user_input::UserInput;
 
 pub fn create_task_tool(codex_home: &Path, allowed_subagents: Option<&[String]>) -> ToolSpec {
     let registry = SubagentRegistry::new(codex_home);
-    let agents_list: Vec<_> = match allowed_subagents {
-        // None means full access to all agents
-        None => registry.list(),
-        // Some([...]) means only include agents in the allowed list
-        Some(allowed) => registry
-            .list()
-            .into_iter()
-            .filter(|a| allowed.contains(&a.slug))
-            .collect(),
-    };
+    let agents_list: Vec<_> = registry
+        .list()
+        .into_iter()
+        .filter(|a| {
+            match allowed_subagents {
+                // If an allowlist exists, it is the sole source of truth.
+                // Show the agent if it's allowed, regardless of internal status.
+                Some(allowed) => allowed.contains(&a.slug),
+                // If no allowlist, hide internal agents by default.
+                None => !a.metadata.is_internal(),
+            }
+        })
+        .collect();
 
     let agents_desc = if agents_list.is_empty() {
         "(No subagents found in ~/.codex/agents)".to_string()
@@ -239,18 +242,30 @@ impl ToolHandler for TaskHandler {
         // Enforce allowed_subagents restriction at execution time.
         // This prevents the model from bypassing restrictions by guessing subagent names.
         let config = turn.client.config();
-        if let Some(ref allowed) = config.allowed_subagents
-            && !allowed.contains(&args.subagent_name)
-        {
-            let allowed_str = if allowed.is_empty() {
-                "(none)".to_string()
+
+        // Block internal agents from being spawned via the task tool.
+        // Internal agents can only be spawned if explicitly listed in allowed_subagents.
+        // This allows orchestrator agents to use internal subagents while protecting
+        // root sessions from accidentally spawning them.
+        let is_allowed = match config.allowed_subagents.as_ref() {
+            // If allowlist is defined, it is the sole source of truth
+            Some(allowed) => allowed.contains(&args.subagent_name),
+            // If no allowlist, block internal agents
+            None => !subagent_def.metadata.is_internal(),
+        };
+
+        if !is_allowed {
+            if subagent_def.metadata.is_internal() {
+                return Err(FunctionCallError::RespondToModel(format!(
+                    "Subagent '{}' is internal and cannot be spawned directly. Use the appropriate dedicated tool or add it to 'allowed_subagents'.",
+                    args.subagent_name
+                )));
             } else {
-                allowed.join(", ")
-            };
-            return Err(FunctionCallError::RespondToModel(format!(
-                "Subagent '{}' is not allowed. Allowed subagents: {}",
-                args.subagent_name, allowed_str
-            )));
+                return Err(FunctionCallError::RespondToModel(format!(
+                    "Subagent '{}' is not allowed by policy.",
+                    args.subagent_name
+                )));
+            }
         }
 
         let is_new_session = args.session_id.is_none();

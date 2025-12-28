@@ -308,6 +308,12 @@ pub struct Config {
 
     /// OTEL configuration (exporter type, endpoint, headers, etc.).
     pub otel: crate::config::types::OtelConfig,
+
+    /// When set, the session runs in "session reader" mode with only
+    /// search_session_log and read_session_log tools bound to this file path.
+    /// This is used by the session_reader subagent to securely inspect past sessions
+    /// without shell access.
+    pub session_log_path: Option<PathBuf>,
 }
 
 impl Config {
@@ -1341,6 +1347,7 @@ impl Config {
                     exporter,
                 }
             },
+            session_log_path: None,
         };
         Ok(config)
     }
@@ -3087,6 +3094,7 @@ model_verbosity = "high"
                 shell: ShellConfig::default(),
                 otel: OtelConfig::default(),
                 ghost_snapshot: GhostSnapshotConfig::default(),
+                session_log_path: None,
             },
             o3_profile_config
         );
@@ -3168,6 +3176,7 @@ model_verbosity = "high"
             shell: ShellConfig::default(),
             otel: OtelConfig::default(),
             ghost_snapshot: GhostSnapshotConfig::default(),
+            session_log_path: None,
         };
 
         assert_eq!(expected_gpt3_profile_config, gpt3_profile_config);
@@ -3264,6 +3273,7 @@ model_verbosity = "high"
             shell: ShellConfig::default(),
             otel: OtelConfig::default(),
             ghost_snapshot: GhostSnapshotConfig::default(),
+            session_log_path: None,
         };
 
         assert_eq!(expected_zdr_profile_config, zdr_profile_config);
@@ -3346,6 +3356,7 @@ model_verbosity = "high"
             shell: ShellConfig::default(),
             otel: OtelConfig::default(),
             ghost_snapshot: GhostSnapshotConfig::default(),
+            session_log_path: None,
         };
 
         assert_eq!(expected_gpt5_profile_config, gpt5_profile_config);

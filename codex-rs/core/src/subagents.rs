@@ -98,6 +98,11 @@ pub struct SubagentMetadata {
     pub profile: SubagentProfile,
     pub sandbox_policy: SubagentSandboxPolicy,
     pub approval_policy: SubagentApprovalPolicy,
+    /// Whether this agent is internal (not visible to main agent by default).
+    /// Internal agents can only be spawned by tool implementations or by agents
+    /// that explicitly list them in `allowed_subagents`.
+    #[serde(default)]
+    pub internal: bool,
     /// Optional list of subagent slugs this subagent is allowed to delegate to.
     /// - `None`: full access to all subagents (default for root sessions)
     /// - `Some(vec![])`: no access to any subagents
@@ -109,6 +114,11 @@ pub struct SubagentMetadata {
 }
 
 impl SubagentMetadata {
+    /// Returns true if this agent is internal (not visible by default).
+    pub fn is_internal(&self) -> bool {
+        self.internal
+    }
+
     /// Load the profile configuration from the config file if a profile name is specified.
     /// Uses async I/O to avoid blocking the executor.
     pub async fn load_profile(&self, codex_home: &Path) -> Result<Option<ConfigProfile>> {
@@ -235,6 +245,9 @@ const BUILTIN_LIBRARIAN_AGENT: &str = include_str!("../templates/subagents/libra
 /// Built-in painter agent template.
 const BUILTIN_PAINTER_AGENT: &str = include_str!("../templates/subagents/painter.md");
 
+/// Built-in session_reader agent template (internal).
+const BUILTIN_SESSION_READER_AGENT: &str = include_str!("../templates/subagents/session_reader.md");
+
 /// Ensure built-in agents exist in the agents directory.
 /// Creates the agents directory and any missing built-in agent files.
 pub fn ensure_builtin_agents(codex_home: &Path) {
@@ -255,6 +268,7 @@ pub fn ensure_builtin_agents(codex_home: &Path) {
         ("general.md", BUILTIN_GENERAL_AGENT),
         ("librarian.md", BUILTIN_LIBRARIAN_AGENT),
         ("painter.md", BUILTIN_PAINTER_AGENT),
+        ("session_reader.md", BUILTIN_SESSION_READER_AGENT),
     ];
 
     for (filename, content) in builtin_agents {
@@ -457,8 +471,8 @@ mod tests {
 
         let outcome = load_subagents(codex_home.path()).await;
         assert!(outcome.errors.is_empty(), "Expected no errors");
-        // Includes user agent + 7 built-in agents
-        assert_eq!(outcome.agents.len(), 8);
+        // Includes user agent + 8 built-in agents
+        assert_eq!(outcome.agents.len(), 9);
         assert!(outcome.agents.iter().any(|a| a.slug == "test-agent"));
         assert!(outcome.agents.iter().any(|a| a.slug == "review"));
     }
@@ -475,8 +489,8 @@ mod tests {
 
         let outcome = load_subagents(codex_home.path()).await;
         assert!(outcome.errors.is_empty(), "Expected no errors");
-        // Includes user agent + 7 built-in agents
-        assert_eq!(outcome.agents.len(), 8);
+        // Includes user agent + 8 built-in agents
+        assert_eq!(outcome.agents.len(), 9);
         assert!(outcome.agents.iter().any(|a| a.slug == "explorer"));
         assert!(outcome.agents.iter().any(|a| a.slug == "review"));
     }
@@ -493,7 +507,7 @@ mod tests {
 
         let outcome = load_subagents(codex_home.path()).await;
         // Built-in agents should still load successfully
-        assert_eq!(outcome.agents.len(), 7);
+        assert_eq!(outcome.agents.len(), 8);
         assert!(outcome.agents.iter().any(|a| a.slug == "review"));
         assert_eq!(outcome.errors.len(), 1);
         assert_eq!(outcome.errors[0].path, path);
@@ -524,7 +538,7 @@ mod tests {
 
         let outcome = load_subagents(codex_home.path()).await;
         // Built-in agents should still load successfully
-        assert_eq!(outcome.agents.len(), 7);
+        assert_eq!(outcome.agents.len(), 8);
         assert!(outcome.agents.iter().any(|a| a.slug == "review"));
         assert_eq!(outcome.errors.len(), 1);
         assert_eq!(outcome.errors[0].path, path);
@@ -547,7 +561,7 @@ mod tests {
 
         let outcome = load_subagents(codex_home.path()).await;
         // Built-in agents should still load successfully
-        assert_eq!(outcome.agents.len(), 7);
+        assert_eq!(outcome.agents.len(), 8);
         assert!(outcome.agents.iter().any(|a| a.slug == "review"));
         assert_eq!(outcome.errors.len(), 1);
         assert_eq!(outcome.errors[0].path, path);
@@ -573,7 +587,7 @@ mod tests {
 
         let outcome = load_subagents(codex_home.path()).await;
         // Built-in agents should still load successfully
-        assert_eq!(outcome.agents.len(), 7);
+        assert_eq!(outcome.agents.len(), 8);
         assert!(outcome.agents.iter().any(|a| a.slug == "review"));
         assert_eq!(outcome.errors.len(), 1);
         assert_eq!(outcome.errors[0].path, path);
@@ -599,8 +613,8 @@ mod tests {
             "Expected no errors: {:?}",
             outcome.errors
         );
-        // Includes user agent + 7 built-in agents
-        assert_eq!(outcome.agents.len(), 8);
+        // Includes user agent + 8 built-in agents
+        assert_eq!(outcome.agents.len(), 9);
         let minimal = outcome
             .agents
             .iter()
@@ -618,8 +632,8 @@ mod tests {
         let codex_home = setup_codex_home();
         let outcome = load_subagents(codex_home.path()).await;
         assert!(outcome.errors.is_empty());
-        // 7 Built-in agents are auto-created
-        assert_eq!(outcome.agents.len(), 7);
+        // 8 Built-in agents are auto-created
+        assert_eq!(outcome.agents.len(), 8);
         assert!(outcome.agents.iter().any(|a| a.slug == "review"));
     }
 
@@ -629,8 +643,8 @@ mod tests {
         // Don't create agents dir
         let outcome = load_subagents(temp.path()).await;
         assert!(outcome.errors.is_empty());
-        // 7 Built-in agents are auto-created (agents dir is also created)
-        assert_eq!(outcome.agents.len(), 7);
+        // 8 Built-in agents are auto-created (agents dir is also created)
+        assert_eq!(outcome.agents.len(), 8);
         assert!(outcome.agents.iter().any(|a| a.slug == "review"));
     }
 
@@ -646,6 +660,7 @@ mod tests {
                     sandbox_policy: SubagentSandboxPolicy::Inherit,
                     approval_policy: SubagentApprovalPolicy::Inherit,
                     allowed_subagents: None,
+                    internal: false,
                     extra: HashMap::new(),
                 },
                 system_prompt: "Test prompt".to_string(),
@@ -656,5 +671,121 @@ mod tests {
         let registry = SubagentRegistry::from_outcome(&outcome);
         assert!(registry.get("test").is_some());
         assert_eq!(registry.list().len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod internal_visibility_tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn setup_codex_home() -> TempDir {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let agents_dir = temp.path().join("agents");
+        fs::create_dir_all(&agents_dir).unwrap();
+        temp
+    }
+
+    fn write_agent(codex_home: &TempDir, slug: &str, content: &str) {
+        let agents_dir = codex_home.path().join("agents");
+        let path = agents_dir.join(format!("{slug}.md"));
+        fs::write(&path, content).unwrap();
+    }
+
+    #[tokio::test]
+    async fn internal_agent_parsed_from_frontmatter() {
+        let codex_home = setup_codex_home();
+        write_agent(
+            &codex_home,
+            "internal-test",
+            "---\nname: Internal Test\ndescription: An internal agent\ninternal: true\nprofile: inherit\nsandbox_policy: read-only\napproval_policy: never\n---\n\nYou are an internal test agent.",
+        );
+
+        let outcome = load_subagents(codex_home.path()).await;
+        let agent = outcome
+            .agents
+            .iter()
+            .find(|a| a.slug == "internal-test")
+            .expect("internal-test agent should exist");
+
+        assert!(
+            agent.metadata.is_internal(),
+            "Agent should be marked internal"
+        );
+    }
+
+    #[tokio::test]
+    async fn public_agent_is_not_internal_by_default() {
+        let codex_home = setup_codex_home();
+        write_agent(
+            &codex_home,
+            "public-test",
+            "---\nname: Public Test\ndescription: A public agent\nprofile: inherit\nsandbox_policy: read-only\napproval_policy: never\n---\n\nYou are a public test agent.",
+        );
+
+        let outcome = load_subagents(codex_home.path()).await;
+        let agent = outcome
+            .agents
+            .iter()
+            .find(|a| a.slug == "public-test")
+            .expect("public-test agent should exist");
+
+        assert!(
+            !agent.metadata.is_internal(),
+            "Agent should not be internal by default"
+        );
+    }
+
+    #[test]
+    fn internal_agent_accessible_via_registry_get() {
+        let outcome = SubagentLoadOutcome {
+            agents: vec![SubagentDefinition {
+                slug: "internal-agent".to_string(),
+                metadata: SubagentMetadata {
+                    name: Some("Internal".to_string()),
+                    description: Some("Internal agent".to_string()),
+                    internal: true,
+                    profile: SubagentProfile::Inherit,
+                    sandbox_policy: SubagentSandboxPolicy::ReadOnly,
+                    approval_policy: SubagentApprovalPolicy::Never,
+                    allowed_subagents: Some(vec![]),
+                    extra: std::collections::HashMap::new(),
+                },
+                system_prompt: "Internal prompt".to_string(),
+            }],
+            errors: vec![],
+        };
+
+        let registry = SubagentRegistry::from_outcome(&outcome);
+
+        // Internal agent should be accessible via get()
+        let agent = registry.get("internal-agent");
+        assert!(
+            agent.is_some(),
+            "Internal agent should be accessible via get()"
+        );
+        assert!(agent.unwrap().metadata.is_internal());
+
+        // Internal agent should also appear in list()
+        assert_eq!(registry.list().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn builtin_session_reader_is_internal() {
+        let codex_home = setup_codex_home();
+
+        // Ensure builtin agents are created
+        ensure_builtin_agents(codex_home.path());
+
+        let registry = SubagentRegistry::new(codex_home.path());
+
+        let session_reader = registry.get("session_reader");
+        assert!(session_reader.is_some(), "session_reader should exist");
+        assert!(
+            session_reader.unwrap().metadata.is_internal(),
+            "session_reader should be marked as internal"
+        );
     }
 }

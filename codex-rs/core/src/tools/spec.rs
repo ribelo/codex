@@ -8,6 +8,8 @@ use crate::tools::handlers::apply_patch::ApplyPatchToolType;
 use crate::tools::handlers::apply_patch::create_apply_patch_freeform_tool;
 use crate::tools::handlers::apply_patch::create_apply_patch_json_tool;
 use crate::tools::registry::ToolRegistryBuilder;
+use crate::tools::handlers::read_session::create_read_session_tool;
+use crate::tools::handlers::read_session::ReadSessionHandler;
 use codex_protocol::openai_models::ConfigShellToolType;
 use serde::Deserialize;
 use serde::Serialize;
@@ -32,6 +34,9 @@ pub(crate) struct ToolsConfig {
     pub allowed_subagents: Option<Vec<String>>,
     /// Whether the sandbox policy is read-only (disables write tools).
     pub is_read_only: bool,
+    /// When set, run in "session reader" mode with only session log tools.
+    /// The path is bound at spawn time for security.
+    pub session_log_path: Option<std::path::PathBuf>,
 }
 
 pub(crate) struct ToolsConfigParams<'a> {
@@ -44,6 +49,8 @@ pub(crate) struct ToolsConfigParams<'a> {
     pub(crate) allowed_subagents: Option<Vec<String>>,
     /// Whether the sandbox policy is read-only.
     pub(crate) is_read_only: bool,
+    /// When set, run in "session reader" mode with only session log tools.
+    pub(crate) session_log_path: Option<std::path::PathBuf>,
 }
 
 impl ToolsConfig {
@@ -55,6 +62,7 @@ impl ToolsConfig {
             experimental_tools_enable,
             allowed_subagents,
             is_read_only,
+            session_log_path,
         } = params;
         let include_apply_patch_tool = features.enabled(Feature::ApplyPatchFreeform);
         let include_web_search_request = features.enabled(Feature::WebSearchRequest);
@@ -96,6 +104,7 @@ impl ToolsConfig {
             experimental_supported_tools: experimental,
             allowed_subagents: allowed_subagents.clone(),
             is_read_only: *is_read_only,
+            session_log_path: session_log_path.clone(),
         }
     }
 }
@@ -972,6 +981,7 @@ pub(crate) fn build_specs(
     use crate::tools::handlers::McpResourceHandler;
     use crate::tools::handlers::PlanHandler;
     use crate::tools::handlers::ReadFileHandler;
+    use crate::tools::handlers::SessionLogTool;
     use crate::tools::handlers::ShellCommandHandler;
     use crate::tools::handlers::TaskHandler;
     use crate::tools::handlers::TestSyncHandler;
@@ -981,6 +991,22 @@ pub(crate) fn build_specs(
     use std::sync::Arc;
 
     let mut builder = ToolRegistryBuilder::new();
+
+    // If session_log_path is set, this is a session_reader subagent.
+    // Provide ONLY the session log tools and plan tool - no shell access.
+    if let Some(ref log_path) = config.session_log_path {
+        let session_tool = Arc::new(SessionLogTool::new(log_path.clone()));
+        for spec in session_tool.tool_specs() {
+            let name = spec.name().to_string();
+            builder.push_spec(spec);
+            builder.register_handler(name, session_tool.clone());
+        }
+        // Include plan tool so the agent can track progress
+        let plan_handler = Arc::new(PlanHandler);
+        builder.push_spec(PLAN_TOOL.clone());
+        builder.register_handler("update_plan", plan_handler);
+        return builder;
+    }
 
     // Extract unique MCP server names from qualified tool names (format: mcp__servername__toolname)
     let mcp_server_names: Vec<String> = mcp_tools
@@ -1047,6 +1073,10 @@ pub(crate) fn build_specs(
 
     builder.push_spec(PLAN_TOOL.clone());
     builder.register_handler("update_plan", plan_handler);
+
+    // Session log analysis tool
+    builder.push_spec(create_read_session_tool());
+    builder.register_handler("read_session", Arc::new(ReadSessionHandler));
 
     // Skip apply_patch when sandbox is read-only.
     if let (false, Some(apply_patch_tool_type)) =
@@ -1267,6 +1297,7 @@ mod tests {
             experimental_tools_enable: &[],
             allowed_subagents: None,
             is_read_only: false,
+            session_log_path: None,
         });
         let (tools, _) = build_specs(&config, None).build();
 
@@ -1328,6 +1359,7 @@ mod tests {
             experimental_tools_enable: &[],
             allowed_subagents: None,
             is_read_only: false,
+            session_log_path: None,
         });
         let (tools, _) = build_specs(&tools_config, Some(HashMap::new())).build();
         let tool_names = tools.iter().map(|t| t.spec.name()).collect::<Vec<_>>();
@@ -1443,6 +1475,7 @@ mod tests {
             experimental_tools_enable: &[],
             allowed_subagents: None,
             is_read_only: false,
+            session_log_path: None,
         });
         let (tools, _) = build_specs(&tools_config, Some(HashMap::new())).build();
 
@@ -1469,6 +1502,7 @@ mod tests {
             experimental_tools_enable: &[],
             allowed_subagents: None,
             is_read_only: false,
+            session_log_path: None,
         });
         let (tools, _) = build_specs(&tools_config, None).build();
 
@@ -1494,6 +1528,7 @@ mod tests {
             experimental_tools_enable: &[],
             allowed_subagents: None,
             is_read_only: false,
+            session_log_path: None,
         });
         let (tools, _) = build_specs(&tools_config, None).build();
 
@@ -1529,6 +1564,7 @@ mod tests {
             experimental_tools_enable: &[],
             allowed_subagents: None,
             is_read_only: false,
+            session_log_path: None,
         });
         let (tools, _) = build_specs(
             &tools_config,
@@ -1627,6 +1663,7 @@ mod tests {
             experimental_tools_enable: &[],
             allowed_subagents: None,
             is_read_only: false,
+            session_log_path: None,
         });
 
         // Intentionally construct a map with keys that would sort alphabetically.
@@ -1708,6 +1745,7 @@ mod tests {
             experimental_tools_enable: &[],
             allowed_subagents: None,
             is_read_only: false,
+            session_log_path: None,
         });
 
         let (tools, _) = build_specs(
@@ -1769,6 +1807,7 @@ mod tests {
             experimental_tools_enable: &[],
             allowed_subagents: None,
             is_read_only: false,
+            session_log_path: None,
         });
 
         let (tools, _) = build_specs(
@@ -1827,6 +1866,7 @@ mod tests {
             experimental_tools_enable: &[],
             allowed_subagents: None,
             is_read_only: false,
+            session_log_path: None,
         });
 
         let (tools, _) = build_specs(
@@ -1887,6 +1927,7 @@ mod tests {
             experimental_tools_enable: &[],
             allowed_subagents: None,
             is_read_only: false,
+            session_log_path: None,
         });
 
         let (tools, _) = build_specs(
@@ -1973,6 +2014,7 @@ Examples of valid command strings:
             experimental_tools_enable: &[],
             allowed_subagents: None,
             is_read_only: false,
+            session_log_path: None,
         });
         let (tools, _) = build_specs(
             &tools_config,
@@ -2146,6 +2188,7 @@ Examples of valid command strings:
             experimental_tools_enable: &[],
             allowed_subagents: None,
             is_read_only: false,
+            session_log_path: None,
         });
 
         // Verify read_file is not in the default set
@@ -2163,6 +2206,7 @@ Examples of valid command strings:
             experimental_tools_enable: &["read_file".to_string()],
             allowed_subagents: None,
             is_read_only: false,
+            session_log_path: None,
         });
 
         // Verify read_file is now in the set
@@ -2192,6 +2236,7 @@ Examples of valid command strings:
             ],
             allowed_subagents: None,
             is_read_only: false,
+            session_log_path: None,
         });
 
         // Count occurrences of read_file
@@ -2201,5 +2246,63 @@ Examples of valid command strings:
             .filter(|&t| t == "read_file")
             .count();
         assert_eq!(read_file_count, 1, "read_file should appear only once");
+    }
+
+    #[test]
+    fn test_session_log_path_limits_tools() {
+        use std::path::PathBuf;
+
+        let base_config = test_config();
+        let model_family =
+            ModelsManager::construct_model_family_offline("gpt-5.1-codex", &base_config);
+        let mut features = Features::with_defaults();
+        features.enable(Feature::ApplyPatchFreeform);
+        features.enable(Feature::WebSearchRequest);
+
+        // Create config with session_log_path set
+        let config = ToolsConfig::new(&ToolsConfigParams {
+            model_family: &model_family,
+            features: &features,
+            codex_home: std::path::Path::new("."),
+            experimental_tools_enable: &[],
+            allowed_subagents: None,
+            is_read_only: false,
+            session_log_path: Some(PathBuf::from("/tmp/test_session.jsonl")),
+        });
+
+        let (tools, _) = build_specs(&config, None).build();
+        let tool_names: Vec<&str> = tools.iter().map(|t| tool_name(&t.spec)).collect();
+
+        // Should only have session log tools and update_plan
+        assert!(
+            tool_names.contains(&"search_session_log"),
+            "Should have search_session_log"
+        );
+        assert!(
+            tool_names.contains(&"read_session_log"),
+            "Should have read_session_log"
+        );
+        assert!(
+            tool_names.contains(&"update_plan"),
+            "Should have update_plan"
+        );
+
+        // Should NOT have shell or other tools
+        assert!(
+            !tool_names.contains(&"shell_command"),
+            "Should NOT have shell_command"
+        );
+        assert!(
+            !tool_names.contains(&"apply_patch"),
+            "Should NOT have apply_patch"
+        );
+        assert!(!tool_names.contains(&"task"), "Should NOT have task");
+
+        // Should have exactly 3 tools
+        assert_eq!(
+            tools.len(),
+            3,
+            "Should have exactly 3 tools: search_session_log, read_session_log, update_plan"
+        );
     }
 }

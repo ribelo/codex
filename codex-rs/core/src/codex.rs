@@ -525,6 +525,10 @@ impl Session {
                 session_configuration.sandbox_policy,
                 SandboxPolicy::ReadOnly
             ),
+            session_log_path: session_configuration
+                .original_config_do_not_use
+                .session_log_path
+                .clone(),
         });
 
         TurnContext {
