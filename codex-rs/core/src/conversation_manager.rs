@@ -522,13 +522,13 @@ mod tests {
             RolloutItem::ResponseItem(old_user.clone()),
             RolloutItem::ResponseItem(old_assistant.clone()),
             session_meta.clone(),
-            RolloutItem::ResponseItem(new_user.clone()),
-            RolloutItem::ResponseItem(new_assistant.clone()),
+            RolloutItem::ResponseItem(new_user),
+            RolloutItem::ResponseItem(new_assistant),
         ];
 
         // When we truncate at user message 0, we should cut before new_user
         // (since old_user is before the last SessionMeta and should be ignored)
-        let truncated = truncate_before_nth_user_message(InitialHistory::Forked(items.clone()), 0);
+        let truncated = truncate_before_nth_user_message(InitialHistory::Forked(items), 0);
         let got = truncated.get_rollout_items();
 
         // Should include everything before the first user message after SessionMeta

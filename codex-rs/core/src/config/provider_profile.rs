@@ -13,6 +13,7 @@ pub enum ProviderProfileConfig {
     OpenAi(OpenAiProfileConfig),
     Anthropic(AnthropicProfileConfig),
     Gemini(GeminiProfileConfig),
+    Bedrock(BedrockProfileConfig),
     /// Provider has no specific config or none was provided
     None,
 }
@@ -37,6 +38,11 @@ pub struct AnthropicProfileConfig {}
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GeminiProfileConfig {}
+
+/// Bedrock-specific profile configuration (placeholder for future).
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BedrockProfileConfig {}
 
 /// Resolve raw provider config table into typed struct based on provider kind.
 pub fn resolve_provider_config(
@@ -86,6 +92,14 @@ pub fn resolve_provider_config(
                 ))
             })?;
             Ok(ProviderProfileConfig::Gemini(config))
+        }
+        ProviderKind::Bedrock => {
+            let config: BedrockProfileConfig = value.try_into().map_err(|e| {
+                CodexErr::ConfigError(format!(
+                    "Invalid Bedrock config in profile '{profile_name}': {e}"
+                ))
+            })?;
+            Ok(ProviderProfileConfig::Bedrock(config))
         }
         ProviderKind::Antigravity => Err(CodexErr::ConfigError(format!(
             "Profile '{profile_name}' has [provider] config but Antigravity doesn't support provider-specific configuration"

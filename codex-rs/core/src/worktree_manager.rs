@@ -351,7 +351,7 @@ impl WorktreeManager {
         let files: Vec<String> = stdout
             .lines()
             .filter(|line| line.contains("leftover conflict marker"))
-            .filter_map(|line| line.split(':').next().map(|s| s.to_string()))
+            .filter_map(|line| line.split(':').next().map(std::string::ToString::to_string))
             .collect::<HashSet<_>>()
             .into_iter()
             .collect();

@@ -961,7 +961,7 @@ async fn test_list_session_children_finds_direct_children() {
         home,
         "2025-01-01T10-01-00",
         child1_uuid,
-        parent_id.clone(),
+        parent_id,
         SubAgentKind::Other("finder".to_string()),
     )
     .unwrap();
@@ -969,7 +969,7 @@ async fn test_list_session_children_finds_direct_children() {
         home,
         "2025-01-01T10-02-00",
         child2_uuid,
-        parent_id.clone(),
+        parent_id,
         SubAgentKind::Review,
     )
     .unwrap();
@@ -1035,7 +1035,7 @@ async fn test_list_session_children_excludes_grandchildren() {
         home,
         "2025-01-01T10-01-00",
         child_uuid,
-        parent_id.clone(),
+        parent_id,
         SubAgentKind::Other("rush".to_string()),
     )
     .unwrap();
@@ -1044,7 +1044,7 @@ async fn test_list_session_children_excludes_grandchildren() {
         home,
         "2025-01-01T10-02-00",
         grandchild_uuid,
-        child_id.clone(), // Parent is the child, not the root
+        child_id, // Parent is the child, not the root
         SubAgentKind::Review,
     )
     .unwrap();

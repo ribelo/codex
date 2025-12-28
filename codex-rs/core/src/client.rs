@@ -41,6 +41,7 @@ use crate::AuthManager;
 use crate::anthropic_messages::stream_anthropic_messages;
 use crate::antigravity_messages::stream_antigravity_messages;
 use crate::auth::RefreshTokenError;
+use crate::bedrock_messages::stream_bedrock_messages;
 use crate::client_common::Prompt;
 use crate::client_common::ResponseEvent;
 use crate::client_common::ResponseStream;
@@ -122,6 +123,19 @@ impl ModelClient {
     pub async fn stream(&self, prompt: &Prompt) -> Result<ResponseStream> {
         match self.provider.wire_api {
             WireApi::Responses => self.stream_responses_api(prompt).await,
+            WireApi::Bedrock => {
+                let model_family = self.get_model_family();
+                let provider = self.provider.to_bedrock_provider()?;
+                stream_bedrock_messages(
+                    prompt,
+                    &self.config,
+                    &model_family,
+                    &model_family.slug,
+                    &provider,
+                    &self.otel_event_manager,
+                )
+                .await
+            }
             WireApi::Anthropic => {
                 let client = create_client();
                 let model_family = self.get_model_family();

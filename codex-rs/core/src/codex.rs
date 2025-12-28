@@ -2776,10 +2776,7 @@ async fn try_run_turn(
         }
     }
 
-    {
-        let outcome = outcome;
-        outcome
-    }
+    outcome
 }
 
 pub(super) fn get_last_assistant_message_from_turn(responses: &[ResponseItem]) -> Option<String> {

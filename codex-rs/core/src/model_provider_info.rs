@@ -55,6 +55,9 @@ pub enum WireApi {
 
     /// Google Antigravity API.
     Antigravity,
+
+    /// AWS Bedrock Converse API.
+    Bedrock,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -66,6 +69,7 @@ pub enum ProviderKind {
     Gemini,
     Antigravity,
     OpenRouter,
+    Bedrock,
 }
 
 /// Serializable representation of a provider definition.
@@ -136,6 +140,10 @@ pub struct ModelProviderInfo {
     /// This is needed for some Anthropic-compatible APIs like Kimi.
     #[serde(default)]
     pub use_bearer_auth: bool,
+    /// AWS region for Bedrock (e.g., "us-east-1"). If not set, uses AWS_DEFAULT_REGION or defaults to us-east-1.
+    pub aws_region: Option<String>,
+    /// AWS profile name for Bedrock. If not set, uses default credential chain.
+    pub aws_profile: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -164,6 +172,8 @@ struct ModelProviderInfoSerde {
     project_id: Option<String>,
     #[serde(default)]
     use_bearer_auth: Option<bool>,
+    aws_region: Option<String>,
+    aws_profile: Option<String>,
 }
 
 impl<'de> Deserialize<'de> for ModelProviderInfo {
@@ -177,6 +187,7 @@ impl<'de> Deserialize<'de> for ModelProviderInfo {
             ProviderKind::Anthropic => WireApi::Anthropic,
             ProviderKind::Gemini => WireApi::Gemini,
             ProviderKind::Antigravity => WireApi::Antigravity,
+            ProviderKind::Bedrock => WireApi::Bedrock,
             ProviderKind::OpenAi => WireApi::Chat,
             ProviderKind::OpenRouter => WireApi::Responses,
         });
@@ -201,6 +212,8 @@ impl<'de> Deserialize<'de> for ModelProviderInfo {
             beta: raw.beta,
             project_id: raw.project_id,
             use_bearer_auth: raw.use_bearer_auth.unwrap_or(false),
+            aws_region: raw.aws_region,
+            aws_profile: raw.aws_profile,
         })
     }
 }
@@ -227,6 +240,8 @@ impl Default for ModelProviderInfo {
             beta: None,
             project_id: None,
             use_bearer_auth: false,
+            aws_region: None,
+            aws_profile: None,
         }
     }
 }
@@ -246,6 +261,15 @@ pub struct GeminiProvider {
     pub request_max_retries: Option<u64>,
     pub stream_max_retries: Option<u64>,
     pub stream_idle_timeout_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BedrockProvider {
+    pub name: String,
+    /// AWS region for Bedrock. Required.
+    pub region: String,
+    /// AWS profile name. Optional.
+    pub profile: Option<String>,
 }
 
 fn default_version() -> String {
@@ -524,6 +548,28 @@ impl ModelProviderInfo {
         })
     }
 
+    pub fn to_bedrock_provider(&self) -> crate::error::Result<BedrockProvider> {
+        if !matches!(self.provider_kind, ProviderKind::Bedrock)
+            && !matches!(self.wire_api, WireApi::Bedrock)
+        {
+            return Err(CodexErr::UnsupportedOperation(format!(
+                "Model provider {} is not Bedrock-compatible",
+                self.name
+            )));
+        }
+
+        Ok(BedrockProvider {
+            name: self.name.clone(),
+            region: self
+                .aws_region
+                .clone()
+                .or_else(|| std::env::var("AWS_DEFAULT_REGION").ok())
+                .or_else(|| std::env::var("AWS_REGION").ok())
+                .unwrap_or_else(|| "us-east-1".to_string()),
+            profile: self.aws_profile.clone(),
+        })
+    }
+
     pub fn to_anthropic_provider(&self) -> crate::error::Result<AnthropicProvider> {
         if !matches!(self.provider_kind, ProviderKind::Anthropic)
             && !matches!(self.wire_api, WireApi::Anthropic)
@@ -586,7 +632,7 @@ impl ModelProviderInfo {
             wire: match self.wire_api {
                 WireApi::Responses => ApiWireApi::Responses,
                 WireApi::Chat => ApiWireApi::Chat,
-                WireApi::Anthropic | WireApi::Gemini | WireApi::Antigravity => {
+                WireApi::Anthropic | WireApi::Gemini | WireApi::Antigravity | WireApi::Bedrock => {
                     return Err(crate::error::CodexErr::UnsupportedOperation(
                         "codex-api Provider adaptation is not supported for this provider"
                             .to_string(),
@@ -687,6 +733,8 @@ impl ModelProviderInfo {
             beta: None,
             project_id: None,
             use_bearer_auth: false,
+            aws_region: None,
+            aws_profile: None,
         }
     }
 }
@@ -721,6 +769,8 @@ pub fn built_in_model_providers() -> HashMap<String, ModelProviderInfo> {
                 beta: None,
                 project_id: None,
                 use_bearer_auth: false,
+                aws_region: None,
+                aws_profile: None,
             },
         ),
         (
@@ -745,6 +795,8 @@ pub fn built_in_model_providers() -> HashMap<String, ModelProviderInfo> {
                 beta: None,
                 project_id: None,
                 use_bearer_auth: false,
+                aws_region: None,
+                aws_profile: None,
             },
         ),
         (
@@ -769,6 +821,8 @@ pub fn built_in_model_providers() -> HashMap<String, ModelProviderInfo> {
                 beta: None,
                 project_id: None,
                 use_bearer_auth: true,
+                aws_region: None,
+                aws_profile: None,
             },
         ),
     ]
@@ -855,6 +909,8 @@ base_url = "http://localhost:8080/v1"
             beta: None,
             project_id: None,
             use_bearer_auth: false,
+            aws_region: None,
+            aws_profile: None,
         };
 
         let provider: ModelProviderInfo = toml::from_str(custom_provider_toml).unwrap();
@@ -890,6 +946,8 @@ use_bearer_auth = true
             beta: None,
             project_id: None,
             use_bearer_auth: true,
+            aws_region: None,
+            aws_profile: None,
         };
 
         let provider: ModelProviderInfo = toml::from_str(provider_toml).unwrap();
@@ -918,6 +976,8 @@ use_bearer_auth = true
             beta: None,
             project_id: None,
             use_bearer_auth: false,
+            aws_region: None,
+            aws_profile: None,
         };
         let _guard = EnvVarGuard::set("TEST_API_KEY", "secret-key");
 
@@ -956,6 +1016,8 @@ query_params = { api-version = "2025-04-01-preview" }
             beta: None,
             project_id: None,
             use_bearer_auth: false,
+            aws_region: None,
+            aws_profile: None,
         };
 
         let provider: ModelProviderInfo = toml::from_str(azure_provider_toml).unwrap();
@@ -995,6 +1057,8 @@ env_http_headers = { "X-Example-Env-Header" = "EXAMPLE_ENV_VAR" }
             beta: None,
             project_id: None,
             use_bearer_auth: false,
+            aws_region: None,
+            aws_profile: None,
         };
 
         let provider: ModelProviderInfo = toml::from_str(azure_provider_toml).unwrap();

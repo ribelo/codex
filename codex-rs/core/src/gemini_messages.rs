@@ -1792,7 +1792,7 @@ mod tests {
     use crate::auth::AuthDotJson;
     use crate::token_data::GeminiTokenData;
     use codex_app_server_protocol::AuthMode;
-    use codex_protocol::config_types::ReasoningDisplay;
+
     use futures::TryStreamExt;
     use pretty_assertions::assert_eq;
     use tokio::sync::mpsc;
