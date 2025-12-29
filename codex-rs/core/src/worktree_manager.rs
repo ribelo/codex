@@ -9,6 +9,7 @@ use std::process::Stdio;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
+use tokio::io::AsyncWriteExt;
 pub use tokio::process::Command;
 use tokio::time::sleep;
 use tracing::warn;
@@ -160,11 +161,103 @@ pub struct WorktreeManager {
 }
 
 impl WorktreeManager {
-    pub fn new(codex_dir: &Path) -> Self {
+    /// Create a new WorktreeManager for per-repo storage
+    /// Storage will be at <repo_root>/.codex/worktrees/ and <repo_root>/.codex/patches/
+    pub fn new_for_repo(repo_root: &Path) -> Self {
+        let codex_dir = repo_root.join(".codex");
         Self {
-            worktrees_root: codex_dir.join("agents"),
+            worktrees_root: codex_dir.join("worktrees"),
             patches_dir: codex_dir.join("patches"),
         }
+    }
+
+    /// Create a new WorktreeManager for global storage (fallback for non-git dirs)
+    /// Storage will be at <codex_home>/worktrees/ and <codex_home>/patches/
+    pub fn new_global(codex_home: &Path) -> Self {
+        Self {
+            worktrees_root: codex_home.join("worktrees"),
+            patches_dir: codex_home.join("patches"),
+        }
+    }
+
+    /// Get the repository root directory for a given directory
+    pub async fn get_repo_root(dir: &Path) -> Result<PathBuf> {
+        let output = Command::new("git")
+            .args(["rev-parse", "--show-toplevel"])
+            .current_dir(dir)
+            .output()
+            .await
+            .context("Failed to find git repo root")?;
+
+        if !output.status.success() {
+            bail!(
+                "Failed to find git repo root: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        // Use trim_end_matches to only strip trailing newlines, preserving paths with trailing spaces
+        let path_str = String::from_utf8_lossy(&output.stdout)
+            .trim_end_matches('\n')
+            .trim_end_matches('\r')
+            .to_string();
+        Ok(PathBuf::from(path_str))
+    }
+
+    /// Add .codex/ to .git/info/exclude
+    pub async fn ensure_gitignore(repo_root: &Path) -> Result<()> {
+        // Use git rev-parse --git-path to correctly resolve the exclude file path
+        // This works in both main repos and worktrees (where .git is a file, not a directory)
+        let output = Command::new("git")
+            .args(["rev-parse", "--git-path", "info/exclude"])
+            .current_dir(repo_root)
+            .output()
+            .await;
+
+        let exclude_file = match output {
+            Ok(o) if o.status.success() => {
+                let path_str = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                if path_str.is_empty() {
+                    return Ok(());
+                }
+                // The path may be relative to repo_root
+                let path = PathBuf::from(&path_str);
+                if path.is_absolute() {
+                    path
+                } else {
+                    repo_root.join(path)
+                }
+            }
+            _ => return Ok(()), // Not a git repo or git not available
+        };
+
+        if !exclude_file.exists() {
+            // Create parent directories if needed
+            if let Some(parent) = exclude_file.parent() {
+                tokio::fs::create_dir_all(parent).await.ok();
+            }
+        }
+
+        let content = tokio::fs::read_to_string(&exclude_file)
+            .await
+            .unwrap_or_default();
+
+        // Check for exact line match to avoid false positives like "my.codex/"
+        let has_codex_entry = content
+            .lines()
+            .any(|line| line.trim() == ".codex/" || line.trim() == ".codex");
+
+        if !has_codex_entry {
+            let mut file = tokio::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&exclude_file)
+                .await?;
+            file.write_all(b"\n# Codex worktrees and patches\n.codex/\n")
+                .await?;
+        }
+
+        Ok(())
     }
 
     /// Clean up any orphaned worktrees from previous sessions.
@@ -291,6 +384,9 @@ impl WorktreeManager {
     /// Capture current state of parent_dir and create isolated worktree.
     /// Uses `git stash create -u` to snapshot dirty state.
     pub async fn create_worktree(&self, parent_dir: &Path) -> Result<WorktreeHandle> {
+        let repo_root = Self::get_repo_root(parent_dir).await?;
+        Self::ensure_gitignore(&repo_root).await?;
+
         // Verify git repo
         if !Self::is_git_repo(parent_dir).await? {
             bail!("Not a git repository: {}", parent_dir.display());

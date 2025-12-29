@@ -287,14 +287,32 @@ impl ToolHandler for TaskHandler {
         let parent_delegation_id = delegation_context.parent_delegation_id.clone();
         let depth = Some(delegation_context.depth);
 
-        // Create isolated worktree for this subagent
-        let worktree_manager = WorktreeManager::new(&codex_home);
         let parent_worktree = turn.client.config().cwd.clone();
 
         // Check if we're in a git repo for worktree isolation
         let is_git_repo = WorktreeManager::is_git_repo(&parent_worktree)
             .await
             .unwrap_or(false);
+
+        // Create worktree manager:
+        // - In git repo: use per-repo storage (<repo>/.codex/)
+        // - Not in git repo OR repo root detection fails: use global storage (~/.codex/)
+        // This prevents polluting non-git directories and avoids fragmented state
+        let worktree_manager = if is_git_repo {
+            match WorktreeManager::get_repo_root(&parent_worktree).await {
+                Ok(repo_root) => WorktreeManager::new_for_repo(&repo_root),
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "In git repo but could not find root, falling back to global storage"
+                    );
+                    WorktreeManager::new_global(&codex_home)
+                }
+            }
+        } else {
+            // Not a git repo - use global storage to avoid polluting cwd
+            WorktreeManager::new_global(&codex_home)
+        };
 
         // Always use worktree isolation for subagents in git repos to ensure
         // safety. Each turn gets a fresh worktree - this guarantees isolation

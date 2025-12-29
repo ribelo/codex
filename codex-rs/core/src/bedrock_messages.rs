@@ -18,6 +18,7 @@ use aws_sdk_bedrockruntime::types::ToolSpecification;
 use aws_sdk_bedrockruntime::types::ToolUseBlock;
 use aws_smithy_types::Document;
 use aws_smithy_types::Number;
+use serde_json::json;
 use serde_json::Value;
 use tokio::sync::mpsc;
 use tracing::debug;
@@ -33,12 +34,15 @@ use crate::error::CodexErr;
 use crate::error::Result;
 use crate::model_provider_info::BedrockProvider;
 use crate::openai_models::model_family::ModelFamily;
+use crate::truncate::approx_token_count;
 use codex_otel::otel_event_manager::OtelEventManager;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::models::ReasoningItemReasoningSummary;
+use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::TokenUsage;
 
-const DEFAULT_MAX_OUTPUT_TOKENS: i32 = 4096;
+const DEFAULT_MAX_OUTPUT_TOKENS: i64 = 64_000;
 
 /// Create an AWS Bedrock Runtime client with the given provider configuration.
 async fn create_bedrock_client(provider: &BedrockProvider) -> Result<Client> {
@@ -66,13 +70,33 @@ pub(crate) async fn stream_bedrock_messages(
     let client = create_bedrock_client(provider).await?;
 
     let full_instructions = prompt.get_full_instructions(model_family).to_string();
-    let (system_prompts, messages) = build_bedrock_messages(prompt, &full_instructions)?;
+    let (system_prompts, messages) = build_bedrock_messages(prompt, &full_instructions, model_family)?;
     let tool_config = build_tool_config(&prompt.tools)?;
 
-    let max_tokens = resolve_max_tokens(config, model_family);
+    let thinking = model_family
+        .supports_reasoning_summaries
+        .then_some(BedrockThinking {
+            r#type: "enabled",
+            budget_tokens: None,
+        });
+
+    let prompt_tokens =
+        bedrock_prompt_token_estimate(&system_prompts, &messages, tool_config.as_ref(), &thinking);
+
+    let max_tokens = resolve_max_tokens(config, model_family, prompt_tokens, DEFAULT_MAX_OUTPUT_TOKENS);
+
+    let thinking = thinking.map(|mut cfg| {
+        cfg.budget_tokens = Some(resolve_thinking_budget(
+            config
+                .model_reasoning_effort
+                .or(model_family.default_reasoning_effort),
+            max_tokens,
+        ));
+        cfg
+    });
 
     let inference_config = InferenceConfiguration::builder()
-        .max_tokens(max_tokens)
+        .max_tokens(max_tokens as i32)
         .build();
 
     let mut request = client
@@ -90,12 +114,32 @@ pub(crate) async fn stream_bedrock_messages(
         request = request.tool_config(tc);
     }
 
+    if let Some(thinking) = thinking {
+        let budget = thinking.budget_tokens.unwrap_or(4096);
+        let mut fields = std::collections::HashMap::new();
+        fields.insert("type".to_string(), Document::String("enabled".to_string()));
+        fields.insert("budget_tokens".to_string(), Document::Number(Number::PosInt(budget as u64)));
+
+        let mut thinking_fields = std::collections::HashMap::new();
+        thinking_fields.insert("thinking".to_string(), Document::Object(fields));
+
+        request = request.set_additional_model_request_fields(Some(Document::Object(thinking_fields)));
+    }
+
     debug!("Sending Bedrock converse_stream request for model: {model_id}");
 
     let output = request
         .send()
         .await
-        .map_err(|e| CodexErr::Fatal(format!("Bedrock converse_stream failed: {e}")))?;
+        .map_err(|e| {
+            let detailed_error = match &e {
+                aws_sdk_bedrockruntime::error::SdkError::ServiceError(err) => {
+                    format!("ServiceError: {:?} - meta: {:?}", err.err(), err.raw())
+                }
+                _ => format!("{:?}", e),
+            };
+            CodexErr::Fatal(format!("Bedrock converse_stream failed: {detailed_error}"))
+        })?;
 
     let (tx_event, rx_event) = mpsc::channel(32);
 
@@ -125,7 +169,10 @@ async fn process_bedrock_stream(
     let mut current_tool_name = String::new();
     let mut current_tool_json = String::new();
     let mut current_text = String::new();
+    let mut current_thinking = String::new();
     let response_id = uuid::Uuid::new_v4().to_string();
+    let mut message_added = false;
+    let mut thinking_added = false;
     let mut final_token_usage: Option<TokenUsage> = None;
 
     loop {
@@ -143,27 +190,31 @@ async fn process_bedrock_stream(
             }
 
             ConverseStreamOutput::ContentBlockStart(e) => {
-                if let Some(start) = e.start()
-                    && let aws_sdk_bedrockruntime::types::ContentBlockStart::ToolUse(t) = start
-                {
-                    // Flush any pending text
-                    if !current_text.is_empty() {
-                        tx.send(Ok(ResponseEvent::OutputItemDone(ResponseItem::Message {
-                            id: None,
-                            role: "assistant".to_string(),
-                            content: vec![ContentItem::OutputText {
-                                text: std::mem::take(&mut current_text),
-                                signature: None,
-                            }],
-                        })))
-                        .await
-                        .ok();
-                    }
+                if let Some(start) = e.start() {
+                    match start {
+                        aws_sdk_bedrockruntime::types::ContentBlockStart::ToolUse(t) => {
+                            // Flush any pending text if it was part of a message
+                            if !current_text.is_empty() && message_added {
+                                tx.send(Ok(ResponseEvent::OutputItemDone(ResponseItem::Message {
+                                    id: None,
+                                    role: "assistant".to_string(),
+                                    content: vec![ContentItem::OutputText {
+                                        text: std::mem::take(&mut current_text),
+                                        signature: None,
+                                    }],
+                                })))
+                                .await
+                                .ok();
+                                message_added = false;
+                            }
 
-                    current_tool_id = t.tool_use_id().to_string();
-                    current_tool_name = t.name().to_string();
-                    current_tool_json.clear();
-                    trace!("Bedrock: ToolUse start - {}", current_tool_name);
+                            current_tool_id = t.tool_use_id().to_string();
+                            current_tool_name = t.name().to_string();
+                            current_tool_json.clear();
+                            trace!("Bedrock: ToolUse start - {}", current_tool_name);
+                        }
+                        _ => {}
+                    }
                 }
             }
 
@@ -172,6 +223,18 @@ async fn process_bedrock_stream(
                     match delta {
                         aws_sdk_bedrockruntime::types::ContentBlockDelta::Text(txt) => {
                             let text = txt.as_str();
+
+                            if !message_added {
+                                tx.send(Ok(ResponseEvent::OutputItemAdded(ResponseItem::Message {
+                                    id: None,
+                                    role: "assistant".to_string(),
+                                    content: Vec::new(),
+                                })))
+                                .await
+                                .ok();
+                                message_added = true;
+                            }
+
                             tx.send(Ok(ResponseEvent::OutputTextDelta(text.to_string())))
                                 .await
                                 .ok();
@@ -180,12 +243,51 @@ async fn process_bedrock_stream(
                         aws_sdk_bedrockruntime::types::ContentBlockDelta::ToolUse(t) => {
                             current_tool_json.push_str(t.input());
                         }
+                        aws_sdk_bedrockruntime::types::ContentBlockDelta::ReasoningContent(r) => {
+                            use aws_sdk_bedrockruntime::types::ReasoningContentBlockDelta;
+                            if let ReasoningContentBlockDelta::Text(text) = r {
+                                if !thinking_added {
+                                    tx.send(Ok(ResponseEvent::OutputItemAdded(ResponseItem::Reasoning {
+                                        id: String::new(),
+                                        summary: Vec::new(),
+                                        content: Some(Vec::new()),
+                                        encrypted_content: None,
+                                    })))
+                                    .await
+                                    .ok();
+                                    thinking_added = true;
+                                }
+
+                                tx.send(Ok(ResponseEvent::ReasoningSummaryDelta {
+                                    delta: text.clone(),
+                                    summary_index: 0,
+                                }))
+                                .await
+                                .ok();
+                                current_thinking.push_str(&text);
+                            }
+                        }
                         _ => {}
                     }
                 }
             }
 
             ConverseStreamOutput::ContentBlockStop(_) => {
+                // If we were building a thinking block, emit it
+                if thinking_added && !current_thinking.is_empty() {
+                    tx.send(Ok(ResponseEvent::OutputItemDone(ResponseItem::Reasoning {
+                        id: String::new(),
+                        summary: vec![ReasoningItemReasoningSummary::SummaryText {
+                            text: std::mem::take(&mut current_thinking),
+                        }],
+                        content: Some(Vec::new()),
+                        encrypted_content: None,
+                    })))
+                    .await
+                    .ok();
+                    thinking_added = false;
+                }
+
                 // If we were building a tool call, emit it
                 if !current_tool_id.is_empty() {
                     trace!(
@@ -207,6 +309,21 @@ async fn process_bedrock_stream(
 
             ConverseStreamOutput::MessageStop(e) => {
                 trace!("Bedrock: MessageStop, reason: {:?}", e.stop_reason());
+
+                // Flush thinking if still present
+                if thinking_added && !current_thinking.is_empty() {
+                    tx.send(Ok(ResponseEvent::OutputItemDone(ResponseItem::Reasoning {
+                        id: String::new(),
+                        summary: vec![ReasoningItemReasoningSummary::SummaryText {
+                            text: std::mem::take(&mut current_thinking),
+                        }],
+                        content: Some(Vec::new()),
+                        encrypted_content: None,
+                    })))
+                    .await
+                    .ok();
+                    thinking_added = false;
+                }
 
                 // Flush any remaining text
                 if !current_text.is_empty() {
@@ -251,6 +368,7 @@ async fn process_bedrock_stream(
 fn build_bedrock_messages(
     prompt: &Prompt,
     system_prompt: &str,
+    _model_family: &ModelFamily,
 ) -> Result<(Vec<SystemContentBlock>, Vec<Message>)> {
     let mut system_blocks = Vec::new();
     let mut messages: Vec<Message> = Vec::new();
@@ -285,6 +403,7 @@ fn build_bedrock_messages(
                 };
 
                 let blocks = content_to_bedrock_blocks(&content);
+
                 if blocks.is_empty() {
                     continue;
                 }
@@ -391,6 +510,67 @@ fn build_bedrock_messages(
     }
 
     Ok((system_blocks, messages))
+}
+
+#[derive(serde::Serialize)]
+struct BedrockThinking {
+    #[serde(rename = "type")]
+    r#type: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    budget_tokens: Option<i64>,
+}
+
+fn bedrock_prompt_token_estimate(
+    system: &[SystemContentBlock],
+    messages: &[Message],
+    tool_config: Option<&ToolConfiguration>,
+    thinking: &Option<BedrockThinking>,
+) -> i64 {
+    let prompt_json = json!({
+        "system": system.iter().map(|s| format!("{:?}", s)).collect::<Vec<_>>(),
+        "messages": messages.iter().map(|m| format!("{:?}", m)).collect::<Vec<_>>(),
+        "tool_config": tool_config.map(|t| format!("{:?}", t)),
+        "thinking": thinking,
+    });
+    i64::try_from(approx_token_count(&prompt_json.to_string())).unwrap_or(i64::MAX)
+}
+
+fn resolve_max_tokens(
+    config: &Config,
+    model_family: &ModelFamily,
+    prompt_tokens: i64,
+    hard_cap: i64,
+) -> i64 {
+    let window = effective_context_window(config, model_family);
+    let remaining = window.saturating_sub(prompt_tokens).max(1);
+    remaining.min(hard_cap)
+}
+
+fn effective_context_window(config: &Config, model_family: &ModelFamily) -> i64 {
+    config
+        .model_context_window
+        .saturating_mul(model_family.effective_context_window_percent)
+        / 100
+}
+
+fn resolve_thinking_budget(effort: Option<ReasoningEffort>, max_tokens: i64) -> i64 {
+    let target_budget = match effort {
+        Some(ReasoningEffort::Low)
+        | Some(ReasoningEffort::Minimal)
+        | Some(ReasoningEffort::None) => 4_096,
+        Some(ReasoningEffort::Medium) => 16_384,
+        Some(ReasoningEffort::High) | Some(ReasoningEffort::XHigh) => 32_768,
+        None => max_tokens * 4 / 5,
+    };
+
+    let reserved = (max_tokens / 5).clamp(1024, 4096);
+    let hard_cap = max_tokens.saturating_sub(reserved).max(1);
+
+    if target_budget < max_tokens {
+        target_budget.min(hard_cap)
+    } else {
+        hard_cap
+    }
 }
 
 fn append_to_assistant_message(messages: &mut Vec<Message>, block: ContentBlock) -> Result<()> {
@@ -554,10 +734,6 @@ fn build_tool_config(tools: &[ToolSpec]) -> Result<Option<ToolConfiguration>> {
         .map_err(|e| CodexErr::Fatal(format!("Failed to build tool config: {e}")))?;
 
     Ok(Some(config))
-}
-
-fn resolve_max_tokens(_config: &Config, _model_family: &ModelFamily) -> i32 {
-    DEFAULT_MAX_OUTPUT_TOKENS
 }
 
 #[cfg(test)]

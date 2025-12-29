@@ -210,9 +210,11 @@ impl Codex {
         let exec_policy = Arc::new(RwLock::new(exec_policy));
 
         // Prune any orphaned worktrees from previous sessions
-        let worktree_manager = WorktreeManager::new(&config.codex_home);
-        if let Err(e) = worktree_manager.prune_orphaned_worktrees().await {
-            tracing::debug!(error = %e, "Failed to prune orphaned worktrees on startup");
+        if let Ok(repo_root) = WorktreeManager::get_repo_root(&config.cwd).await {
+            let worktree_manager = WorktreeManager::new_for_repo(&repo_root);
+            if let Err(e) = worktree_manager.prune_orphaned_worktrees().await {
+                tracing::debug!(error = %e, "Failed to prune orphaned worktrees on startup");
+            }
         }
 
         let config = Arc::new(config);

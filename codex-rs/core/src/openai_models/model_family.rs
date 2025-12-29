@@ -325,6 +325,7 @@ pub(in crate::openai_models) fn find_family_for_model(slug: &str) -> ModelFamily
         model_family!(
             slug, slug,
             supports_reasoning_summaries: true,
+            parse_reasoning_header: false,
             needs_special_apply_patch_instructions: true,
             shell_type: ConfigShellToolType::Default,
             support_verbosity: true,
