@@ -1190,8 +1190,16 @@ impl HistoryCell for SubagentChangesMergedCell {
         let mut lines = Vec::new();
 
         // Calculate totals
-        let total_insertions: i32 = self.files_changed.iter().map(|f| f.insertions).sum();
-        let total_deletions: i32 = self.files_changed.iter().map(|f| f.deletions).sum();
+        let total_insertions: i32 = self
+            .files_changed
+            .iter()
+            .map(|f| f.insertions.unwrap_or(0))
+            .sum();
+        let total_deletions: i32 = self
+            .files_changed
+            .iter()
+            .map(|f| f.deletions.unwrap_or(0))
+            .sum();
 
         // Header: • @subagent changes merged +N -M #session_id
         let mut header_spans: Vec<Span<'static>> = vec![
@@ -1221,9 +1229,17 @@ impl HistoryCell for SubagentChangesMergedCell {
 
         // Files (4-space indent)
         for file in &self.files_changed {
-            let status = if file.insertions > 0 && file.deletions > 0 {
+            let ins = file.insertions.unwrap_or(0);
+            let del = file.deletions.unwrap_or(0);
+            let status = if file.insertions.is_none() && file.deletions.is_none() {
+                // Binary file
+                "B".magenta()
+            } else if ins == 0 && del == 0 {
+                // Empty file / mode change / rename
+                "~".dim()
+            } else if ins > 0 && del > 0 {
                 "M".yellow()
-            } else if file.insertions > 0 {
+            } else if ins > 0 {
                 "A".green()
             } else {
                 "D".red()
@@ -1237,9 +1253,9 @@ impl HistoryCell for SubagentChangesMergedCell {
                 " ".into(),
                 rel_path.dim(),
                 " ".into(),
-                format!("+{}", file.insertions).green(),
+                format!("+{ins}").green(),
                 " ".into(),
-                format!("-{}", file.deletions).red(),
+                format!("-{del}").red(),
             ];
 
             lines.push(Line::from(file_spans));

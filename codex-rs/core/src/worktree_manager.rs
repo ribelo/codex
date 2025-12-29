@@ -8,9 +8,77 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 pub use tokio::process::Command;
+use tokio::time::sleep;
 use tracing::warn;
 use uuid::Uuid;
+
+/// Maximum retries for git commands that might fail due to index.lock contention
+const MAX_GIT_RETRY_ATTEMPTS: u32 = 3;
+/// Initial delay between retries (doubles each attempt)
+const INITIAL_RETRY_DELAY_MS: u64 = 100;
+
+/// Check if git command failed due to index.lock contention
+fn is_index_lock_error(stderr: &[u8]) -> bool {
+    let stderr_str = String::from_utf8_lossy(stderr);
+    stderr_str.contains("index.lock") || stderr_str.contains("Unable to create")
+}
+
+/// Check if a process with the given PID is still running
+async fn is_process_alive(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        // On Linux, check /proc/<pid> which is reliable, locale-independent, and fast.
+        // On other Unix (macOS, BSD), /proc might not exist or work differently,
+        // so we fall back to kill -0.
+        #[cfg(target_os = "linux")]
+        {
+            std::path::Path::new(&format!("/proc/{pid}")).exists()
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            // Use kill -0 which is POSIX standard for macOS/BSD
+            let output = Command::new("kill")
+                .arg("-0")
+                .arg(pid.to_string())
+                .output()
+                .await;
+
+            match output {
+                Ok(o) if o.status.success() => true,
+                Ok(o) => {
+                    // Exit code 1 can mean either "No such process" or "Permission denied"
+                    let stderr = String::from_utf8_lossy(&o.stderr).to_lowercase();
+                    if stderr.contains("no such process") {
+                        false
+                    } else {
+                        true // Permission denied or unknown - assume alive to be safe
+                    }
+                }
+                Err(_) => true, // Conservative: assume alive if we can't check
+            }
+        }
+    }
+    #[cfg(windows)]
+    {
+        // On Windows, use tasklist to check if process exists
+        Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+            .output()
+            .await
+            .map(|o| {
+                let stdout = String::from_utf8_lossy(&o.stdout);
+                // tasklist returns "INFO: No tasks are running..." if not found
+                o.status.success() && !stdout.contains("No tasks")
+            })
+            .unwrap_or(true) // Conservative: assume alive if we can't check
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        true // Conservative default for unknown platforms
+    }
+}
 
 /// Result of creating a worktree
 #[derive(Debug)]
@@ -56,7 +124,7 @@ impl Drop for WorktreeHandle {
 #[derive(Debug, Clone)]
 pub struct WorktreeDiff {
     /// The patch content (may be empty if no changes)
-    pub patch: String,
+    pub patch: Vec<u8>,
     /// Parsed file change summaries
     pub files_changed: Vec<FileChangeSummary>,
     /// Whether there are any changes
@@ -76,7 +144,11 @@ pub enum PatchApplyResult {
         conflicted_files: Vec<String>,
     },
     /// Conflict - patch saved to file
-    Conflict { patch_path: PathBuf },
+    Conflict {
+        patch_path: PathBuf,
+        /// Files that were modified before the failure (partial application)
+        partially_applied_files: Vec<String>,
+    },
 }
 
 /// Manages git worktree lifecycle for subagent isolation
@@ -92,6 +164,115 @@ impl WorktreeManager {
         Self {
             worktrees_root: codex_dir.join("agents"),
             patches_dir: codex_dir.join("patches"),
+        }
+    }
+
+    /// Clean up any orphaned worktrees from previous sessions.
+    /// Call this on startup to prune stale worktree directories.
+    pub async fn prune_orphaned_worktrees(&self) -> Result<()> {
+        // Skip if the worktrees directory doesn't exist
+        if !self.worktrees_root.exists() {
+            return Ok(());
+        }
+
+        let mut entries = match tokio::fs::read_dir(&self.worktrees_root).await {
+            Ok(entries) => entries,
+            Err(e) => {
+                tracing::debug!(
+                    path = %self.worktrees_root.display(),
+                    error = %e,
+                    "Could not read worktrees directory for cleanup"
+                );
+                return Ok(());
+            }
+        };
+
+        let mut cleaned_count = 0;
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+
+            // Check if this looks like a worktree (has .git file/dir)
+            let git_marker = path.join(".git");
+            if !git_marker.exists() {
+                continue;
+            }
+
+            // Skip recently created directories to avoid race with create_worktree
+            if let Ok(metadata) = tokio::fs::metadata(&path).await
+                && let Ok(modified) = metadata.modified()
+                && let Ok(elapsed) = modified.elapsed()
+                && elapsed < Duration::from_secs(60)
+            {
+                tracing::debug!(
+                    path = %path.display(),
+                    "Skipping recently created worktree (less than 60s old)"
+                );
+                continue;
+            }
+
+            // Check PID file to see if the owning process is still alive
+            let pid_file = path.join("lock.pid");
+            if pid_file.exists() {
+                if let Ok(pid_str) = tokio::fs::read_to_string(&pid_file).await {
+                    if let Ok(pid) = pid_str.trim().parse::<u32>() {
+                        if is_process_alive(pid).await {
+                            tracing::debug!(
+                                path = %path.display(),
+                                pid,
+                                "Skipping active worktree (process still running)"
+                            );
+                            continue;
+                        }
+                    }
+                }
+            }
+
+            // Worktree is orphaned, remove it
+            if let Err(e) = tokio::fs::remove_dir_all(&path).await {
+                tracing::debug!(
+                    path = %path.display(),
+                    error = %e,
+                    "Failed to clean up orphaned worktree"
+                );
+            } else {
+                tracing::info!(path = %path.display(), "Cleaned up orphaned worktree");
+                cleaned_count += 1;
+            }
+        }
+
+        if cleaned_count > 0 {
+            tracing::info!(
+                count = cleaned_count,
+                "Pruned orphaned worktrees from previous sessions"
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Check if repository has submodules
+    async fn has_submodules(repo_dir: &Path) -> bool {
+        repo_dir.join(".gitmodules").exists()
+    }
+
+    /// Get list of submodule paths from .gitmodules
+    async fn get_submodule_paths(repo_dir: &Path) -> Vec<String> {
+        let output = Command::new("git")
+            .args(["config", "--file", ".gitmodules", "--get-regexp", "path"])
+            .current_dir(repo_dir)
+            .output()
+            .await;
+
+        match output {
+            Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .filter_map(|line| line.split_whitespace().last())
+                .map(ToString::to_string)
+                .collect(),
+            _ => vec![],
         }
     }
 
@@ -181,6 +362,30 @@ impl WorktreeManager {
             );
         }
 
+        // Write PID file to mark this worktree as active
+        let pid_file = worktree_path.join("lock.pid");
+        let pid = std::process::id();
+        if let Err(e) = tokio::fs::write(&pid_file, pid.to_string()).await {
+            tracing::debug!(
+                path = %pid_file.display(),
+                error = %e,
+                "Failed to write PID file for worktree"
+            );
+        }
+
+        // Warn about submodules (they won't be initialized in worktrees)
+        if Self::has_submodules(parent_dir).await {
+            let submodule_paths = Self::get_submodule_paths(parent_dir).await;
+            if !submodule_paths.is_empty() {
+                tracing::warn!(
+                    worktree_id = %id,
+                    submodule_count = submodule_paths.len(),
+                    submodules = ?submodule_paths,
+                    "Worktree created without submodule initialization. Submodule directories will be empty."
+                );
+            }
+        }
+
         Ok(WorktreeHandle {
             id,
             path: worktree_path,
@@ -222,12 +427,19 @@ impl WorktreeManager {
             );
         }
 
-        let patch = String::from_utf8_lossy(&diff_output.stdout).to_string();
-        let has_changes = !patch.trim().is_empty();
+        let patch = diff_output.stdout;
+        let has_changes = !patch.is_empty() && !patch.iter().all(|&b| b.is_ascii_whitespace());
 
         // Get file stats: git diff --cached --numstat <base_sha>
         let stats_output = Command::new("git")
-            .args(["diff", "--cached", "--numstat", &handle.base_sha])
+            .args([
+                "-c",
+                "core.quotePath=false",
+                "diff",
+                "--cached",
+                "--numstat",
+                &handle.base_sha,
+            ])
             .current_dir(&handle.path)
             .output()
             .await
@@ -253,8 +465,17 @@ impl WorktreeManager {
             .filter_map(|line| {
                 let parts: Vec<&str> = line.split('\t').collect();
                 if parts.len() >= 3 {
-                    let insertions = parts[0].parse().unwrap_or(0);
-                    let deletions = parts[1].parse().unwrap_or(0);
+                    // Git returns "-" for binary files
+                    let insertions = if parts[0] == "-" {
+                        None
+                    } else {
+                        parts[0].parse().ok()
+                    };
+                    let deletions = if parts[1] == "-" {
+                        None
+                    } else {
+                        parts[1].parse().ok()
+                    };
                     let path = parts[2].to_string();
                     Some(FileChangeSummary {
                         path,
@@ -277,47 +498,83 @@ impl WorktreeManager {
     /// 4. Hard failures save patch file as fallback
     pub async fn apply_patch(
         &self,
-        patch: &str,
+        patch: &[u8],
         target_dir: &Path,
         task_id: &str,
     ) -> Result<PatchApplyResult> {
-        if patch.trim().is_empty() {
+        if patch.is_empty() || patch.iter().all(|&b| b.is_ascii_whitespace()) {
             return Ok(PatchApplyResult::NoChanges);
         }
+
+        // Snapshot dirty files before attempting patch application
+        // Used to filter out pre-existing dirty files from "partially applied" warnings
+        let pre_existing_dirty: HashSet<String> = Self::get_modified_files(target_dir)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
 
         // Create temp file for patch
         let patch_file = self.patches_dir.join(format!("{task_id}.diff"));
         tokio::fs::create_dir_all(&self.patches_dir).await?;
         tokio::fs::write(&patch_file, patch).await?;
 
-        // 1. Try clean git apply (fast path)
-        let apply_output = Command::new("git")
-            .arg("apply")
-            .arg(&patch_file)
-            .current_dir(target_dir)
-            .output()
-            .await
-            .context("Failed to apply patch")?;
+        // 1. Try clean git apply (fast path) with retry for index.lock
+        for attempt in 0..MAX_GIT_RETRY_ATTEMPTS {
+            let output = Command::new("git")
+                .arg("apply")
+                .arg(&patch_file)
+                .current_dir(target_dir)
+                .output()
+                .await
+                .context("Failed to apply patch")?;
 
-        if apply_output.status.success() {
-            // Clean apply succeeded
-            let _ = tokio::fs::remove_file(&patch_file).await;
-            return Ok(PatchApplyResult::Applied);
+            if output.status.success() {
+                let _ = tokio::fs::remove_file(&patch_file).await;
+                return Ok(PatchApplyResult::Applied);
+            }
+
+            if is_index_lock_error(&output.stderr) && attempt < MAX_GIT_RETRY_ATTEMPTS - 1 {
+                let delay_ms = INITIAL_RETRY_DELAY_MS * (1 << attempt);
+                tracing::warn!(
+                    attempt = attempt + 1,
+                    delay_ms,
+                    "git apply failed due to index.lock, retrying..."
+                );
+                sleep(Duration::from_millis(delay_ms)).await;
+                continue;
+            }
+
+            break;
         }
 
-        // 2. Fall back to git apply --3way
-        let threeway_output = Command::new("git")
-            .args(["apply", "--3way"])
-            .arg(&patch_file)
-            .current_dir(target_dir)
-            .output()
-            .await
-            .context("Failed to run git apply --3way")?;
+        // 2. Fall back to git apply --3way with retry for index.lock
+        for attempt in 0..MAX_GIT_RETRY_ATTEMPTS {
+            let output = Command::new("git")
+                .args(["apply", "--3way"])
+                .arg(&patch_file)
+                .current_dir(target_dir)
+                .output()
+                .await
+                .context("Failed to run git apply --3way")?;
 
-        if threeway_output.status.success() {
-            // 3way merge resolved automatically
-            let _ = tokio::fs::remove_file(&patch_file).await;
-            return Ok(PatchApplyResult::Applied);
+            if output.status.success() {
+                let _ = tokio::fs::remove_file(&patch_file).await;
+                return Ok(PatchApplyResult::Applied);
+            }
+
+            if is_index_lock_error(&output.stderr) && attempt < MAX_GIT_RETRY_ATTEMPTS - 1 {
+                let delay_ms = INITIAL_RETRY_DELAY_MS * (1 << attempt);
+                tracing::warn!(
+                    attempt = attempt + 1,
+                    delay_ms,
+                    "git apply --3way failed due to index.lock, retrying..."
+                );
+                sleep(Duration::from_millis(delay_ms)).await;
+                continue;
+            }
+
+            break;
         }
 
         // 3. Check if we have conflict markers (soft failure) or hard failure
@@ -329,31 +586,93 @@ impl WorktreeManager {
             return Ok(PatchApplyResult::AppliedWithConflicts { conflicted_files });
         }
 
-        // 4. Hard failure: save patch file
+        // 4. Hard failure: check if any files were partially applied
+        // Filter out pre-existing dirty files to only report files that were
+        // modified by the failed patch application, not files that were already dirty
+        let current_dirty: HashSet<String> = Self::get_modified_files(target_dir)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+
+        let partially_applied_files: Vec<String> = current_dirty
+            .difference(&pre_existing_dirty)
+            .cloned()
+            .collect();
+
+        if !partially_applied_files.is_empty() {
+            tracing::warn!(
+                file_count = partially_applied_files.len(),
+                "Patch partially applied. Some files were modified before failure."
+            );
+        }
+
         Ok(PatchApplyResult::Conflict {
             patch_path: patch_file,
+            partially_applied_files,
         })
     }
 
     /// Detect files with conflict markers using `git diff --check`
     async fn detect_conflict_markers(target_dir: &Path) -> Result<Vec<String>> {
         let output = Command::new("git")
-            .args(["diff", "--check"])
+            .args(["-c", "core.quotePath=false", "diff", "--check"])
             .current_dir(target_dir)
             .output()
             .await
             .context("Failed to run git diff --check")?;
 
         // git diff --check exits non-zero if markers found
-        // Output format: "filename:line: leftover conflict marker"
+        // Output format: "filename:line_number: leftover conflict marker"
         let stdout = String::from_utf8_lossy(&output.stdout);
 
+        let files_set: HashSet<String> = stdout
+            .lines()
+            .filter_map(|line| {
+                // Parse from the right side to handle filenames with colons
+                // 1. Strip the known suffix
+                let content = line.strip_suffix(": leftover conflict marker")?;
+                // 2. Split at the LAST colon to separate path from line number
+                let (path, line_num) = content.rsplit_once(':')?;
+                // 3. Verify the split part is a line number (guard against malformed lines)
+                if line_num.chars().all(|c| c.is_ascii_digit()) {
+                    Some(path.to_string())
+                } else {
+                    None
+                }
+            })
+            .collect::<HashSet<_>>();
+        let mut files: Vec<_> = files_set.into_iter().collect();
+        files.sort();
+
+        Ok(files)
+    }
+
+    /// Get list of modified files using `git status --porcelain`
+    async fn get_modified_files(target_dir: &Path) -> Result<Vec<String>> {
+        let output = Command::new("git")
+            .args(["-c", "core.quotePath=false", "status", "--porcelain"])
+            .current_dir(target_dir)
+            .output()
+            .await
+            .context("Failed to run git status")?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
         let files: Vec<String> = stdout
             .lines()
-            .filter(|line| line.contains("leftover conflict marker"))
-            .filter_map(|line| line.split(':').next().map(std::string::ToString::to_string))
-            .collect::<HashSet<_>>()
-            .into_iter()
+            .filter(|line| {
+                // git status --porcelain format: XY filename
+                // Check for any change indicator: M (modified), A (added), D (deleted), ? (untracked)
+                if line.len() < 4 {
+                    return false;
+                }
+                let status = &line[0..2];
+                status.contains('M')
+                    || status.contains('A')
+                    || status.contains('D')
+                    || status.contains('?')
+            })
+            .filter_map(|line| line.get(3..).map(|s| s.to_string()))
             .collect();
 
         Ok(files)

@@ -21,8 +21,8 @@ pub enum SubagentChangesStatus {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema, TS)]
 pub struct FileChangeSummary {
     pub path: String,
-    pub insertions: i32,
-    pub deletions: i32,
+    pub insertions: Option<i32>,
+    pub deletions: Option<i32>,
 }
 
 /// Subagent file changes info, separate from subagent's response
@@ -50,8 +50,8 @@ mod tests {
             status: SubagentChangesStatus::Applied,
             files_changed: vec![FileChangeSummary {
                 path: "src/main.rs".to_string(),
-                insertions: 10,
-                deletions: 3,
+                insertions: Some(10),
+                deletions: Some(3),
             }],
             patch_path: None,
             conflicted_files: None,
@@ -98,8 +98,8 @@ mod tests {
             status: SubagentChangesStatus::AppliedWithConflicts,
             files_changed: vec![FileChangeSummary {
                 path: "src/main.rs".to_string(),
-                insertions: 5,
-                deletions: 2,
+                insertions: Some(5),
+                deletions: Some(2),
             }],
             patch_path: None,
             conflicted_files: Some(vec!["src/main.rs".to_string()]),

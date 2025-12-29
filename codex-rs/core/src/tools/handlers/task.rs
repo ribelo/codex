@@ -185,14 +185,17 @@ fn wrap_subagent_event(
 /// Used to ensure subagents can only tighten, not loosen approval requirements.
 fn approval_restrictiveness(policy: AskForApproval) -> i32 {
     match policy {
-        // UnlessTrusted is most restrictive - asks for approval on almost everything
+        // Rank by AUTONOMY (ability to act without user approval)
+        // Lower values = less autonomy = more user supervision required
+        //
+        // UnlessTrusted: Zero autonomy - must ask for EVERYTHING
         AskForApproval::UnlessTrusted => 0,
-        // OnRequest - model decides when to ask
-        AskForApproval::OnRequest => 1,
-        // OnFailure - auto-approve in sandbox, escalate on failure
-        AskForApproval::OnFailure => 2,
-        // Never - never ask, most restrictive of interaction (fails if blocked)
-        AskForApproval::Never => -1,
+        // Never: Sandbox autonomy only - can execute in sandbox but cannot escalate
+        AskForApproval::Never => 1,
+        // OnRequest: Sandbox autonomy + can request escalation
+        AskForApproval::OnRequest => 2,
+        // OnFailure: Sandbox autonomy + auto-escalates on failure
+        AskForApproval::OnFailure => 3,
     }
 }
 
@@ -293,11 +296,16 @@ impl ToolHandler for TaskHandler {
             .await
             .unwrap_or(false);
 
-        // Create worktree if in git repo, otherwise run directly
+        // Always use worktree isolation for subagents in git repos to ensure
+        // safety. Each turn gets a fresh worktree - this guarantees isolation
+        // even for follow-up turns in reused sessions.
+        let use_worktree = is_git_repo;
+        let _ = is_new_session; // suppress unused warning
+
         let (effective_cwd, worktree_handle): (
             std::path::PathBuf,
             Option<crate::worktree_manager::WorktreeHandle>,
-        ) = if is_git_repo {
+        ) = if use_worktree {
             match worktree_manager.create_worktree(&parent_worktree).await {
                 Ok(handle) => {
                     let path = handle.path.clone();
@@ -808,12 +816,37 @@ impl ToolHandler for TaskHandler {
                         None,
                     )
                 }
-                Ok(PatchApplyResult::Conflict { patch_path }) => {
-                    let warning = format!(
-                        "Subagent {} changes could not be merged. Patch saved to: {}",
-                        args.subagent_name,
-                        patch_path.display()
-                    );
+                Ok(PatchApplyResult::Conflict {
+                    patch_path,
+                    partially_applied_files,
+                }) => {
+                    // Filter partially_applied_files to only include files that were
+                    // actually in the subagent's diff (avoid reporting pre-existing dirty files)
+                    let expected_files: std::collections::HashSet<_> =
+                        diff.files_changed.iter().map(|f| f.path.as_str()).collect();
+                    let relevant_files: Vec<_> = partially_applied_files
+                        .iter()
+                        .filter(|f| expected_files.contains(f.as_str()))
+                        .cloned()
+                        .collect();
+
+                    let warning = if relevant_files.is_empty() {
+                        format!(
+                            "Subagent {} changes could not be merged. Patch saved to: {}",
+                            args.subagent_name,
+                            patch_path.display()
+                        )
+                    } else {
+                        format!(
+                            "Subagent {} changes partially applied ({} files modified). \
+                             Remaining changes saved to: {}. \
+                             Modified files: {}",
+                            args.subagent_name,
+                            relevant_files.len(),
+                            patch_path.display(),
+                            relevant_files.join(", ")
+                        )
+                    };
                     invocation
                         .session
                         .send_event(
