@@ -14,6 +14,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 pub type SharedTurnDiffTracker = Arc<Mutex<TurnDiffTracker>>;
+pub type SharedLoopDetector = Arc<Mutex<crate::loop_detector::LoopDetector>>;
 
 #[derive(Clone)]
 pub struct ToolInvocation {

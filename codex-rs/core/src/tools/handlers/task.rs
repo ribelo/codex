@@ -837,6 +837,7 @@ impl ToolHandler for TaskHandler {
                 Ok(PatchApplyResult::Conflict {
                     patch_path,
                     partially_applied_files,
+                    failure_reason,
                 }) => {
                     // Filter partially_applied_files to only include files that were
                     // actually in the subagent's diff (avoid reporting pre-existing dirty files)
@@ -849,18 +850,29 @@ impl ToolHandler for TaskHandler {
                         .collect();
 
                     let warning = if relevant_files.is_empty() {
-                        format!(
-                            "Subagent {} changes could not be merged. Patch saved to: {}",
-                            args.subagent_name,
-                            patch_path.display()
-                        )
+                        if failure_reason.is_empty() {
+                            format!(
+                                "Subagent {} changes could not be merged. Patch saved to: {}",
+                                args.subagent_name,
+                                patch_path.display()
+                            )
+                        } else {
+                            format!(
+                                "Subagent {} changes could not be merged.\n  Reason: {}\n  Patch saved to: {}",
+                                args.subagent_name,
+                                failure_reason.trim(),
+                                patch_path.display()
+                            )
+                        }
                     } else {
                         format!(
-                            "Subagent {} changes partially applied ({} files modified). \
-                             Remaining changes saved to: {}. \
+                            "Subagent {} changes partially applied ({} files modified).\n  \
+                             Reason: {}\n  \
+                             Remaining changes saved to: {}\n  \
                              Modified files: {}",
                             args.subagent_name,
                             relevant_files.len(),
+                            failure_reason.trim(),
                             patch_path.display(),
                             relevant_files.join(", ")
                         )

@@ -149,6 +149,8 @@ pub enum PatchApplyResult {
         patch_path: PathBuf,
         /// Files that were modified before the failure (partial application)
         partially_applied_files: Vec<String>,
+        /// The error message from git apply (for debugging)
+        failure_reason: String,
     },
 }
 
@@ -308,19 +310,17 @@ impl WorktreeManager {
 
             // Check PID file to see if the owning process is still alive
             let pid_file = path.join("lock.pid");
-            if pid_file.exists() {
-                if let Ok(pid_str) = tokio::fs::read_to_string(&pid_file).await {
-                    if let Ok(pid) = pid_str.trim().parse::<u32>() {
-                        if is_process_alive(pid).await {
-                            tracing::debug!(
-                                path = %path.display(),
-                                pid,
-                                "Skipping active worktree (process still running)"
-                            );
-                            continue;
-                        }
-                    }
-                }
+            if pid_file.exists()
+                && let Ok(pid_str) = tokio::fs::read_to_string(&pid_file).await
+                && let Ok(pid) = pid_str.trim().parse::<u32>()
+                && is_process_alive(pid).await
+            {
+                tracing::debug!(
+                    path = %path.display(),
+                    pid,
+                    "Skipping active worktree (process still running)"
+                );
+                continue;
             }
 
             // Worktree is orphaned, remove it
@@ -493,6 +493,12 @@ impl WorktreeManager {
 
     /// Generate diff of all changes in worktree since base_sha.
     pub async fn generate_diff(&self, handle: &WorktreeHandle) -> Result<WorktreeDiff> {
+        // Remove lock.pid before staging - it's an internal file that shouldn't be in the diff
+        let pid_file = handle.path.join("lock.pid");
+        if pid_file.exists() {
+            let _ = tokio::fs::remove_file(&pid_file).await;
+        }
+
         // Stage all changes: git add -A
         let add_output = Command::new("git")
             .args(["add", "-A"])
@@ -615,6 +621,9 @@ impl WorktreeManager {
         tokio::fs::create_dir_all(&self.patches_dir).await?;
         tokio::fs::write(&patch_file, patch).await?;
 
+        // Track the last error from git apply for debugging
+        let mut last_apply_error = String::new();
+
         // 1. Try clean git apply (fast path) with retry for index.lock
         for attempt in 0..MAX_GIT_RETRY_ATTEMPTS {
             let output = Command::new("git")
@@ -629,6 +638,8 @@ impl WorktreeManager {
                 let _ = tokio::fs::remove_file(&patch_file).await;
                 return Ok(PatchApplyResult::Applied);
             }
+
+            last_apply_error = String::from_utf8_lossy(&output.stderr).into_owned();
 
             if is_index_lock_error(&output.stderr) && attempt < MAX_GIT_RETRY_ATTEMPTS - 1 {
                 let delay_ms = INITIAL_RETRY_DELAY_MS * (1 << attempt);
@@ -658,6 +669,8 @@ impl WorktreeManager {
                 let _ = tokio::fs::remove_file(&patch_file).await;
                 return Ok(PatchApplyResult::Applied);
             }
+
+            last_apply_error = String::from_utf8_lossy(&output.stderr).into_owned();
 
             if is_index_lock_error(&output.stderr) && attempt < MAX_GIT_RETRY_ATTEMPTS - 1 {
                 let delay_ms = INITIAL_RETRY_DELAY_MS * (1 << attempt);
@@ -706,6 +719,7 @@ impl WorktreeManager {
         Ok(PatchApplyResult::Conflict {
             patch_path: patch_file,
             partially_applied_files,
+            failure_reason: last_apply_error,
         })
     }
 
@@ -768,7 +782,7 @@ impl WorktreeManager {
                     || status.contains('D')
                     || status.contains('?')
             })
-            .filter_map(|line| line.get(3..).map(|s| s.to_string()))
+            .filter_map(|line| line.get(3..).map(std::string::ToString::to_string))
             .collect();
 
         Ok(files)

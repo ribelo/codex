@@ -10,6 +10,7 @@ use crate::error::CodexErr;
 use crate::error::Result;
 use crate::function_tool::FunctionCallError;
 use crate::parse_turn_item;
+use crate::tools::context::SharedLoopDetector;
 use crate::tools::parallel::ToolCallRuntime;
 use crate::tools::router::ToolRouter;
 use codex_protocol::models::FunctionCallOutputPayload;
@@ -36,6 +37,7 @@ pub(crate) struct HandleOutputCtx {
     pub turn_context: Arc<TurnContext>,
     pub tool_runtime: ToolCallRuntime,
     pub cancellation_token: CancellationToken,
+    pub loop_detector: SharedLoopDetector,
 }
 
 pub(crate) async fn handle_output_item_done(
@@ -44,6 +46,25 @@ pub(crate) async fn handle_output_item_done(
     previously_active_item: Option<TurnItem>,
 ) -> Result<OutputItemResult> {
     let mut output = OutputItemResult::default();
+
+    // Check for tool call loop BEFORE execution
+    match &item {
+        ResponseItem::FunctionCall {
+            name, arguments, ..
+        } => {
+            let mut detector = ctx.loop_detector.lock().await;
+            if let Some(loop_type) = detector.check_tool_call(name, arguments) {
+                return Err(CodexErr::LoopDetected(loop_type));
+            }
+        }
+        ResponseItem::CustomToolCall { name, input, .. } => {
+            let mut detector = ctx.loop_detector.lock().await;
+            if let Some(loop_type) = detector.check_tool_call(name, input) {
+                return Err(CodexErr::LoopDetected(loop_type));
+            }
+        }
+        _ => {}
+    }
 
     match ToolRouter::build_tool_call(ctx.sess.as_ref(), item.clone()).await {
         // The model emitted a tool call; log it, persist the item immediately, and queue the tool execution.

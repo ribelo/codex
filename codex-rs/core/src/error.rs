@@ -1,4 +1,5 @@
 use crate::exec::ExecToolCallOutput;
+use crate::loop_detector::LoopType;
 use crate::token_data::KnownPlan;
 use crate::token_data::PlanType;
 use crate::truncate::TruncationBias;
@@ -62,6 +63,9 @@ pub enum CodexErr {
     // todo(aibrahim): git rid of this error carrying the dangling artifacts
     #[error("turn aborted. Something went wrong? Hit `/feedback` to report the issue.")]
     TurnAborted,
+
+    #[error("Loop detected: {0:?}")]
+    LoopDetected(LoopType),
 
     /// Returned by ResponsesClient when the SSE stream disconnects or errors out **after** the HTTP
     /// handshake has succeeded but **before** it finished emitting `response.completed`.

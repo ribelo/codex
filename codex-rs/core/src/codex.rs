@@ -78,6 +78,8 @@ use crate::error::Result as CodexResult;
 #[cfg(test)]
 use crate::exec::StreamOutput;
 use crate::exec_policy::ExecPolicyUpdateError;
+use crate::loop_detector::LoopDetector;
+use crate::loop_detector::LoopType;
 use crate::mcp::auth::compute_auth_statuses;
 use crate::mcp_connection_manager::McpConnectionManager;
 use crate::project_doc::get_user_instructions;
@@ -124,6 +126,7 @@ use crate::tasks::GhostSnapshotTask;
 use crate::tasks::SessionTask;
 use crate::tasks::SessionTaskContext;
 use crate::tools::ToolRouter;
+use crate::tools::context::SharedLoopDetector;
 use crate::tools::context::SharedTurnDiffTracker;
 use crate::tools::parallel::ToolCallRuntime;
 use crate::tools::sandboxing::ApprovalStore;
@@ -2390,6 +2393,7 @@ pub(crate) async fn run_task(
     // Although from the perspective of codex.rs, TurnDiffTracker has the lifecycle of a Task which contains
     // many turns, from the perspective of the user, it is a single turn.
     let turn_diff_tracker = Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new()));
+    let loop_detector: SharedLoopDetector = Arc::new(tokio::sync::Mutex::new(LoopDetector::new()));
 
     loop {
         // Note that pending_input would be something like a message the user
@@ -2421,6 +2425,7 @@ pub(crate) async fn run_task(
             Arc::clone(&sess),
             Arc::clone(&turn_context),
             Arc::clone(&turn_diff_tracker),
+            Arc::clone(&loop_detector),
             turn_input,
             cancellation_token.child_token(),
         )
@@ -2467,6 +2472,24 @@ pub(crate) async fn run_task(
                 // Aborted turn is reported via a different event.
                 break;
             }
+            Err(CodexErr::LoopDetected(loop_type)) => {
+                let message = match loop_type {
+                    LoopType::ConsecutiveIdenticalToolCalls => {
+                        "Loop detected: Agent is making repeated identical tool calls. Turn aborted."
+                    }
+                    LoopType::RepetitiveContent => {
+                        "Loop detected: Agent is generating repetitive content. Turn aborted."
+                    }
+                };
+                sess.send_event(
+                    &turn_context,
+                    EventMsg::Warning(WarningEvent {
+                        message: message.to_string(),
+                    }),
+                )
+                .await;
+                break;
+            }
             Err(CodexErr::InvalidImageRequest()) => {
                 let mut state = sess.state.lock().await;
                 error_or_panic(
@@ -2491,6 +2514,7 @@ async fn run_turn(
     sess: Arc<Session>,
     turn_context: Arc<TurnContext>,
     turn_diff_tracker: SharedTurnDiffTracker,
+    loop_detector: SharedLoopDetector,
     input: Vec<ResponseItem>,
     cancellation_token: CancellationToken,
 ) -> CodexResult<TurnRunResult> {
@@ -2526,6 +2550,7 @@ async fn run_turn(
             Arc::clone(&sess),
             Arc::clone(&turn_context),
             Arc::clone(&turn_diff_tracker),
+            Arc::clone(&loop_detector),
             &prompt,
             cancellation_token.child_token(),
         )
@@ -2535,6 +2560,9 @@ async fn run_turn(
             Ok(output) => return Ok(output),
             Err(CodexErr::TurnAborted) => {
                 return Err(CodexErr::TurnAborted);
+            }
+            Err(CodexErr::LoopDetected(loop_type)) => {
+                return Err(CodexErr::LoopDetected(loop_type));
             }
             Err(CodexErr::Interrupted) => return Err(CodexErr::Interrupted),
             Err(CodexErr::EnvVar(var)) => return Err(CodexErr::EnvVar(var)),
@@ -2617,6 +2645,7 @@ async fn try_run_turn(
     sess: Arc<Session>,
     turn_context: Arc<TurnContext>,
     turn_diff_tracker: SharedTurnDiffTracker,
+    loop_detector: SharedLoopDetector,
     prompt: &Prompt,
     cancellation_token: CancellationToken,
 ) -> CodexResult<TurnRunResult> {
@@ -2674,6 +2703,7 @@ async fn try_run_turn(
                     turn_context: turn_context.clone(),
                     tool_runtime: tool_runtime.clone(),
                     cancellation_token: cancellation_token.child_token(),
+                    loop_detector: loop_detector.clone(),
                 };
 
                 let output_result =
@@ -2713,6 +2743,14 @@ async fn try_run_turn(
                 });
             }
             ResponseEvent::OutputTextDelta(delta) => {
+                // Check for content loop
+                {
+                    let mut detector = loop_detector.lock().await;
+                    if let Some(loop_type) = detector.check_content(&delta) {
+                        return Err(CodexErr::LoopDetected(loop_type));
+                    }
+                }
+
                 // In review child threads, suppress assistant text deltas; the
                 // UI will show a selection popup from the final ReviewOutput.
                 if active_item.is_some() {

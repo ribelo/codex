@@ -39,6 +39,7 @@ pub mod gemini;
 pub mod gemini_messages;
 pub mod git_info;
 pub mod landlock;
+pub mod loop_detector;
 pub mod mcp;
 pub mod mcp_connection_manager;
 pub mod openai_models;
@@ -74,6 +75,8 @@ pub use conversation_manager::NewConversation;
 // Re-export common auth types for workspace consumers
 pub use auth::AuthManager;
 pub use auth::CodexAuth;
+pub use loop_detector::LoopDetector;
+pub use loop_detector::LoopType;
 pub mod default_client;
 pub mod project_doc;
 mod rollout;
