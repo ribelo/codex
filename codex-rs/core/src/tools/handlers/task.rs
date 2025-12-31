@@ -1,15 +1,25 @@
 /// Sandbox and approvals documentation to prepend to subagent prompts.
 const SANDBOX_AND_APPROVALS_PROMPT: &str = include_str!("../../../sandbox_and_approvals.md");
 
+/// Subagent identity prompt to establish context and role.
+const SUBAGENT_IDENTITY_PROMPT: &str = r#"
+# Subagent Context
+
+You are a specialized subagent delegated by a parent agent to perform a specific task.
+- Focus strictly on completing the requested task.
+- Provide a clear, concise summary of what you accomplished.
+- You have your own conversation context separate from the parent agent.
+"#;
+
 /// Worktree isolation documentation to inform subagents about file tracking behavior.
 const WORKTREE_ISOLATION_PROMPT: &str = r#"
 # Worktree Isolation
-
-You are running in an isolated git worktree.
+You are a subagent running in an isolated git worktree.
 - Your working directory is a temporary copy of the repository.
-- Changes you make to files INSIDE the repository will be captured and merged back to the main workspace.
+- ALL changes you make to files INSIDE the repository (including new files) will be captured and merged back to the main workspace when your task completes.
 - Changes you make to files OUTSIDE the repository (e.g. /tmp, ~/.config, absolute paths outside the repo) will be applied IMMEDIATELY to the user's system but WILL NOT be tracked by the merge system.
-- The main agent will not be aware of external file changes.
+- The parent agent will not be aware of external file changes.
+- If your changes conflict with the parent workspace, the parent agent will be notified and may need to resolve conflicts.
 "#;
 
 /// Prompt for subagents running without worktree isolation (non-git directories).
@@ -95,7 +105,12 @@ pub fn create_task_tool(codex_home: &Path, allowed_subagents: Option<&[String]>)
     };
 
     let description = format!(
-        "Delegate a task to a specialized subagent. Returns the agent's output and a session_id.\n\nAvailable subagents:\n{agents_desc}\n\nWhen to use:\n- When you are instructed to execute custom slash commands or use a specific subagent."
+        "Delegate a task to a specialized subagent. Returns the agent's output and a session_id.\n\n\
+         Available subagents:\n{agents_desc}\n\n\
+         Usage notes:\n\
+         - Subagents run in isolated git worktrees; their changes are merged back when complete.\n\
+         - Pass session_id to continue a previous conversation with the same subagent.\n\
+         - If merge conflicts occur, you will be notified and may need to resolve them."
     );
 
     let mut properties = std::collections::BTreeMap::new();
@@ -126,7 +141,12 @@ pub fn create_task_tool(codex_home: &Path, allowed_subagents: Option<&[String]>)
     properties.insert(
         "session_id".to_string(),
         JsonSchema::String {
-            description: Some("Existing session ID to continue".to_string()),
+            description: Some(
+                "Session ID to continue an existing subagent conversation. \
+                 Pass a previous session_id to preserve conversation history \
+                 for multi-turn tasks, iterative refinement, or follow-up work."
+                    .to_string(),
+            ),
         },
     );
 
@@ -469,7 +489,7 @@ impl ToolHandler for TaskHandler {
                 };
 
                 sub_config.base_instructions = Some(format!(
-                    "{base_prompt}\n\n{isolation_prompt}\n\n{SANDBOX_AND_APPROVALS_PROMPT}"
+                    "{base_prompt}\n\n{SUBAGENT_IDENTITY_PROMPT}\n\n{isolation_prompt}\n\n{SANDBOX_AND_APPROVALS_PROMPT}"
                 ));
 
                 // Apply sandbox_policy override (only if more restrictive than parent)
