@@ -20,10 +20,11 @@ const WORKTREE_ISOLATION_PROMPT: &str = r#"
 # Worktree Isolation
 You are a subagent running in an isolated git worktree.
 - Your working directory is a temporary copy of the repository.
-- ALL changes you make to files INSIDE the repository (including new files) will be captured and merged back to the main workspace when your task completes.
+- Only TRACKED files are available in your worktree. Untracked files from the parent workspace are NOT copied.
+- ALL changes you make (edits, new files, deletions) will be automatically captured and merged back to the main workspace when your task completes.
 - Changes you make to files OUTSIDE the repository (e.g. /tmp, ~/.config, absolute paths outside the repo) will be applied IMMEDIATELY to the user's system but WILL NOT be tracked by the merge system.
 - The parent agent will not be aware of external file changes.
-- If your changes conflict with the parent workspace, the parent agent will be notified and may need to resolve conflicts.
+- The parent workspace is static while you work, so merge conflicts should not occur.
 "#;
 
 /// Prompt for subagents running without worktree isolation (non-git directories).
@@ -500,7 +501,6 @@ impl ToolHandler for TaskHandler {
                 ));
 
                 // Apply sandbox_policy override (only if more restrictive than parent)
-                // Apply sandbox_policy override (only if more restrictive than parent).
                 // If subagent specifies `Inherit`, we keep the parent's policy.
                 if let Some(subagent_sandbox_policy) =
                     subagent_def.metadata.sandbox_policy.to_sandbox_policy()
@@ -823,89 +823,23 @@ impl ToolHandler for TaskHandler {
                         .await;
                     ("applied", Some(diff.files_changed), None, None)
                 }
-                Ok(PatchApplyResult::NoChanges) => ("no_changes", None, None, None),
-                Ok(PatchApplyResult::AppliedWithConflicts { conflicted_files }) => {
-                    // Emit event + warning
-                    invocation
-                        .session
-                        .send_event(
-                            invocation.turn.as_ref(),
-                            EventMsg::SubagentChangesMerged(SubagentChangesMergedEvent {
-                                subagent_name: args.subagent_name.clone(),
-                                task_description: args.description.clone(),
-                                files_changed: diff
-                                    .files_changed
-                                    .iter()
-                                    .map(|f| FileChangeSummary {
-                                        path: f.path.clone(),
-                                        insertions: f.insertions,
-                                        deletions: f.deletions,
-                                    })
-                                    .collect(),
-                                session_id: Some(session_id.clone()),
-                            }),
-                        )
-                        .await;
-                    let warning = format!(
-                        "Subagent {} changes were applied with conflicts in: {}",
-                        args.subagent_name,
-                        conflicted_files.join(", ")
-                    );
-                    invocation
-                        .session
-                        .send_event(
-                            invocation.turn.as_ref(),
-                            EventMsg::Warning(WarningEvent { message: warning }),
-                        )
-                        .await;
-                    (
-                        "conflict",
-                        Some(diff.files_changed),
-                        Some(conflicted_files),
-                        None,
-                    )
-                }
+                Ok(PatchApplyResult::NoChanges) => ("no_changes", None, None::<Vec<String>>, None),
                 Ok(PatchApplyResult::Conflict {
                     patch_path,
-                    partially_applied_files,
                     failure_reason,
                 }) => {
-                    // Filter partially_applied_files to only include files that were
-                    // actually in the subagent's diff (avoid reporting pre-existing dirty files)
-                    let expected_files: std::collections::HashSet<_> =
-                        diff.files_changed.iter().map(|f| f.path.as_str()).collect();
-                    let relevant_files: Vec<_> = partially_applied_files
-                        .iter()
-                        .filter(|f| expected_files.contains(f.as_str()))
-                        .cloned()
-                        .collect();
-
-                    let warning = if relevant_files.is_empty() {
-                        if failure_reason.is_empty() {
-                            format!(
-                                "Subagent {} changes could not be merged. Patch saved to: {}",
-                                args.subagent_name,
-                                patch_path.display()
-                            )
-                        } else {
-                            format!(
-                                "Subagent {} changes could not be merged.\n  Reason: {}\n  Patch saved to: {}",
-                                args.subagent_name,
-                                failure_reason.trim(),
-                                patch_path.display()
-                            )
-                        }
+                    let warning = if failure_reason.is_empty() {
+                        format!(
+                            "Subagent {} changes could not be merged. Patch saved to: {}",
+                            args.subagent_name,
+                            patch_path.display()
+                        )
                     } else {
                         format!(
-                            "Subagent {} changes partially applied ({} files modified).\n  \
-                             Reason: {}\n  \
-                             Remaining changes saved to: {}\n  \
-                             Modified files: {}",
+                            "Subagent {} changes could not be merged.\n  Reason: {}\n  Patch saved to: {}",
                             args.subagent_name,
-                            relevant_files.len(),
                             failure_reason.trim(),
-                            patch_path.display(),
-                            relevant_files.join(", ")
+                            patch_path.display()
                         )
                     };
                     invocation

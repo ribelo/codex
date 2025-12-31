@@ -197,28 +197,28 @@ async fn process_bedrock_stream(
             }
 
             ConverseStreamOutput::ContentBlockStart(e) => {
-                if let Some(start) = e.start() {
-                    if let aws_sdk_bedrockruntime::types::ContentBlockStart::ToolUse(t) = start {
-                        // Flush any pending text if it was part of a message
-                        if !current_text.is_empty() && message_added {
-                            tx.send(Ok(ResponseEvent::OutputItemDone(ResponseItem::Message {
-                                id: None,
-                                role: "assistant".to_string(),
-                                content: vec![ContentItem::OutputText {
-                                    text: std::mem::take(&mut current_text),
-                                    signature: None,
-                                }],
-                            })))
-                            .await
-                            .ok();
-                            message_added = false;
-                        }
-
-                        current_tool_id = t.tool_use_id().to_string();
-                        current_tool_name = t.name().to_string();
-                        current_tool_json.clear();
-                        trace!("Bedrock: ToolUse start - {}", current_tool_name);
+                if let Some(start) = e.start()
+                    && let aws_sdk_bedrockruntime::types::ContentBlockStart::ToolUse(t) = start
+                {
+                    // Flush any pending text if it was part of a message
+                    if !current_text.is_empty() && message_added {
+                        tx.send(Ok(ResponseEvent::OutputItemDone(ResponseItem::Message {
+                            id: None,
+                            role: "assistant".to_string(),
+                            content: vec![ContentItem::OutputText {
+                                text: std::mem::take(&mut current_text),
+                                signature: None,
+                            }],
+                        })))
+                        .await
+                        .ok();
+                        message_added = false;
                     }
+
+                    current_tool_id = t.tool_use_id().to_string();
+                    current_tool_name = t.name().to_string();
+                    current_tool_json.clear();
+                    trace!("Bedrock: ToolUse start - {}", current_tool_name);
                 }
             }
 

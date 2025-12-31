@@ -57,7 +57,10 @@ impl LoopDetector {
         let mut hasher = DefaultHasher::new();
         name.hash(&mut hasher);
         ":".hash(&mut hasher);
-        args.hash(&mut hasher);
+        // Normalize JSON args to handle key order differences
+        // (e.g., {"a":1,"b":2} vs {"b":2,"a":1} should be considered identical)
+        let normalized_args = Self::normalize_json_args(args);
+        normalized_args.hash(&mut hasher);
         let key = hasher.finish();
 
         if self.last_tool_key == Some(key) {
@@ -76,6 +79,45 @@ impl LoopDetector {
             Some(LoopType::ConsecutiveIdenticalToolCalls)
         } else {
             None
+        }
+    }
+
+    /// Normalize JSON arguments by parsing and re-serializing with sorted keys.
+    /// Falls back to the original string if parsing fails.
+    fn normalize_json_args(args: &str) -> String {
+        match serde_json::from_str::<serde_json::Value>(args) {
+            Ok(value) => {
+                // serde_json serializes object keys in insertion order,
+                // but we need sorted order for consistent hashing.
+                // The simplest approach: convert to string with sorted keys.
+                Self::json_to_sorted_string(&value)
+            }
+            Err(_) => args.to_string(),
+        }
+    }
+
+    /// Recursively serialize JSON value with sorted object keys.
+    fn json_to_sorted_string(value: &serde_json::Value) -> String {
+        match value {
+            serde_json::Value::Object(map) => {
+                let mut pairs: Vec<_> = map.iter().collect();
+                pairs.sort_by_key(|(k, _)| *k);
+                let inner: Vec<String> = pairs
+                    .into_iter()
+                    .map(|(k, v)| {
+                        // Use serde_json::to_string for keys to handle escaping correctly
+                        let key_str =
+                            serde_json::to_string(k).unwrap_or_else(|_| format!("\"{k}\""));
+                        format!("{key_str}:{}", Self::json_to_sorted_string(v))
+                    })
+                    .collect();
+                format!("{{{}}}", inner.join(","))
+            }
+            serde_json::Value::Array(arr) => {
+                let inner: Vec<String> = arr.iter().map(Self::json_to_sorted_string).collect();
+                format!("[{}]", inner.join(","))
+            }
+            _ => value.to_string(),
         }
     }
 
@@ -195,7 +237,7 @@ mod tests {
     fn test_content_no_loop_varied() {
         let mut detector = LoopDetector::new();
         for i in 0..20 {
-            let chunk = format!("This is chunk number {:03}, which makes it unique!!!", i);
+            let chunk = format!("This is chunk number {i:03}, which makes it unique!!!");
             assert_eq!(chunk.chars().count(), 50);
             assert_eq!(detector.check_content(&chunk), None);
         }
@@ -210,6 +252,6 @@ mod tests {
             detector.check_content("... and more content to reach fifty characters now."),
             None
         );
-        assert_eq!(detector.content_history.len() >= 50, true);
+        assert!(detector.content_history.len() >= 50);
     }
 }
