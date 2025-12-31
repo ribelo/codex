@@ -1,15 +1,19 @@
 /// Sandbox and approvals documentation to prepend to subagent prompts.
 const SANDBOX_AND_APPROVALS_PROMPT: &str = include_str!("../../../sandbox_and_approvals.md");
 
-/// Subagent identity prompt to establish context and role.
-const SUBAGENT_IDENTITY_PROMPT: &str = r#"
-# Subagent Context
+/// Generate subagent identity prompt with parent session context.
+fn subagent_identity_prompt(parent_session_id: &str) -> String {
+    format!(
+        r#"# Subagent Context
 
 You are a specialized subagent delegated by a parent agent to perform a specific task.
+- Parent session ID: {parent_session_id}
 - Focus strictly on completing the requested task.
 - Provide a clear, concise summary of what you accomplished.
 - You have your own conversation context separate from the parent agent.
-"#;
+"#
+    )
+}
 
 /// Worktree isolation documentation to inform subagents about file tracking behavior.
 const WORKTREE_ISOLATION_PROMPT: &str = r#"
@@ -488,8 +492,11 @@ impl ToolHandler for TaskHandler {
                     subagent_def.system_prompt.clone()
                 };
 
+                let parent_session_id = invocation.session.conversation_id().to_string();
+                let identity_prompt = subagent_identity_prompt(&parent_session_id);
+
                 sub_config.base_instructions = Some(format!(
-                    "{base_prompt}\n\n{SUBAGENT_IDENTITY_PROMPT}\n\n{isolation_prompt}\n\n{SANDBOX_AND_APPROVALS_PROMPT}"
+                    "{base_prompt}\n\n{identity_prompt}\n\n{isolation_prompt}\n\n{SANDBOX_AND_APPROVALS_PROMPT}"
                 ));
 
                 // Apply sandbox_policy override (only if more restrictive than parent)
