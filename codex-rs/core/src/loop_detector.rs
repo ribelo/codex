@@ -1,9 +1,14 @@
 use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::Hash;
+use std::hash::Hasher;
 
 /// Number of consecutive identical tool calls to trigger loop detection
 const TOOL_CALL_THRESHOLD: i32 = 5;
 /// Number of characters per content chunk
 const CHUNK_SIZE: usize = 50;
+/// Step size for sliding window content detection
+const STEP_SIZE: usize = 10;
 /// Number of chunk repetitions to trigger loop detection
 const CONTENT_REPETITION_THRESHOLD: usize = 10;
 /// Maximum average distance (in bytes) between repeated chunks
@@ -20,7 +25,7 @@ pub enum LoopType {
 }
 
 pub struct LoopDetector {
-    last_tool_key: Option<String>,
+    last_tool_key: Option<u64>,
     tool_repetition_count: i32,
     content_buffer: String,
     content_history: String,
@@ -49,9 +54,13 @@ impl LoopDetector {
     }
 
     pub fn check_tool_call(&mut self, name: &str, args: &str) -> Option<LoopType> {
-        let key = format!("{name}:{args}");
+        let mut hasher = DefaultHasher::new();
+        name.hash(&mut hasher);
+        ":".hash(&mut hasher);
+        args.hash(&mut hasher);
+        let key = hasher.finish();
 
-        if self.last_tool_key.as_deref() == Some(&key) {
+        if self.last_tool_key == Some(key) {
             self.tool_repetition_count += 1;
         } else {
             self.last_tool_key = Some(key);
@@ -72,19 +81,19 @@ impl LoopDetector {
 
     pub fn check_content(&mut self, delta: &str) -> Option<LoopType> {
         self.content_buffer.push_str(delta);
+        self.content_history.push_str(delta);
         let mut result = None;
 
         while self.content_buffer.chars().count() >= CHUNK_SIZE {
             let chunk: String = self.content_buffer.chars().take(CHUNK_SIZE).collect();
 
-            let pos = self.content_history.len();
-            self.content_history.push_str(&chunk);
+            let pos = self.content_history.len() - self.content_buffer.len();
 
             // Remove the chunk from buffer (handle multi-byte chars correctly)
             let byte_offset: usize = self
                 .content_buffer
                 .char_indices()
-                .nth(CHUNK_SIZE)
+                .nth(STEP_SIZE)
                 .map(|(i, _)| i)
                 .unwrap_or(self.content_buffer.len());
             self.content_buffer = self.content_buffer[byte_offset..].to_string();
@@ -169,11 +178,12 @@ mod tests {
     #[test]
     fn test_content_loop_detection() {
         let mut detector = LoopDetector::new();
-        let chunk = "This is a 50-character string that we will repeat.".to_string();
+        let chunk = "This is a 50-character string that we will repeat!".to_string();
         assert_eq!(chunk.chars().count(), 50);
 
         for _ in 0..9 {
-            assert_eq!(detector.check_content(&chunk), None);
+            let res = detector.check_content(&chunk);
+            assert_eq!(res, None);
         }
         assert_eq!(
             detector.check_content(&chunk),

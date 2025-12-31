@@ -1330,6 +1330,7 @@ mod tests {
             create_apply_patch_freeform_tool(),
             ToolSpec::WebSearch {},
             create_view_image_tool(),
+            create_read_session_tool(),
         ] {
             expected.insert(tool_name(&spec).to_string(), spec);
         }
@@ -1377,6 +1378,7 @@ mod tests {
                 "list_mcp_resource_templates",
                 "read_mcp_resource",
                 "update_plan",
+                "read_session",
                 "apply_patch",
                 "task",
                 "view_image",
@@ -1398,6 +1400,7 @@ mod tests {
                 "list_mcp_resource_templates",
                 "read_mcp_resource",
                 "update_plan",
+                "read_session",
                 "apply_patch",
                 "web_search",
                 "task",
@@ -1417,6 +1420,7 @@ mod tests {
                 "list_mcp_resource_templates",
                 "read_mcp_resource",
                 "update_plan",
+                "read_session",
                 "apply_patch",
                 "task",
                 "view_image",
@@ -1435,6 +1439,7 @@ mod tests {
                 "list_mcp_resource_templates",
                 "read_mcp_resource",
                 "update_plan",
+                "read_session",
                 "apply_patch",
                 "task",
                 "view_image",
@@ -1454,6 +1459,7 @@ mod tests {
                 "list_mcp_resource_templates",
                 "read_mcp_resource",
                 "update_plan",
+                "read_session",
                 "apply_patch",
                 "task",
                 "view_image",

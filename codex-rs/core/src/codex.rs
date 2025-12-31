@@ -2406,6 +2406,10 @@ pub(crate) async fn run_task(
             .map(ResponseItem::from)
             .collect::<Vec<ResponseItem>>();
 
+        if !pending_input.is_empty() {
+            loop_detector.lock().await.reset();
+        }
+
         // Construct the input that we will send to the model.
         let turn_input: Vec<ResponseItem> = {
             sess.record_conversation_items(&turn_context, &pending_input)
