@@ -381,8 +381,80 @@ impl WorktreeManager {
         Ok(output.success())
     }
 
+    /// Copy untracked files from parent directory to worktree.
+    /// Uses `git ls-files --others --exclude-standard` to list untracked files,
+    /// respecting .gitignore patterns.
+    async fn copy_untracked_files(parent_dir: &Path, worktree_path: &Path) -> Result<()> {
+        // List untracked files (excluding ignored ones), null-terminated for safe parsing
+        let output = Command::new("git")
+            .args(["ls-files", "--others", "--exclude-standard", "-z"])
+            .current_dir(parent_dir)
+            .output()
+            .await
+            .context("Failed to list untracked files")?;
+
+        if !output.status.success() {
+            tracing::debug!("git ls-files failed, skipping untracked file copy");
+            return Ok(());
+        }
+
+        // Parse null-terminated paths
+        let paths: Vec<String> = output
+            .stdout
+            .split(|&b| b == 0)
+            .filter(|p| !p.is_empty())
+            .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
+            .collect();
+
+        if paths.is_empty() {
+            return Ok(());
+        }
+
+        tracing::debug!(count = paths.len(), "Copying untracked files to worktree");
+
+        // Copy files in parallel with bounded concurrency to avoid fd exhaustion
+        use futures::stream::StreamExt;
+        const MAX_CONCURRENT_COPIES: usize = 64;
+
+        let copy_stream = futures::stream::iter(paths.into_iter().map(|path_str| {
+            let src = parent_dir.join(&path_str);
+            let dst = worktree_path.join(&path_str);
+            async move {
+                // Check metadata asynchronously to avoid blocking
+                let metadata = match tokio::fs::symlink_metadata(&src).await {
+                    Ok(m) => m,
+                    Err(_) => return, // File doesn't exist or can't be read
+                };
+
+                // Skip directories
+                if metadata.is_dir() {
+                    return;
+                }
+
+                // Create parent directories if needed (handles existing dirs gracefully)
+                if let Some(parent) = dst.parent() {
+                    if let Err(e) = tokio::fs::create_dir_all(parent).await {
+                        tracing::debug!(path = %path_str, error = %e, "Failed to create parent dir");
+                        return;
+                    }
+                }
+
+                // Copy file (dereferences symlinks for safety - prevents escape from sandbox)
+                if let Err(e) = tokio::fs::copy(&src, &dst).await {
+                    tracing::debug!(path = %path_str, error = %e, "Failed to copy untracked file");
+                }
+            }
+        }))
+        .buffer_unordered(MAX_CONCURRENT_COPIES)
+        .collect::<Vec<_>>();
+
+        copy_stream.await;
+
+        Ok(())
+    }
+
     /// Capture current state of parent_dir and create isolated worktree.
-    /// Uses `git stash create -u` to snapshot dirty state.
+    /// Uses `git stash create` to snapshot dirty state, then copies untracked files.
     pub async fn create_worktree(&self, parent_dir: &Path) -> Result<WorktreeHandle> {
         let repo_root = Self::get_repo_root(parent_dir).await?;
         Self::ensure_gitignore(&repo_root).await?;
@@ -399,10 +471,11 @@ impl WorktreeManager {
         let id = Uuid::new_v4().to_string();
         let worktree_path = self.worktrees_root.join(&id);
 
-        // Capture dirty state: git stash create -u
-        // Returns empty string if nothing to stash (clean state)
+        // Capture dirty state of tracked files: git stash create
+        // Note: stash create does NOT support -u flag (it's interpreted as message)
+        // Untracked files are copied separately after worktree creation
         let stash_output = Command::new("git")
-            .args(["stash", "create", "-u"])
+            .args(["stash", "create"])
             .current_dir(parent_dir)
             .output()
             .await
@@ -480,6 +553,12 @@ impl WorktreeManager {
                     "Worktree created without submodule initialization. Submodule directories will be empty."
                 );
             }
+        }
+
+        // Copy untracked files from parent to worktree
+        // This ensures subagents can see and edit files that aren't tracked by git
+        if let Err(e) = Self::copy_untracked_files(parent_dir, &worktree_path).await {
+            tracing::warn!(error = %e, "Failed to copy some untracked files to worktree");
         }
 
         Ok(WorktreeHandle {

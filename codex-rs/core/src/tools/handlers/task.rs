@@ -298,20 +298,20 @@ impl ToolHandler for TaskHandler {
         // - In git repo: use per-repo storage (<repo>/.codex/)
         // - Not in git repo OR repo root detection fails: use global storage (~/.codex/)
         // This prevents polluting non-git directories and avoids fragmented state
-        let worktree_manager = if is_git_repo {
+        let (worktree_manager, repo_root) = if is_git_repo {
             match WorktreeManager::get_repo_root(&parent_worktree).await {
-                Ok(repo_root) => WorktreeManager::new_for_repo(&repo_root),
+                Ok(root) => (WorktreeManager::new_for_repo(&root), Some(root)),
                 Err(e) => {
                     tracing::warn!(
                         error = %e,
                         "In git repo but could not find root, falling back to global storage"
                     );
-                    WorktreeManager::new_global(&codex_home)
+                    (WorktreeManager::new_global(&codex_home), None)
                 }
             }
         } else {
             // Not a git repo - use global storage to avoid polluting cwd
-            WorktreeManager::new_global(&codex_home)
+            (WorktreeManager::new_global(&codex_home), None)
         };
 
         // Always use worktree isolation for subagents in git repos to ensure
@@ -754,13 +754,17 @@ impl ToolHandler for TaskHandler {
             // Acquire repo lock to prevent parallel merge races
             let _lock = invocation.turn.repo_lock.lock().await;
 
+            // Apply patch to repo root, not parent_worktree - git apply from a
+            // subdirectory silently skips patches for files outside that directory
+            let apply_target = repo_root.as_ref().unwrap_or(&parent_worktree);
+
             // Apply patch immediately
             let task_id = format!(
                 "{}-{}-{}",
                 args.subagent_name, session_id, invocation.call_id
             );
             let apply_result = worktree_manager
-                .apply_patch(&diff.patch, &parent_worktree, &task_id)
+                .apply_patch(&diff.patch, apply_target, &task_id)
                 .await;
 
             // Always cleanup worktree after merge attempt
