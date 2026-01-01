@@ -67,7 +67,6 @@ use crate::ModelProviderInfo;
 use crate::client::ModelClient;
 use crate::client_common::Prompt;
 use crate::client_common::ResponseEvent;
-use crate::compact::collect_user_messages;
 use crate::config::Config;
 use crate::config::ShellConfig;
 use crate::config::types::ShellEnvironmentPolicy;
@@ -1173,10 +1172,10 @@ impl Session {
                     if let Some(replacement) = &compacted.replacement_history {
                         history.replace(replacement.clone());
                     } else {
-                        let user_messages = collect_user_messages(&snapshot);
+                        let turns = compact::identify_turns(&snapshot);
                         let rebuilt = compact::build_compacted_history(
                             self.build_initial_context(turn_context),
-                            &user_messages,
+                            &turns,
                             &compacted.message,
                         );
                         history.replace(rebuilt);
@@ -3626,10 +3625,10 @@ mod tests {
 
         let summary1 = "summary one";
         let snapshot1 = live_history.get_history();
-        let user_messages1 = collect_user_messages(&snapshot1);
+        let turns1 = compact::identify_turns(&snapshot1);
         let rebuilt1 = compact::build_compacted_history(
             session.build_initial_context(turn_context),
-            &user_messages1,
+            &turns1,
             summary1,
         );
         live_history.replace(rebuilt1);
@@ -3669,10 +3668,10 @@ mod tests {
 
         let summary2 = "summary two";
         let snapshot2 = live_history.get_history();
-        let user_messages2 = collect_user_messages(&snapshot2);
+        let turns2 = compact::identify_turns(&snapshot2);
         let rebuilt2 = compact::build_compacted_history(
             session.build_initial_context(turn_context),
-            &user_messages2,
+            &turns2,
             summary2,
         );
         live_history.replace(rebuilt2);

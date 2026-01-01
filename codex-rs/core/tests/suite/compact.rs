@@ -63,7 +63,7 @@ fn auto_summary(summary: &str) -> String {
     summary.to_string()
 }
 
-fn summary_with_prefix(summary: &str) -> String {
+pub(super) fn summary_with_prefix(summary: &str) -> String {
     format!("{SUMMARY_PREFIX}\n{summary}")
 }
 
@@ -244,9 +244,13 @@ async fn summarize_context_three_requests_and_instructions() {
         }
     }
 
-    // No previous assistant messages should remain and the new user message is present.
-    let assistant_count = messages.iter().filter(|(r, _)| r == "assistant").count();
-    assert_eq!(assistant_count, 0, "assistant history should be cleared");
+    // Assistant history is now preserved in turn-aware compaction.
+    assert!(
+        messages
+            .iter()
+            .any(|(r, t)| r == "assistant" && t == FIRST_REPLY),
+        "third request should include the assistant response"
+    );
     assert!(
         messages
             .iter()
@@ -1684,10 +1688,34 @@ async fn manual_compact_twice_preserves_latest_user_messages() {
     let expected = vec![
         json!({
             "content": vec![json!({
+                "text": expected_second_summary,
+                "type": "input_text",
+            })],
+            "role": "user",
+            "type": "message",
+        }),
+        json!({
+            "content": vec![json!({
                 "text": first_user_message,
                 "type": "input_text",
             })],
             "role": "user",
+            "type": "message",
+        }),
+        json!({
+            "content": vec![json!({
+                "text": FIRST_REPLY,
+                "type": "output_text",
+            })],
+            "role": "assistant",
+            "type": "message",
+        }),
+        json!({
+            "content": vec![json!({
+                "text": first_summary,
+                "type": "output_text",
+            })],
+            "role": "assistant",
             "type": "message",
         }),
         json!({
@@ -1700,10 +1728,18 @@ async fn manual_compact_twice_preserves_latest_user_messages() {
         }),
         json!({
             "content": vec![json!({
-                "text": expected_second_summary,
-                "type": "input_text",
+                "text": SECOND_LARGE_REPLY,
+                "type": "output_text",
             })],
-            "role": "user",
+            "role": "assistant",
+            "type": "message",
+        }),
+        json!({
+            "content": vec![json!({
+                "text": second_summary,
+                "type": "output_text",
+            })],
+            "role": "assistant",
             "type": "message",
         }),
         json!({

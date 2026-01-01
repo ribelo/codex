@@ -16,14 +16,12 @@ use crate::protocol::EventMsg;
 use crate::protocol::TaskStartedEvent;
 use crate::protocol::TurnContextItem;
 use crate::protocol::WarningEvent;
-use crate::truncate::TruncationBias;
-use crate::truncate::TruncationPolicy;
 use crate::truncate::approx_token_count;
-use crate::truncate::truncate_text;
 use crate::util::backoff;
 use codex_app_server_protocol::AuthMode;
 use codex_protocol::items::TurnItem;
 use codex_protocol::models::ContentItem;
+use codex_protocol::models::ReasoningItemReasoningSummary;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::RolloutItem;
@@ -33,7 +31,6 @@ use tracing::error;
 
 pub const SUMMARIZATION_PROMPT: &str = include_str!("../templates/compact/prompt.md");
 pub const SUMMARY_PREFIX: &str = include_str!("../templates/compact/summary_prefix.md");
-const COMPACT_USER_MESSAGE_MAX_TOKENS: usize = 20_000;
 
 pub(crate) fn should_use_remote_compact_task(
     session: &Session,
@@ -164,10 +161,14 @@ async fn run_compact_task_inner(
     let summary_suffix =
         get_last_assistant_message_from_turn(&history_snapshot).unwrap_or_default();
     let summary_text = format!("{SUMMARY_PREFIX}\n{summary_suffix}");
-    let user_messages = collect_user_messages(&history_snapshot);
+    let turns = identify_turns(&history_snapshot);
+    let context_window = turn_context.client.get_model_context_window() as usize;
+    let budget = context_window / 2;
+    let (_to_summarize, to_keep) = select_turns_within_budget(turns, budget);
 
     let initial_context = sess.build_initial_context(turn_context.as_ref());
-    let mut new_history = build_compacted_history(initial_context, &user_messages, &summary_text);
+    let mut new_history = build_compacted_history(initial_context, &to_keep, &summary_text);
+
     let ghost_snapshots: Vec<ResponseItem> = history_snapshot
         .iter()
         .filter(|item| matches!(item, ResponseItem::GhostSnapshot { .. }))
@@ -231,59 +232,177 @@ pub(crate) fn is_summary_message(message: &str) -> bool {
     message.starts_with(format!("{SUMMARY_PREFIX}\n").as_str())
 }
 
-pub(crate) fn build_compacted_history(
-    initial_context: Vec<ResponseItem>,
-    user_messages: &[String],
-    summary_text: &str,
-) -> Vec<ResponseItem> {
-    build_compacted_history_with_limit(
-        initial_context,
-        user_messages,
-        summary_text,
-        COMPACT_USER_MESSAGE_MAX_TOKENS,
-    )
+/// A complete conversation turn starting with a user message.
+#[derive(Debug, Clone)]
+pub(crate) struct Turn {
+    /// All ResponseItems in this turn (user message + assistant response + tool calls/results).
+    pub items: Vec<ResponseItem>,
+    /// Approximate token count for budget calculations.
+    pub token_count: usize,
 }
 
-fn build_compacted_history_with_limit(
-    mut history: Vec<ResponseItem>,
-    user_messages: &[String],
-    summary_text: &str,
-    max_tokens: usize,
-) -> Vec<ResponseItem> {
-    let mut selected_messages: Vec<String> = Vec::new();
-    if max_tokens > 0 {
-        let mut remaining = max_tokens;
-        for message in user_messages.iter().rev() {
-            if remaining == 0 {
-                break;
+/// Estimates the token count for a single ResponseItem.
+fn approx_token_count_for_item(item: &ResponseItem) -> usize {
+    match item {
+        ResponseItem::Message { content, .. } => content_items_to_text(content)
+            .map(|t| approx_token_count(&t))
+            .unwrap_or(0),
+        ResponseItem::FunctionCall {
+            arguments, name, ..
+        } => approx_token_count(name) + approx_token_count(arguments),
+        ResponseItem::FunctionCallOutput { output, .. } => approx_token_count(&output.content),
+        ResponseItem::CustomToolCall { input, name, .. } => {
+            approx_token_count(name) + approx_token_count(input)
+        }
+        ResponseItem::CustomToolCallOutput { output, .. } => approx_token_count(output),
+        ResponseItem::Reasoning { summary, .. } => summary
+            .iter()
+            .map(|s| match s {
+                ReasoningItemReasoningSummary::SummaryText { text } => approx_token_count(text),
+            })
+            .sum(),
+        ResponseItem::GhostSnapshot { .. } => 50, // Approximate fixed cost
+        ResponseItem::WebSearchCall { .. } => 20,
+        ResponseItem::CompactionSummary { encrypted_content } => {
+            approx_token_count(encrypted_content)
+        }
+        ResponseItem::Other => 0,
+    }
+}
+
+/// Estimates total token count for a slice of ResponseItems.
+pub(crate) fn approx_token_count_for_items(items: &[ResponseItem]) -> usize {
+    items.iter().map(approx_token_count_for_item).sum()
+}
+
+/// Checks if a user message is a session prefix entry (AGENTS.md, environment context, etc.)
+fn is_session_prefix_message(content: &[ContentItem]) -> bool {
+    let Some(text) = content_items_to_text(content) else {
+        return false;
+    };
+    text.starts_with("# AGENTS.md instructions")
+        || text.starts_with("<INSTRUCTIONS>")
+        || text.starts_with("<ENVIRONMENT_CONTEXT>")
+        || text.starts_with("<environment_context>")
+        || text == SUMMARIZATION_PROMPT
+}
+
+/// Groups history items into complete turns.
+/// A turn starts with a user message and includes all items until the next user message.
+/// GhostSnapshots attach to their preceding turn.
+/// Session prefix messages (AGENTS.md, environment context) are filtered out.
+pub(crate) fn identify_turns(history: &[ResponseItem]) -> Vec<Turn> {
+    let mut turns: Vec<Turn> = Vec::new();
+    let mut current_items: Vec<ResponseItem> = Vec::new();
+    let mut current_tokens: usize = 0;
+
+    for item in history {
+        match item {
+            ResponseItem::Message { role, content, .. } if role == "user" => {
+                // Skip session prefix messages
+                if is_session_prefix_message(content) {
+                    continue;
+                }
+                // Skip summary messages from previous compaction
+                if let Some(text) = content_items_to_text(content)
+                    && is_summary_message(&text)
+                {
+                    continue;
+                }
+                // Start a new turn if we have items
+                if !current_items.is_empty() {
+                    turns.push(Turn {
+                        items: std::mem::take(&mut current_items),
+                        token_count: current_tokens,
+                    });
+                    current_tokens = 0;
+                }
+                let tokens = approx_token_count_for_item(item);
+                current_items.push(item.clone());
+                current_tokens += tokens;
             }
-            let tokens = approx_token_count(message);
-            if tokens <= remaining {
-                selected_messages.push(message.clone());
-                remaining = remaining.saturating_sub(tokens);
-            } else {
-                let truncated = truncate_text(
-                    message,
-                    TruncationPolicy::Tokens(remaining),
-                    TruncationBias::Balanced,
-                );
-                selected_messages.push(truncated);
-                break;
+            ResponseItem::GhostSnapshot { .. } => {
+                // GhostSnapshots attach to the current turn
+                let tokens = approx_token_count_for_item(item);
+                current_items.push(item.clone());
+                current_tokens += tokens;
+            }
+            _ => {
+                // Add to current turn if we have one started
+                if !current_items.is_empty() {
+                    let tokens = approx_token_count_for_item(item);
+                    current_items.push(item.clone());
+                    current_tokens += tokens;
+                }
             }
         }
-        selected_messages.reverse();
     }
 
-    for message in &selected_messages {
-        history.push(ResponseItem::Message {
-            id: None,
-            role: "user".to_string(),
-            content: vec![ContentItem::InputText {
-                text: message.clone(),
-            }],
+    // Don't forget the last turn
+    if !current_items.is_empty() {
+        turns.push(Turn {
+            items: current_items,
+            token_count: current_tokens,
         });
     }
 
+    turns
+}
+
+/// Selects turns from the end that fit within the token budget.
+/// Returns (turns_to_summarize, turns_to_keep).
+/// Always keeps the last turn even if it exceeds budget.
+pub(crate) fn select_turns_within_budget(
+    turns: Vec<Turn>,
+    budget: usize,
+) -> (Vec<Turn>, Vec<Turn>) {
+    if turns.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+
+    // Always keep at least the last turn
+    let mut kept_indices: Vec<usize> = vec![turns.len() - 1];
+    let mut used_tokens = turns.last().map(|t| t.token_count).unwrap_or(0);
+
+    // Walk backwards from second-to-last, prepending complete turns
+    for i in (0..turns.len().saturating_sub(1)).rev() {
+        let turn_tokens = turns[i].token_count;
+        if used_tokens + turn_tokens <= budget {
+            kept_indices.push(i);
+            used_tokens += turn_tokens;
+        } else {
+            // Budget exceeded, stop here
+            break;
+        }
+    }
+
+    // Reverse to get chronological order
+    kept_indices.reverse();
+
+    // Split turns
+    let cut_point = *kept_indices.first().unwrap_or(&0);
+    let mut to_summarize = Vec::new();
+    let mut to_keep = Vec::new();
+
+    for (i, turn) in turns.into_iter().enumerate() {
+        if i < cut_point {
+            to_summarize.push(turn);
+        } else {
+            to_keep.push(turn);
+        }
+    }
+
+    (to_summarize, to_keep)
+}
+
+/// Builds the compacted history from initial context, kept turns, and summary.
+/// Output structure: [InitialContext] + [Summary message] + [Kept turns flattened]
+pub(crate) fn build_compacted_history(
+    mut history: Vec<ResponseItem>,
+    kept_turns: &[Turn],
+    summary_text: &str,
+) -> Vec<ResponseItem> {
+    // Add summary message (summarizes what came before the kept turns)
     let summary_text = if summary_text.is_empty() {
         "(no summary available)".to_string()
     } else {
@@ -295,6 +414,11 @@ fn build_compacted_history_with_limit(
         role: "user".to_string(),
         content: vec![ContentItem::InputText { text: summary_text }],
     });
+
+    // Flatten kept turns into history, preserving all items
+    for turn in kept_turns {
+        history.extend(turn.items.iter().cloned());
+    }
 
     history
 }
@@ -336,7 +460,48 @@ async fn drain_to_completed(
 mod tests {
 
     use super::*;
+    use codex_protocol::models::FunctionCallOutputPayload;
     use pretty_assertions::assert_eq;
+
+    fn user_msg(text: &str) -> ResponseItem {
+        ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: text.to_string(),
+            }],
+        }
+    }
+
+    fn assistant_msg(text: &str) -> ResponseItem {
+        ResponseItem::Message {
+            id: None,
+            role: "assistant".to_string(),
+            content: vec![ContentItem::OutputText {
+                text: text.to_string(),
+                signature: None,
+            }],
+        }
+    }
+
+    fn function_call_item(name: &str, args: &str, call_id: &str) -> ResponseItem {
+        ResponseItem::FunctionCall {
+            id: None,
+            name: name.to_string(),
+            arguments: args.to_string(),
+            call_id: call_id.to_string(),
+        }
+    }
+
+    fn function_result_item(call_id: &str, output: &str) -> ResponseItem {
+        ResponseItem::FunctionCallOutput {
+            call_id: call_id.to_string(),
+            output: FunctionCallOutputPayload {
+                content: output.to_string(),
+                ..Default::default()
+            },
+        }
+    }
 
     #[test]
     fn content_items_to_text_joins_non_empty_segments() {
@@ -429,66 +594,214 @@ mod tests {
     }
 
     #[test]
-    fn build_token_limited_compacted_history_truncates_overlong_user_messages() {
-        // Use a small truncation limit so the test remains fast while still validating
-        // that oversized user content is truncated.
-        let max_tokens = 16;
-        let big = "word ".repeat(200);
-        let history = super::build_compacted_history_with_limit(
-            Vec::new(),
-            std::slice::from_ref(&big),
-            "SUMMARY",
-            max_tokens,
-        );
+    fn test_build_compacted_history() {
+        let initial_context: Vec<ResponseItem> = Vec::new();
+        let kept_turns = vec![Turn {
+            items: vec![ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: "kept".to_string(),
+                }],
+            }],
+            token_count: 10,
+        }];
+        let summary_text = "summary text";
+
+        let history = build_compacted_history(initial_context, &kept_turns, summary_text);
+
         assert_eq!(history.len(), 2);
-
-        let truncated_message = &history[0];
-        let summary_message = &history[1];
-
-        let truncated_text = match truncated_message {
-            ResponseItem::Message { role, content, .. } if role == "user" => {
-                content_items_to_text(content).unwrap_or_default()
-            }
-            other => panic!("unexpected item in history: {other:?}"),
-        };
-
-        assert!(
-            truncated_text.contains("tokens truncated"),
-            "expected truncation marker in truncated user message"
+        assert_eq!(
+            content_items_to_text(match &history[0] {
+                ResponseItem::Message { content, .. } => content,
+                _ => panic!(),
+            }),
+            Some("summary text".to_string())
         );
-        assert!(
-            !truncated_text.contains(&big),
-            "truncated user message should not include the full oversized user text"
+        assert_eq!(
+            content_items_to_text(match &history[1] {
+                ResponseItem::Message { content, .. } => content,
+                _ => panic!(),
+            }),
+            Some("kept".to_string())
         );
-
-        let summary_text = match summary_message {
-            ResponseItem::Message { role, content, .. } if role == "user" => {
-                content_items_to_text(content).unwrap_or_default()
-            }
-            other => panic!("unexpected item in history: {other:?}"),
-        };
-        assert_eq!(summary_text, "SUMMARY");
     }
 
     #[test]
-    fn build_token_limited_compacted_history_appends_summary_message() {
-        let initial_context: Vec<ResponseItem> = Vec::new();
-        let user_messages = vec!["first user message".to_string()];
-        let summary_text = "summary text";
+    fn test_identify_turns_groups_by_user_message() {
+        let history = vec![
+            user_msg("first question"),
+            assistant_msg("first answer"),
+            user_msg("second question"),
+            assistant_msg("second answer"),
+        ];
 
-        let history = build_compacted_history(initial_context, &user_messages, summary_text);
-        assert!(
-            !history.is_empty(),
-            "expected compacted history to include summary"
-        );
+        let turns = identify_turns(&history);
 
-        let last = history.last().expect("history should have a summary entry");
-        let summary = match last {
-            ResponseItem::Message { role, content, .. } if role == "user" => {
-                content_items_to_text(content).unwrap_or_default()
+        assert_eq!(turns.len(), 2);
+        assert_eq!(turns[0].items.len(), 2);
+        assert_eq!(turns[1].items.len(), 2);
+    }
+
+    #[test]
+    fn test_identify_turns_includes_tool_calls() {
+        let history = vec![
+            user_msg("run a command"),
+            function_call_item("shell", "{\"cmd\": \"ls\"}", "call-1"),
+            function_result_item("call-1", "file1\nfile2"),
+            assistant_msg("here are the files"),
+        ];
+
+        let turns = identify_turns(&history);
+
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].items.len(), 4);
+    }
+
+    #[test]
+    fn test_identify_turns_filters_session_prefix() {
+        let history = vec![
+            user_msg(
+                "# AGENTS.md instructions for project\n\n<INSTRUCTIONS>do things</INSTRUCTIONS>",
+            ),
+            user_msg("<environment_context>cwd=/tmp</environment_context>"),
+            user_msg("real user message"),
+            assistant_msg("real answer"),
+        ];
+
+        let turns = identify_turns(&history);
+
+        assert_eq!(turns.len(), 1);
+    }
+
+    #[test]
+    fn test_identify_turns_empty_history() {
+        let turns = identify_turns(&[]);
+        assert!(turns.is_empty());
+    }
+
+    #[test]
+    fn test_select_turns_keeps_last_turn_always() {
+        let turns = vec![
+            Turn {
+                items: vec![user_msg("a")],
+                token_count: 1000,
+            },
+            Turn {
+                items: vec![user_msg("b")],
+                token_count: 1000,
+            },
+            Turn {
+                items: vec![user_msg("c")],
+                token_count: 5000,
+            },
+        ];
+
+        let (to_summarize, to_keep) = select_turns_within_budget(turns, 100);
+
+        assert_eq!(to_keep.len(), 1);
+        assert_eq!(to_summarize.len(), 2);
+    }
+
+    #[test]
+    fn test_select_turns_respects_budget() {
+        let turns = vec![
+            Turn {
+                items: vec![user_msg("a")],
+                token_count: 100,
+            },
+            Turn {
+                items: vec![user_msg("b")],
+                token_count: 100,
+            },
+            Turn {
+                items: vec![user_msg("c")],
+                token_count: 100,
+            },
+        ];
+
+        let (to_summarize, to_keep) = select_turns_within_budget(turns, 250);
+
+        assert_eq!(to_keep.len(), 2);
+        assert_eq!(to_summarize.len(), 1);
+    }
+
+    #[test]
+    fn test_select_turns_all_fit() {
+        let turns = vec![
+            Turn {
+                items: vec![user_msg("a")],
+                token_count: 100,
+            },
+            Turn {
+                items: vec![user_msg("b")],
+                token_count: 100,
+            },
+        ];
+
+        let (to_summarize, to_keep) = select_turns_within_budget(turns, 1000);
+
+        assert_eq!(to_keep.len(), 2);
+        assert!(to_summarize.is_empty());
+    }
+
+    #[test]
+    fn test_select_turns_empty_input() {
+        let (to_summarize, to_keep) = select_turns_within_budget(vec![], 1000);
+
+        assert!(to_summarize.is_empty());
+        assert!(to_keep.is_empty());
+    }
+
+    #[test]
+    fn test_build_compacted_history_with_turns() {
+        let initial = vec![user_msg("system context")];
+        let turns = vec![Turn {
+            items: vec![user_msg("question"), assistant_msg("answer")],
+            token_count: 100,
+        }];
+
+        let history = build_compacted_history(initial, &turns, "summary of past");
+
+        // Should be: initial + summary + turn items
+        assert_eq!(history.len(), 4);
+    }
+
+    #[test]
+    fn test_build_compacted_history_summary_before_turns() {
+        let turns = vec![Turn {
+            items: vec![user_msg("kept question")],
+            token_count: 100,
+        }];
+
+        let history = build_compacted_history(vec![], &turns, "the summary");
+
+        // First item should be the summary
+        match &history[0] {
+            ResponseItem::Message { content, .. } => {
+                let text = content_items_to_text(content).unwrap();
+                assert_eq!(text, "the summary");
             }
-            other => panic!("expected summary message, found {other:?}"),
-        };
-        assert_eq!(summary, summary_text);
+            _ => panic!("Expected message"),
+        }
+
+        // Second item should be the kept turn's user message
+        match &history[1] {
+            ResponseItem::Message { content, role, .. } => {
+                assert_eq!(role, "user");
+                let text = content_items_to_text(content).unwrap();
+                assert_eq!(text, "kept question");
+            }
+            _ => panic!("Expected user message"),
+        }
+    }
+
+    #[test]
+    fn test_build_compacted_history_empty_turns() {
+        let initial = vec![user_msg("context")];
+        let history = build_compacted_history(initial, &[], "summary");
+
+        // Should be: initial + summary
+        assert_eq!(history.len(), 2);
     }
 }
