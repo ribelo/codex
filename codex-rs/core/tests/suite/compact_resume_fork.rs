@@ -10,7 +10,6 @@
 use super::compact::COMPACT_WARNING_MESSAGE;
 use super::compact::FIRST_REPLY;
 use super::compact::SUMMARY_TEXT;
-use super::compact::summary_with_prefix;
 use codex_core::CodexAuth;
 use codex_core::CodexConversation;
 use codex_core::ConversationManager;
@@ -84,28 +83,6 @@ fn normalize_line_endings_str(text: &str) -> String {
     } else {
         text.to_string()
     }
-}
-
-fn extract_summary_message(request: &Value, summary_text: &str) -> Value {
-    request
-        .get("input")
-        .and_then(Value::as_array)
-        .and_then(|items| {
-            items.iter().find(|item| {
-                item.get("type").and_then(Value::as_str) == Some("message")
-                    && item.get("role").and_then(Value::as_str) == Some("user")
-                    && item
-                        .get("content")
-                        .and_then(Value::as_array)
-                        .and_then(|arr| arr.first())
-                        .and_then(|entry| entry.get("text"))
-                        .and_then(Value::as_str)
-                        .map(|text| text.contains(summary_text))
-                        .unwrap_or(false)
-            })
-        })
-        .cloned()
-        .unwrap_or_else(|| panic!("expected summary message {summary_text}"))
 }
 
 fn normalize_compact_prompts(requests: &mut [Value]) {

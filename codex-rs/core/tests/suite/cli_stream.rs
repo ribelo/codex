@@ -50,6 +50,8 @@ async fn chat_mode_stream_cli() {
     cmd.arg("exec")
         .arg("--skip-git-repo-check")
         .arg("-c")
+        .arg("model_context_window=128000")
+        .arg("-c")
         .arg(&provider_override)
         .arg("-c")
         .arg("model_provider=\"mock\"")
@@ -133,6 +135,8 @@ async fn exec_cli_applies_experimental_instructions_file() {
     cmd.arg("exec")
         .arg("--skip-git-repo-check")
         .arg("-c")
+        .arg("model_context_window=128000")
+        .arg("-c")
         .arg(&provider_override)
         .arg("-c")
         .arg("model_provider=\"mock\"")
@@ -186,6 +190,8 @@ async fn responses_api_stream_cli() {
     let mut cmd = AssertCommand::new(bin);
     cmd.arg("exec")
         .arg("--skip-git-repo-check")
+        .arg("-c")
+        .arg("model_context_window=128000")
         .arg("-C")
         .arg(env!("CARGO_MANIFEST_DIR"))
         .arg("hello?");
@@ -222,6 +228,8 @@ async fn integration_creates_and_checks_session_file() -> anyhow::Result<()> {
     let mut cmd = AssertCommand::new(bin);
     cmd.arg("exec")
         .arg("--skip-git-repo-check")
+        .arg("-c")
+        .arg("model_context_window=128000")
         .arg("-C")
         .arg(env!("CARGO_MANIFEST_DIR"))
         .arg(&prompt);
@@ -343,6 +351,8 @@ async fn integration_creates_and_checks_session_file() -> anyhow::Result<()> {
     let mut cmd2 = AssertCommand::new(bin2);
     cmd2.arg("exec")
         .arg("--skip-git-repo-check")
+        .arg("-c")
+        .arg("model_context_window=128000")
         .arg("-C")
         .arg(env!("CARGO_MANIFEST_DIR"))
         .arg(&prompt2)

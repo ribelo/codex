@@ -19,7 +19,6 @@ use crate::protocol::WarningEvent;
 use crate::truncate::approx_token_count;
 use crate::util::backoff;
 use codex_app_server_protocol::AuthMode;
-use codex_protocol::items::TurnItem;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ReasoningItemReasoningSummary;
 use codex_protocol::models::ResponseInputItem;
@@ -212,22 +211,6 @@ pub fn content_items_to_text(content: &[ContentItem]) -> Option<String> {
     }
 }
 
-pub(crate) fn collect_user_messages(items: &[ResponseItem]) -> Vec<String> {
-    items
-        .iter()
-        .filter_map(|item| match crate::event_mapping::parse_turn_item(item) {
-            Some(TurnItem::UserMessage(user)) => {
-                if is_summary_message(&user.message()) {
-                    None
-                } else {
-                    Some(user.message())
-                }
-            }
-            _ => None,
-        })
-        .collect()
-}
-
 pub(crate) fn is_summary_message(message: &str) -> bool {
     message.starts_with(format!("{SUMMARY_PREFIX}\n").as_str())
 }
@@ -268,11 +251,6 @@ fn approx_token_count_for_item(item: &ResponseItem) -> usize {
         }
         ResponseItem::Other => 0,
     }
-}
-
-/// Estimates total token count for a slice of ResponseItems.
-pub(crate) fn approx_token_count_for_items(items: &[ResponseItem]) -> usize {
-    items.iter().map(approx_token_count_for_item).sum()
 }
 
 /// Checks if a user message is a session prefix entry (AGENTS.md, environment context, etc.)
@@ -533,64 +511,6 @@ mod tests {
         let joined = content_items_to_text(&items);
 
         assert_eq!(None, joined);
-    }
-
-    #[test]
-    fn collect_user_messages_extracts_user_text_only() {
-        let items = vec![
-            ResponseItem::Message {
-                id: Some("assistant".to_string()),
-                role: "assistant".to_string(),
-                content: vec![ContentItem::OutputText {
-                    text: "ignored".to_string(),
-                    signature: None,
-                }],
-            },
-            ResponseItem::Message {
-                id: Some("user".to_string()),
-                role: "user".to_string(),
-                content: vec![ContentItem::InputText {
-                    text: "first".to_string(),
-                }],
-            },
-            ResponseItem::Other,
-        ];
-
-        let collected = collect_user_messages(&items);
-
-        assert_eq!(vec!["first".to_string()], collected);
-    }
-
-    #[test]
-    fn collect_user_messages_filters_session_prefix_entries() {
-        let items = vec![
-            ResponseItem::Message {
-                id: None,
-                role: "user".to_string(),
-                content: vec![ContentItem::InputText {
-                    text: "# AGENTS.md instructions for project\n\n<INSTRUCTIONS>\ndo things\n</INSTRUCTIONS>"
-                        .to_string(),
-                }],
-            },
-            ResponseItem::Message {
-                id: None,
-                role: "user".to_string(),
-                content: vec![ContentItem::InputText {
-                    text: "<ENVIRONMENT_CONTEXT>cwd=/tmp</ENVIRONMENT_CONTEXT>".to_string(),
-                }],
-            },
-            ResponseItem::Message {
-                id: None,
-                role: "user".to_string(),
-                content: vec![ContentItem::InputText {
-                    text: "real user message".to_string(),
-                }],
-            },
-        ];
-
-        let collected = collect_user_messages(&items);
-
-        assert_eq!(vec!["real user message".to_string()], collected);
     }
 
     #[test]
