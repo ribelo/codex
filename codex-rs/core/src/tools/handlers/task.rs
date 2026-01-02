@@ -54,6 +54,10 @@ use crate::codex_delegate::run_codex_conversation_interactive;
 use crate::function_tool::FunctionCallError;
 use crate::model_provider_info::ProviderKind;
 use crate::model_provider_info::built_in_model_providers;
+use crate::subagent_result::FileChange;
+use crate::subagent_result::SubagentExecutionOutcome;
+use crate::subagent_result::SubagentOutcome;
+use crate::subagent_result::SubagentTaskResult;
 use crate::subagents::SubagentRegistry;
 use crate::subagents::SubagentSandboxPolicy;
 use crate::subagents::SubagentSession;
@@ -637,7 +641,7 @@ impl ToolHandler for TaskHandler {
             .send_event(invocation.turn.as_ref(), task_started)
             .await;
 
-        let execution_result: Result<(String, Option<String>), FunctionCallError> = async {
+        let execution_result: Result<SubagentExecutionOutcome, FunctionCallError> = async {
             subagent_session_ref
                 .submit(Op::UserInput { items: input })
                 .await
@@ -645,8 +649,6 @@ impl ToolHandler for TaskHandler {
                     FunctionCallError::Fatal(format!("Failed to submit input to subagent: {e}"))
                 })?;
 
-            let mut final_output = String::new();
-            let mut last_tool_output: Option<String> = None;
             loop {
                 let event = subagent_session_ref
                     .next_event()
@@ -672,13 +674,6 @@ impl ToolHandler for TaskHandler {
                             .await;
                     }
                     EventMsg::TaskComplete(tc) => {
-                        if let Some(ref msg) = tc.last_agent_message {
-                            final_output = msg.clone();
-                        }
-                        // Capture tool output if present
-                        if let Some(ref tool_out) = tc.last_tool_output {
-                            last_tool_output = Some(tool_out.clone());
-                        }
                         // Send a wrapped TaskComplete so the TUI can mark the cell as completed
                         let wrapped = wrap_subagent_event(
                             &invocation.call_id,
@@ -688,22 +683,31 @@ impl ToolHandler for TaskHandler {
                             parent_delegation_id.clone(),
                             depth,
                             Some(session_id.clone()),
-                            EventMsg::TaskComplete(tc),
+                            EventMsg::TaskComplete(tc.clone()),
                         );
                         invocation
                             .session
                             .send_event(invocation.turn.as_ref(), wrapped)
                             .await;
-                        break Ok((final_output, last_tool_output));
+                        break Ok(
+                            match (
+                                tc.last_agent_message.filter(|s| !s.trim().is_empty()),
+                                tc.last_tool_output,
+                            ) {
+                                (Some(message), _) => {
+                                    SubagentExecutionOutcome::CompletedWithMessage { message }
+                                }
+                                (None, Some(tool_output)) => {
+                                    SubagentExecutionOutcome::CompletedWithToolOutput {
+                                        tool_output,
+                                    }
+                                }
+                                (None, None) => SubagentExecutionOutcome::CompletedEmpty,
+                            },
+                        );
                     }
                     EventMsg::TurnAborted(ta) => {
-                        let abort_response = serde_json::json!({
-                            "error": format!("Turn aborted: {:?}", ta.reason),
-                            "session_id": session_id,
-                            "can_resume": true,
-                        });
                         // Send a wrapped TurnAborted so the TUI can mark the cell as failed
-
                         let wrapped = wrap_subagent_event(
                             &invocation.call_id,
                             &args.subagent_name,
@@ -712,15 +716,13 @@ impl ToolHandler for TaskHandler {
                             parent_delegation_id.clone(),
                             depth,
                             Some(session_id.clone()),
-                            EventMsg::TurnAborted(ta),
+                            EventMsg::TurnAborted(ta.clone()),
                         );
                         invocation
                             .session
                             .send_event(invocation.turn.as_ref(), wrapped)
                             .await;
-                        break Err(FunctionCallError::RespondToModel(
-                            abort_response.to_string(),
-                        ));
+                        break Ok(SubagentExecutionOutcome::from(ta.reason));
                     }
                     EventMsg::ExecCommandBegin(_)
                     | EventMsg::ExecCommandEnd(_)
@@ -753,8 +755,8 @@ impl ToolHandler for TaskHandler {
         .await;
 
         // Handle execution result with cleanup on error
-        let (final_output, last_tool_output) = match execution_result {
-            Ok(result) => result,
+        let exec_outcome = match execution_result {
+            Ok(outcome) => outcome,
             Err(e) => {
                 if let Some(ref handle) = worktree_handle {
                     let _ = worktree_manager.cleanup(handle).await;
@@ -763,9 +765,25 @@ impl ToolHandler for TaskHandler {
             }
         };
 
-        let (changes_status, files_changed, conflicted_files, patch_path) = if let Some(handle) =
-            worktree_handle
+        // Handle aborted case early - no need for worktree processing
+        if let SubagentExecutionOutcome::Aborted {
+            ref reason,
+            can_resume,
+        } = exec_outcome
         {
+            if let Some(ref handle) = worktree_handle {
+                let _ = worktree_manager.cleanup(handle).await;
+            }
+            let file_outcome = SubagentOutcome::aborted(reason.clone(), can_resume);
+            let result = SubagentTaskResult::new(exec_outcome, session_id, file_outcome);
+            return Ok(ToolOutput::Function {
+                success: Some(false),
+                content: result.to_string(),
+                content_items: None,
+            });
+        }
+
+        let file_outcome = if let Some(handle) = worktree_handle {
             // Isolated mode: Generate diff and apply immediately
             let diff = match worktree_manager.generate_diff(&handle).await {
                 Ok(d) => d,
@@ -821,9 +839,18 @@ impl ToolHandler for TaskHandler {
                             }),
                         )
                         .await;
-                    ("applied", Some(diff.files_changed), None, None)
+                    SubagentOutcome::applied(
+                        diff.files_changed
+                            .iter()
+                            .map(|f| FileChange {
+                                path: f.path.clone(),
+                                insertions: f.insertions,
+                                deletions: f.deletions,
+                            })
+                            .collect(),
+                    )
                 }
-                Ok(PatchApplyResult::NoChanges) => ("no_changes", None, None::<Vec<String>>, None),
+                Ok(PatchApplyResult::NoChanges) => SubagentOutcome::no_changes(),
                 Ok(PatchApplyResult::Conflict {
                     patch_path,
                     failure_reason,
@@ -849,12 +876,12 @@ impl ToolHandler for TaskHandler {
                             EventMsg::Warning(WarningEvent { message: warning }),
                         )
                         .await;
-                    (
-                        "failed",
-                        None,
-                        None,
-                        Some(patch_path.to_string_lossy().to_string()),
-                    )
+                    let reason = if failure_reason.is_empty() {
+                        None
+                    } else {
+                        Some(failure_reason.trim().to_string())
+                    };
+                    SubagentOutcome::conflict(patch_path.to_string_lossy().to_string(), reason)
                 }
                 Err(e) => {
                     let warning = format!("Subagent {} merge failed: {}", args.subagent_name, e);
@@ -865,37 +892,19 @@ impl ToolHandler for TaskHandler {
                             EventMsg::Warning(WarningEvent { message: warning }),
                         )
                         .await;
-                    ("failed", None, None, None)
+                    SubagentOutcome::failed(e.to_string())
                 }
             }
         } else {
             // Direct mode: Changes were applied immediately, no isolation
-            ("applied", None, None, None)
+            SubagentOutcome::no_filesystem()
         };
 
-        let environment_note = match changes_status {
-            "applied" => "Changes applied successfully to parent worktree.",
-            "no_changes" => "Subagent completed but made no file changes.",
-            "conflict" => "Changes applied but contain conflict markers that need resolution.",
-            "failed" => "Changes could not be applied. See patch file if available.",
-            _ => "Unknown status.",
-        };
-
-        // Build a structured response that includes the session_id for follow-up calls
-        let response = serde_json::json!({
-            "result": final_output,
-            "session_id": session_id,
-            "last_tool_output": last_tool_output,
-            "changes": changes_status,
-            "environment_note": environment_note,
-            "files_changed": files_changed,
-            "conflicted_files": conflicted_files,
-            "patch_path": patch_path,
-        });
+        let result = SubagentTaskResult::new(exec_outcome, session_id, file_outcome);
 
         Ok(ToolOutput::Function {
             success: Some(true),
-            content: response.to_string(),
+            content: result.to_string(),
             content_items: None,
         })
     }
