@@ -360,7 +360,8 @@ pub(crate) fn build_gemini_payload(
 ) -> Result<(GeminiRequest, String)> {
     let normalized_model = normalize_model_name(model_family.get_model_slug());
     let full_instructions = prompt.get_full_instructions(model_family);
-    let (contents, system_instruction) = build_gemini_messages(prompt, full_instructions.as_ref())?;
+    let (contents, system_instruction) =
+        build_gemini_messages(prompt, full_instructions.as_ref(), &normalized_model)?;
     let tools = build_gemini_tools(&prompt.tools)?;
 
     let tool_config = if tools.is_some() {
@@ -749,6 +750,7 @@ fn is_gemini3(model: &str) -> bool {
 fn build_gemini_messages(
     prompt: &Prompt,
     full_instructions: &str,
+    model_name: &str,
 ) -> Result<(Vec<GeminiContent>, Option<GeminiContent>)> {
     let mut messages: Vec<GeminiContent> = Vec::new();
     let mut system_segments = Vec::new();
@@ -899,51 +901,32 @@ fn build_gemini_messages(
                 // Local shell is often treated as a tool.
             }
             ResponseItem::Reasoning {
-                summary, content, ..
+                summary,
+                encrypted_content,
+                ..
             } => {
-                // Build thinking text from content or summary
-                // Check content first, but fall back to summary if content is empty
-                let thinking_text = if let Some(content_items) = content
-                    && !content_items.is_empty()
-                {
-                    content_items
-                        .iter()
-                        .map(|c| match c {
-                            codex_protocol::models::ReasoningItemContent::ReasoningText {
-                                text,
-                            } => text.as_str(),
-                            codex_protocol::models::ReasoningItemContent::Text { text } => {
-                                text.as_str()
-                            }
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n")
-                } else {
-                    summary
-                        .iter()
-                        .map(|s| {
-                            match s {
-                            codex_protocol::models::ReasoningItemReasoningSummary::SummaryText {
-                                text,
-                            } => text.as_str(),
+                let mut text = String::new();
+                for item in summary {
+                    match item {
+                        codex_protocol::models::ReasoningItemReasoningSummary::SummaryText {
+                            text: t,
+                        } => {
+                            text.push_str(t);
                         }
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n")
-                };
+                    }
+                }
 
-                if !thinking_text.is_empty() {
+                if !text.is_empty() {
                     let part = GeminiPart {
-                        text: Some(thinking_text),
+                        text: Some(text),
                         thought: Some(true),
+                        thought_signature: encrypted_content.clone(),
                         ..Default::default()
                     };
 
-                    // Thinking parts belong to the model role
                     if let Some(last) = messages.last_mut()
                         && last.role == "model"
                     {
-                        // Insert at the beginning of the model's parts
                         last.parts.insert(0, part);
                     } else {
                         messages.push(GeminiContent {
@@ -958,7 +941,7 @@ fn build_gemini_messages(
     }
 
     curate_gemini_history(&mut messages);
-    apply_synthetic_thought_signatures(&mut messages);
+    apply_synthetic_thought_signatures(&mut messages, model_name);
 
     // Additional system instruction processing
     let system_instruction = if system_segments.is_empty() {
@@ -1057,7 +1040,10 @@ fn curate_gemini_history(contents: &mut Vec<GeminiContent>) {
     *contents = result;
 }
 
-fn apply_synthetic_thought_signatures(contents: &mut [GeminiContent]) {
+fn apply_synthetic_thought_signatures(contents: &mut [GeminiContent], model_name: &str) {
+    if !is_gemini3(model_name) {
+        return;
+    }
     // Find the last user turn that is NOT a tool response
     // (a tool response contains function_response parts)
     let Some(start_index) = contents.iter().rposition(|content| {
@@ -1320,16 +1306,22 @@ pub(crate) async fn process_gemini_sse<S, E>(
                 // Finalize reasoning FIRST so it appears before the message in history
                 if let Some(mut state) = reasoning_state.take() {
                     // Populate summary with accumulated text (needed for Claude tool loops)
-                    if !state.accumulated_text.is_empty() {
-                        if let ResponseItem::Reasoning {
-                            ref mut summary, ..
-                        } = state.item
-                        {
+                    if let ResponseItem::Reasoning {
+                        ref mut summary,
+                        ref mut encrypted_content,
+                        ..
+                    } = state.item
+                    {
+                        if !state.accumulated_text.is_empty() {
                             summary.push(
                                 codex_protocol::models::ReasoningItemReasoningSummary::SummaryText {
                                     text: std::mem::take(&mut state.accumulated_text),
                                 },
                             );
+                        }
+                        // Store signature for Claude tool loops
+                        if state.signature.is_some() {
+                            *encrypted_content = state.signature.take();
                         }
                     }
 
@@ -1491,6 +1483,7 @@ pub(crate) async fn process_gemini_sse<S, E>(
                     &mut reasoning_state,
                     &mut emitted_content,
                     &text,
+                    None,
                 )
                 .await;
             }
@@ -1532,6 +1525,7 @@ pub(crate) async fn process_gemini_sse<S, E>(
                                     &mut reasoning_state,
                                     &mut emitted_content,
                                     text,
+                                    part.thought_signature.clone(),
                                 )
                                 .await;
                             } else {
@@ -1546,14 +1540,26 @@ pub(crate) async fn process_gemini_sse<S, E>(
                             }
                         }
                         if part.text.is_none() && part.thought_signature.is_some() {
-                            append_text_delta(
-                                &tx_event,
-                                &mut assistant_state,
-                                &mut emitted_content,
-                                "",
-                                part.thought_signature.clone(),
-                            )
-                            .await;
+                            // Route signature to correct state based on thought flag
+                            if is_thought_value(&part.thought) {
+                                append_reasoning_delta(
+                                    &tx_event,
+                                    &mut reasoning_state,
+                                    &mut emitted_content,
+                                    "",
+                                    part.thought_signature.clone(),
+                                )
+                                .await;
+                            } else {
+                                append_text_delta(
+                                    &tx_event,
+                                    &mut assistant_state,
+                                    &mut emitted_content,
+                                    "",
+                                    part.thought_signature.clone(),
+                                )
+                                .await;
+                            }
                         }
                         if let Some(func_call) = part.function_call {
                             handle_function_call(
@@ -1623,13 +1629,21 @@ async fn append_reasoning_delta(
     reasoning_state: &mut Option<ReasoningState>,
     emitted_content: &mut bool,
     text: &str,
+    thought_signature: Option<String>,
 ) {
-    if text.is_empty() {
-        return;
-    }
-
     ensure_reasoning_item(reasoning_state);
     if let Some(state) = reasoning_state.as_mut() {
+        // Capture signature if provided (needed for Claude tool loops)
+        // Must do this even for empty text since signature often arrives in a separate chunk
+        if thought_signature.is_some() {
+            state.signature = thought_signature;
+        }
+
+        // Skip the rest if text is empty
+        if text.is_empty() {
+            return;
+        }
+
         if !state.added {
             state.added = true;
             if tx_event
@@ -1728,6 +1742,7 @@ fn ensure_reasoning_item(reasoning_state: &mut Option<ReasoningState>) {
         added: false,
         streamed_delta_count: 0,
         accumulated_text: String::new(),
+        signature: None,
     });
 }
 
@@ -1744,6 +1759,8 @@ struct ReasoningState {
     /// Accumulated reasoning text for inclusion in the final ResponseItem.
     /// This is needed for Claude tool loops where thinking must be preserved in history.
     accumulated_text: String,
+    /// Signature from Antigravity/Claude thinking blocks, needed for tool loops.
+    signature: Option<String>,
 }
 
 /// Check if the thought field indicates this is a thinking part.

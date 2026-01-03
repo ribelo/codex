@@ -185,7 +185,7 @@ mod tests {
         );
         let output = result.to_string();
         assert!(output.contains("Subagent failed: Quota exceeded"));
-        assert!(!output.contains("**Resumable**"));
+        assert!(output.contains("**Resumable**: No"));
         assert!(output.contains("`err-456`"));
     }
 
