@@ -30,7 +30,6 @@ use codex_core::protocol::FileChange;
 use codex_core::protocol::McpAuthStatus;
 use codex_core::protocol::McpInvocation;
 use codex_core::protocol::SessionConfiguredEvent;
-use codex_protocol::FileChangeSummary;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use codex_protocol::plan_tool::PlanItemArg;
 use codex_protocol::plan_tool::StepStatus;
@@ -1176,95 +1175,6 @@ pub(crate) struct SubagentTaskCell {
     children: Vec<SubagentTaskCell>,
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct SubagentChangesMergedCell {
-    pub subagent_name: String,
-    pub task_description: String,
-    pub files_changed: Vec<FileChangeSummary>,
-    pub cwd: PathBuf,
-    pub session_id: Option<String>,
-}
-
-impl HistoryCell for SubagentChangesMergedCell {
-    fn display_lines(&self, _width: u16) -> Vec<Line<'static>> {
-        let mut lines = Vec::new();
-
-        // Calculate totals
-        let total_insertions: i32 = self
-            .files_changed
-            .iter()
-            .map(|f| f.insertions.unwrap_or(0))
-            .sum();
-        let total_deletions: i32 = self
-            .files_changed
-            .iter()
-            .map(|f| f.deletions.unwrap_or(0))
-            .sum();
-
-        // Header: • @subagent changes merged +N -M #session_id
-        let mut header_spans: Vec<Span<'static>> = vec![
-            "• ".into(),
-            "@".magenta(),
-            self.subagent_name.clone().magenta(),
-            " changes merged ".into(),
-            format!("+{total_insertions}").green(),
-            " ".into(),
-            format!("-{total_deletions}").red(),
-        ];
-
-        // Add session ID at the end
-        if let Some(ref sid) = self.session_id {
-            let short_id = sid.clone();
-            header_spans.push(" #".dim());
-            header_spans.push(short_id.dim());
-        }
-
-        lines.push(Line::from(header_spans));
-
-        // Task description line
-        lines.push(Line::from(vec![
-            "  └ ".dim(),
-            truncate_text(&self.task_description, 60).dim(),
-        ]));
-
-        // Files (4-space indent)
-        for file in &self.files_changed {
-            let ins = file.insertions.unwrap_or(0);
-            let del = file.deletions.unwrap_or(0);
-            let status = if file.insertions.is_none() && file.deletions.is_none() {
-                // Binary file
-                "B".magenta()
-            } else if ins == 0 && del == 0 {
-                // Empty file / mode change / rename
-                "~".dim()
-            } else if ins > 0 && del > 0 {
-                "M".yellow()
-            } else if ins > 0 {
-                "A".green()
-            } else {
-                "D".red()
-            };
-
-            let rel_path = display_path_for(Path::new(&file.path), &self.cwd);
-
-            let file_spans = vec![
-                "    ".into(),
-                status,
-                " ".into(),
-                rel_path.dim(),
-                " ".into(),
-                format!("+{ins}").green(),
-                " ".into(),
-                format!("-{del}").red(),
-            ];
-
-            lines.push(Line::from(file_spans));
-        }
-
-        lines
-    }
-}
-
 impl SubagentTaskCell {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
@@ -1672,22 +1582,6 @@ pub(crate) fn new_subagent_task_cell(
         state,
         animations_enabled,
     )
-}
-
-pub(crate) fn new_subagent_changes_merged_cell(
-    subagent_name: String,
-    task_description: String,
-    files_changed: Vec<FileChangeSummary>,
-    cwd: PathBuf,
-    session_id: Option<String>,
-) -> SubagentChangesMergedCell {
-    SubagentChangesMergedCell {
-        subagent_name,
-        task_description,
-        files_changed,
-        cwd,
-        session_id,
-    }
 }
 
 pub(crate) fn new_web_search_call(query: String) -> PlainHistoryCell {
@@ -2187,7 +2081,7 @@ mod tests {
     use codex_core::config::ConfigToml;
     use codex_core::config::types::McpServerConfig;
     use codex_core::config::types::McpServerTransportConfig;
-    use codex_core::openai_models::models_manager::ModelsManager;
+
     use codex_core::protocol::McpAuthStatus;
     use codex_protocol::parse_command::ParsedCommand;
     use dirs::home_dir;

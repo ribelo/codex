@@ -532,9 +532,6 @@ pub enum EventMsg {
     /// Raw chain-of-thought from agent.
     AgentReasoningRawContent(AgentReasoningRawContentEvent),
 
-    /// Subagent file changes successfully merged.
-    SubagentChangesMerged(SubagentChangesMergedEvent),
-
     /// Agent reasoning content delta event from agent.
     AgentReasoningRawContentDelta(AgentReasoningRawContentDeltaEvent),
     /// Signaled when the model begins a new reasoning summary section (e.g., a new titled block).
@@ -1067,13 +1064,12 @@ pub struct AgentReasoningRawContentDeltaEvent {
     pub delta: String,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema)]
-pub struct SubagentChangesMergedEvent {
-    pub subagent_name: String,
-    pub task_description: String,
-    pub files_changed: Vec<crate::subagent_changes::FileChangeSummary>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub session_id: Option<String>,
+/// Summary of a single file change
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema, TS)]
+pub struct FileChangeSummary {
+    pub path: String,
+    pub insertions: Option<i32>,
+    pub deletions: Option<i32>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]

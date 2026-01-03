@@ -109,7 +109,6 @@ mod tasks;
 mod user_notification;
 mod user_shell_command;
 pub mod util;
-pub mod worktree_manager;
 
 pub use apply_patch::CODEX_APPLY_PATCH_ARG1;
 pub use command_safety::is_dangerous_command;
@@ -136,4 +135,3 @@ pub use compact::content_items_to_text;
 pub use event_mapping::parse_turn_item;
 pub mod compact;
 pub mod otel_init;
-pub use worktree_manager::*;

@@ -2069,20 +2069,6 @@ impl ChatWidget {
             EventMsg::SessionConfigured(e) => self.on_session_configured(e),
             EventMsg::ListSkillsResponse(_) => {}
             EventMsg::AgentMessage(AgentMessageEvent { message }) => self.on_agent_message(message),
-            EventMsg::SubagentChangesMerged(SubagentChangesMergedEvent {
-                subagent_name,
-                task_description,
-                files_changed,
-                session_id,
-            }) => {
-                self.add_to_history(history_cell::new_subagent_changes_merged_cell(
-                    subagent_name,
-                    task_description,
-                    files_changed,
-                    self.config.cwd.clone(),
-                    session_id,
-                ));
-            }
             EventMsg::AgentMessageDelta(AgentMessageDeltaEvent { delta }) => {
                 self.on_agent_message_delta(delta)
             }
@@ -2266,7 +2252,7 @@ impl ChatWidget {
 
             let cell = history_cell::new_subagent_task_cell(
                 parent_call_id.clone(),
-                session_id.clone(),
+                session_id,
                 subagent_name.clone(),
                 task_description,
                 delegation_id.clone(),
@@ -4204,5 +4190,4 @@ fn find_skill_mentions(text: &str, skills: &[SkillMetadata]) -> Vec<SkillMetadat
 #[cfg(test)]
 pub(crate) mod tests;
 use crate::exec_command::strip_bash_lc_and_escape;
-use codex_core::protocol::SubagentChangesMergedEvent;
 use codex_core::quota::GeminiQuotaClient;

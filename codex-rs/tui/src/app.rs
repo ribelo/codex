@@ -153,6 +153,18 @@ pub(crate) struct App {
     skip_world_writable_scan_once: bool,
 }
 
+async fn is_git_repo(dir: &std::path::Path) -> bool {
+    tokio::process::Command::new("git")
+        .args(["rev-parse", "--git-dir"])
+        .current_dir(dir)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .await
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
 impl App {
     async fn shutdown_current_conversation(&mut self) {
         if let Some(conversation_id) = self.chat_widget.conversation_id() {
@@ -166,7 +178,7 @@ impl App {
     pub async fn run(
         tui: &mut tui::Tui,
         auth_manager: Arc<AuthManager>,
-        mut config: Config,
+        config: Config,
         active_profile: Option<String>,
         available_profiles: Vec<String>,
         available_agents: Vec<String>,
@@ -182,7 +194,6 @@ impl App {
         let (app_event_tx, mut app_event_rx) = unbounded_channel();
         let app_event_tx = AppEventSender::new(app_event_tx);
 
-        let auth_mode = auth_manager.auth().map(|auth| auth.mode);
         let conversation_manager = Arc::new(ConversationManager::new(
             auth_manager.clone(),
             SessionSource::Cli,
@@ -212,10 +223,7 @@ impl App {
         }
 
         // Check if we're in a git repository and warn if not
-        if !codex_core::WorktreeManager::is_git_repo(&config.cwd)
-            .await
-            .unwrap_or(false)
-        {
+        if !is_git_repo(&config.cwd).await {
             match run_git_warning_prompt(tui).await {
                 GitWarningPromptOutcome::Exit => {
                     return Ok(AppExitInfo {

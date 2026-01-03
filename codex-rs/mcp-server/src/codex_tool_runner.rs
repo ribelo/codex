@@ -305,7 +305,6 @@ async fn run_codex_tool_session_inner(
                     | EventMsg::DeprecationNotice(_)
                     | EventMsg::SubagentEvent(_)
                     | EventMsg::ListSkillsResponse(_)
-                    | EventMsg::SubagentChangesMerged(_)
                     | EventMsg::HandoffDraft(_)
                     | EventMsg::HandoffCompleted(_) => {
                         // For now, we do not do anything extra for these

@@ -356,37 +356,36 @@ impl PickerState {
             }
             KeyCode::Right | KeyCode::Char('l') => {
                 // Drill into selected session's children
-                if let PickerMode::Children { .. } = &self.mode {
-                    if let Some(row) = self.filtered_rows.get(self.selected) {
-                        // Extract conversation_id from the selected row's path
-                        if let Some(conversation_id) = extract_conversation_id_from_path(&row.path)
-                        {
-                            let label = row.preview.chars().take(20).collect::<String>();
-                            self.breadcrumbs.push((
-                                match &self.mode {
-                                    PickerMode::Children { parent_id } => *parent_id,
-                                    _ => conversation_id,
-                                },
-                                label,
-                            ));
-                            self.mode = PickerMode::Children {
-                                parent_id: conversation_id,
-                            };
-                            // Reset state and reload
-                            self.all_rows.clear();
-                            self.filtered_rows.clear();
-                            self.seen_paths.clear();
-                            self.selected = 0;
-                            self.scroll_top = 0;
-                            self.pagination = PaginationState {
-                                next_cursor: None,
-                                num_scanned_files: 0,
-                                reached_scan_cap: false,
-                                loading: LoadingState::Idle,
-                            };
-                            self.start_initial_load();
-                            self.request_frame();
-                        }
+                if let PickerMode::Children { .. } = &self.mode
+                    && let Some(row) = self.filtered_rows.get(self.selected)
+                {
+                    // Extract conversation_id from the selected row's path
+                    if let Some(conversation_id) = extract_conversation_id_from_path(&row.path) {
+                        let label = row.preview.chars().take(20).collect::<String>();
+                        self.breadcrumbs.push((
+                            match &self.mode {
+                                PickerMode::Children { parent_id } => *parent_id,
+                                _ => conversation_id,
+                            },
+                            label,
+                        ));
+                        self.mode = PickerMode::Children {
+                            parent_id: conversation_id,
+                        };
+                        // Reset state and reload
+                        self.all_rows.clear();
+                        self.filtered_rows.clear();
+                        self.seen_paths.clear();
+                        self.selected = 0;
+                        self.scroll_top = 0;
+                        self.pagination = PaginationState {
+                            next_cursor: None,
+                            num_scanned_files: 0,
+                            reached_scan_cap: false,
+                            loading: LoadingState::Idle,
+                        };
+                        self.start_initial_load();
+                        self.request_frame();
                     }
                 }
             }

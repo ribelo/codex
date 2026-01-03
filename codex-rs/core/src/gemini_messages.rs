@@ -1318,7 +1318,21 @@ pub(crate) async fn process_gemini_sse<S, E>(
             Ok(None) => {
                 // Stream finished
                 // Finalize reasoning FIRST so it appears before the message in history
-                if let Some(state) = reasoning_state.take() {
+                if let Some(mut state) = reasoning_state.take() {
+                    // Populate summary with accumulated text (needed for Claude tool loops)
+                    if !state.accumulated_text.is_empty() {
+                        if let ResponseItem::Reasoning {
+                            ref mut summary, ..
+                        } = state.item
+                        {
+                            summary.push(
+                                codex_protocol::models::ReasoningItemReasoningSummary::SummaryText {
+                                    text: std::mem::take(&mut state.accumulated_text),
+                                },
+                            );
+                        }
+                    }
+
                     if !state.added {
                         let _ = tx_event
                             .send(Ok(ResponseEvent::OutputItemAdded(state.item.clone())))
@@ -1628,7 +1642,10 @@ async fn append_reasoning_delta(
             *emitted_content = true;
         }
 
-        // Stream only deltas; do not accumulate content in state.item to avoid duplication.
+        // Accumulate text for history (needed for Claude tool loops where thinking must persist)
+        state.accumulated_text.push_str(text);
+
+        // Stream deltas for UI display
         let content_index = state.streamed_delta_count;
         state.streamed_delta_count += 1;
         let _ = tx_event
@@ -1710,6 +1727,7 @@ fn ensure_reasoning_item(reasoning_state: &mut Option<ReasoningState>) {
         item,
         added: false,
         streamed_delta_count: 0,
+        accumulated_text: String::new(),
     });
 }
 
@@ -1723,6 +1741,9 @@ struct ReasoningState {
     added: bool,
     /// Tracks the number of streamed reasoning deltas to assign stable indices.
     streamed_delta_count: i64,
+    /// Accumulated reasoning text for inclusion in the final ResponseItem.
+    /// This is needed for Claude tool loops where thinking must be preserved in history.
+    accumulated_text: String,
 }
 
 /// Check if the thought field indicates this is a thinking part.

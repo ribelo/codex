@@ -575,8 +575,7 @@ impl EventProcessor for EventProcessorWithHumanOutput {
             | EventMsg::SubagentEvent(_)
             | EventMsg::HandoffDraft(_)
             | EventMsg::HandoffCompleted(_)
-            | EventMsg::ListSkillsResponse(_)
-            | EventMsg::SubagentChangesMerged(_) => {}
+            | EventMsg::ListSkillsResponse(_) => {}
         }
         CodexStatus::Running
     }

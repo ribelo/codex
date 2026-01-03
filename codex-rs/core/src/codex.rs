@@ -26,7 +26,6 @@ use crate::truncate::TruncationBias;
 use crate::truncate::TruncationPolicy;
 use crate::user_notification::UserNotifier;
 use crate::util::error_or_panic;
-use crate::worktree_manager::WorktreeManager;
 use async_channel::Receiver;
 use async_channel::Sender;
 use codex_protocol::ConversationId;
@@ -210,15 +209,6 @@ impl Codex {
             .await
             .map_err(|err| CodexErr::Fatal(format!("failed to load execpolicy: {err}")))?;
         let exec_policy = Arc::new(RwLock::new(exec_policy));
-
-        // Prune any orphaned worktrees from previous sessions
-        if let Ok(repo_root) = WorktreeManager::get_repo_root(&config.cwd).await {
-            let worktree_manager = WorktreeManager::new_for_repo(&repo_root);
-            if let Err(e) = worktree_manager.prune_orphaned_worktrees().await {
-                tracing::debug!(error = %e, "Failed to prune orphaned worktrees on startup");
-            }
-        }
-
         let config = Arc::new(config);
         if config.features.enabled(Feature::RemoteModels)
             && let Err(err) = models_manager.refresh_available_models(&config).await

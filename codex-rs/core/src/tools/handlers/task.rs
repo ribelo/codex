@@ -15,28 +15,6 @@ You are a specialized subagent delegated by a parent agent to perform a specific
     )
 }
 
-/// Worktree isolation documentation to inform subagents about file tracking behavior.
-const WORKTREE_ISOLATION_PROMPT: &str = r#"
-# Worktree Isolation
-You are a subagent running in an isolated git worktree.
-- Your working directory is a temporary copy of the repository.
-- Only TRACKED files are available in your worktree. Untracked files from the parent workspace are NOT copied.
-- ALL changes you make (edits, new files, deletions) will be automatically captured and merged back to the main workspace when your task completes.
-- Changes you make to files OUTSIDE the repository (e.g. /tmp, ~/.config, absolute paths outside the repo) will be applied IMMEDIATELY to the user's system but WILL NOT be tracked by the merge system.
-- The parent agent will not be aware of external file changes.
-- The parent workspace is static while you work, so merge conflicts should not occur.
-"#;
-
-/// Prompt for subagents running without worktree isolation (non-git directories).
-const NO_ISOLATION_PROMPT: &str = r#"
-# No Worktree Isolation
-
-You are running directly in the user's working directory (not a git repository).
-- All file changes are applied IMMEDIATELY to the user's system.
-- There is no isolation or merge system - your changes take effect immediately.
-- Be careful with file modifications as they cannot be automatically rolled back.
-"#;
-
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -54,9 +32,7 @@ use crate::codex_delegate::run_codex_conversation_interactive;
 use crate::function_tool::FunctionCallError;
 use crate::model_provider_info::ProviderKind;
 use crate::model_provider_info::built_in_model_providers;
-use crate::subagent_result::FileChange;
 use crate::subagent_result::SubagentExecutionOutcome;
-use crate::subagent_result::SubagentOutcome;
 use crate::subagent_result::SubagentTaskResult;
 use crate::subagents::SubagentRegistry;
 use crate::subagents::SubagentSandboxPolicy;
@@ -66,13 +42,11 @@ use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
 use crate::tools::registry::ToolHandler;
 use crate::tools::spec::JsonSchema;
-use crate::worktree_manager::PatchApplyResult;
-use crate::worktree_manager::WorktreeManager;
-use codex_protocol::FileChangeSummary;
 use codex_protocol::protocol::AskForApproval;
+use codex_protocol::protocol::CodexErrorInfo;
+use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
-use codex_protocol::protocol::SubagentChangesMergedEvent;
 use codex_protocol::protocol::SubagentEventPayload;
 use codex_protocol::protocol::TaskStartedEvent;
 use codex_protocol::protocol::WarningEvent;
@@ -117,7 +91,7 @@ pub fn create_task_tool(codex_home: &Path, allowed_subagents: Option<&[String]>)
         "Delegate a task to a specialized subagent. Returns the agent's output and a session_id.\n\n\
          Available subagents:\n{agents_desc}\n\n\
          Usage notes:\n\
-         - Subagents run in isolated git worktrees; their changes are merged back when complete.\n\
+         - Subagents run in the same working directory as the parent session.\n\
          - Pass session_id to continue a previous conversation with the same subagent.\n\
          - If merge conflicts occur, you will be notified and may need to resolve them."
     );
@@ -316,75 +290,8 @@ impl ToolHandler for TaskHandler {
         let parent_delegation_id = delegation_context.parent_delegation_id.clone();
         let depth = Some(delegation_context.depth);
 
-        let parent_worktree = turn.client.config().cwd.clone();
-
-        // Check if we're in a git repo for worktree isolation
-        let is_git_repo = WorktreeManager::is_git_repo(&parent_worktree)
-            .await
-            .unwrap_or(false);
-
-        // Create worktree manager:
-        // - In git repo: use per-repo storage (<repo>/.codex/)
-        // - Not in git repo OR repo root detection fails: use global storage (~/.codex/)
-        // This prevents polluting non-git directories and avoids fragmented state
-        let (worktree_manager, repo_root) = if is_git_repo {
-            match WorktreeManager::get_repo_root(&parent_worktree).await {
-                Ok(root) => (WorktreeManager::new_for_repo(&root), Some(root)),
-                Err(e) => {
-                    tracing::warn!(
-                        error = %e,
-                        "In git repo but could not find root, falling back to global storage"
-                    );
-                    (WorktreeManager::new_global(&codex_home), None)
-                }
-            }
-        } else {
-            // Not a git repo - use global storage to avoid polluting cwd
-            (WorktreeManager::new_global(&codex_home), None)
-        };
-
-        // Always use worktree isolation for subagents in git repos to ensure
-        // safety. Each turn gets a fresh worktree - this guarantees isolation
-        // even for follow-up turns in reused sessions.
-        let use_worktree = is_git_repo;
+        let effective_cwd = turn.client.config().cwd.clone();
         let _ = is_new_session; // suppress unused warning
-
-        let (effective_cwd, worktree_handle): (
-            std::path::PathBuf,
-            Option<crate::worktree_manager::WorktreeHandle>,
-        ) = if use_worktree {
-            match worktree_manager.create_worktree(&parent_worktree).await {
-                Ok(handle) => {
-                    let path = handle.path.clone();
-                    (path, Some(handle))
-                }
-                Err(e) => {
-                    // Git repo exists but worktree creation failed - this is an error
-                    let message = format!(
-                        "Failed to create worktree for subagent isolation: {e}. \
-                        Subagent execution aborted."
-                    );
-                    invocation
-                        .session
-                        .send_warning(&invocation.turn, message)
-                        .await;
-                    return Err(FunctionCallError::RespondToModel(format!(
-                        "Failed to create worktree for subagent isolation: {e}. \
-                        Cannot run subagent without isolation in a git repository."
-                    )));
-                }
-            }
-        } else {
-            // Not a git repo - run directly without isolation
-            (parent_worktree.clone(), None)
-        };
-
-        // Determine which isolation prompt to use
-        let isolation_prompt = if worktree_handle.is_some() {
-            WORKTREE_ISOLATION_PROMPT
-        } else {
-            NO_ISOLATION_PROMPT
-        };
 
         let (subagent_session_ref, is_reused): (Arc<crate::codex::Codex>, bool) = {
             let services = &invocation.session.services;
@@ -405,15 +312,6 @@ impl ToolHandler for TaskHandler {
                 let mut sub_config = (*config).clone();
                 sub_config.codex_home = codex_home.clone();
                 sub_config.cwd = effective_cwd.clone();
-
-                // Share build caches with main workspace to avoid slow rebuilds
-                let cargo_target = parent_worktree.join("target");
-                if cargo_target.exists() || parent_worktree.join("Cargo.toml").exists() {
-                    sub_config.shell_environment_policy.r#set.insert(
-                        "CARGO_TARGET_DIR".to_string(),
-                        cargo_target.to_string_lossy().to_string(),
-                    );
-                }
 
                 // Apply profile settings from frontmatter.
                 // We re-read config.toml on each invocation rather than caching because:
@@ -501,7 +399,7 @@ impl ToolHandler for TaskHandler {
                 let identity_prompt = subagent_identity_prompt(&parent_session_id);
 
                 sub_config.base_instructions = Some(format!(
-                    "{base_prompt}\n\n{identity_prompt}\n\n{isolation_prompt}\n\n{SANDBOX_AND_APPROVALS_PROMPT}"
+                    "{base_prompt}\n\n{identity_prompt}\n\n{SANDBOX_AND_APPROVALS_PROMPT}"
                 ));
 
                 // Apply sandbox_policy override (only if more restrictive than parent)
@@ -595,28 +493,7 @@ impl ToolHandler for TaskHandler {
             }
         };
 
-        // If reusing session, update cwd to new worktree
-        if is_reused {
-            tracing::warn!(
-                session_id = %session_id,
-                new_cwd = %effective_cwd.display(),
-                "Reusing subagent session with new worktree - conversation history may reference outdated file state"
-            );
-
-            subagent_session_ref
-                .submit(Op::OverrideTurnContext {
-                    cwd: Some(effective_cwd.clone()),
-                    approval_policy: None,
-                    sandbox_policy: None,
-                    model: None,
-                    effort: None,
-                    summary: None,
-                })
-                .await
-                .map_err(|e| {
-                    FunctionCallError::Fatal(format!("Failed to update subagent CWD: {e}"))
-                })?;
-        }
+        let _ = is_reused; // suppress unused warning
 
         let input = vec![UserInput::Text {
             text: args.prompt.clone(),
@@ -641,7 +518,7 @@ impl ToolHandler for TaskHandler {
             .send_event(invocation.turn.as_ref(), task_started)
             .await;
 
-        let execution_result: Result<SubagentExecutionOutcome, FunctionCallError> = async {
+        let exec_outcome = async {
             subagent_session_ref
                 .submit(Op::UserInput { items: input })
                 .await
@@ -724,6 +601,39 @@ impl ToolHandler for TaskHandler {
                             .await;
                         break Ok(SubagentExecutionOutcome::from(ta.reason));
                     }
+                    EventMsg::Error(ErrorEvent {
+                        message,
+                        codex_error_info,
+                    }) => {
+                        // Send a wrapped Error so the TUI can display it
+                        let wrapped = wrap_subagent_event(
+                            &invocation.call_id,
+                            &args.subagent_name,
+                            &args.description,
+                            delegation_id.clone(),
+                            parent_delegation_id.clone(),
+                            depth,
+                            Some(session_id.clone()),
+                            EventMsg::Error(ErrorEvent {
+                                message: message.clone(),
+                                codex_error_info: codex_error_info.clone(),
+                            }),
+                        );
+                        invocation
+                            .session
+                            .send_event(invocation.turn.as_ref(), wrapped)
+                            .await;
+                        // Determine if session can be resumed based on error type
+                        let can_resume = matches!(
+                            codex_error_info,
+                            Some(CodexErrorInfo::ResponseStreamDisconnected { .. })
+                                | Some(CodexErrorInfo::InternalServerError)
+                        );
+                        break Ok(SubagentExecutionOutcome::Failed {
+                            reason: message,
+                            can_resume,
+                        });
+                    }
                     EventMsg::ExecCommandBegin(_)
                     | EventMsg::ExecCommandEnd(_)
                     | EventMsg::ExecCommandOutputDelta(_)
@@ -752,30 +662,11 @@ impl ToolHandler for TaskHandler {
                 }
             }
         }
-        .await;
+        .await?;
 
-        // Handle execution result with cleanup on error
-        let exec_outcome = match execution_result {
-            Ok(outcome) => outcome,
-            Err(e) => {
-                if let Some(ref handle) = worktree_handle {
-                    let _ = worktree_manager.cleanup(handle).await;
-                }
-                return Err(e);
-            }
-        };
-
-        // Handle aborted case early - no need for worktree processing
-        if let SubagentExecutionOutcome::Aborted {
-            ref reason,
-            can_resume,
-        } = exec_outcome
-        {
-            if let Some(ref handle) = worktree_handle {
-                let _ = worktree_manager.cleanup(handle).await;
-            }
-            let file_outcome = SubagentOutcome::aborted(reason.clone(), can_resume);
-            let result = SubagentTaskResult::new(exec_outcome, session_id, file_outcome);
+        // Handle interrupted case
+        if let SubagentExecutionOutcome::Interrupted = exec_outcome {
+            let result = SubagentTaskResult::new(exec_outcome, session_id);
             return Ok(ToolOutput::Function {
                 success: Some(false),
                 content: result.to_string(),
@@ -783,124 +674,17 @@ impl ToolHandler for TaskHandler {
             });
         }
 
-        let file_outcome = if let Some(handle) = worktree_handle {
-            // Isolated mode: Generate diff and apply immediately
-            let diff = match worktree_manager.generate_diff(&handle).await {
-                Ok(d) => d,
-                Err(e) => {
-                    tracing::error!(error = %e, "Failed to generate diff from subagent worktree");
-                    let _ = worktree_manager.cleanup(&handle).await;
-                    return Err(FunctionCallError::RespondToModel(format!(
-                        "Failed to generate diff: {e}"
-                    )));
-                }
-            };
+        // Handle failed case
+        if let SubagentExecutionOutcome::Failed { .. } = exec_outcome {
+            let result = SubagentTaskResult::new(exec_outcome, session_id);
+            return Ok(ToolOutput::Function {
+                success: Some(false),
+                content: result.to_string(),
+                content_items: None,
+            });
+        }
 
-            // Acquire repo lock to prevent parallel merge races
-            let _lock = invocation.turn.repo_lock.lock().await;
-
-            // Apply patch to repo root, not parent_worktree - git apply from a
-            // subdirectory silently skips patches for files outside that directory
-            let apply_target = repo_root.as_ref().unwrap_or(&parent_worktree);
-
-            // Apply patch immediately
-            let task_id = format!(
-                "{}-{}-{}",
-                args.subagent_name, session_id, invocation.call_id
-            );
-            let apply_result = worktree_manager
-                .apply_patch(&diff.patch, apply_target, &task_id)
-                .await;
-
-            // Always cleanup worktree after merge attempt
-            let _ = worktree_manager.cleanup(&handle).await;
-
-            // Build response based on result
-            match apply_result {
-                Ok(PatchApplyResult::Applied) => {
-                    // Emit SubagentChangesMerged event
-                    invocation
-                        .session
-                        .send_event(
-                            invocation.turn.as_ref(),
-                            EventMsg::SubagentChangesMerged(SubagentChangesMergedEvent {
-                                subagent_name: args.subagent_name.clone(),
-                                task_description: args.description.clone(),
-                                files_changed: diff
-                                    .files_changed
-                                    .iter()
-                                    .map(|f| FileChangeSummary {
-                                        path: f.path.clone(),
-                                        insertions: f.insertions,
-                                        deletions: f.deletions,
-                                    })
-                                    .collect(),
-                                session_id: Some(session_id.clone()),
-                            }),
-                        )
-                        .await;
-                    SubagentOutcome::applied(
-                        diff.files_changed
-                            .iter()
-                            .map(|f| FileChange {
-                                path: f.path.clone(),
-                                insertions: f.insertions,
-                                deletions: f.deletions,
-                            })
-                            .collect(),
-                    )
-                }
-                Ok(PatchApplyResult::NoChanges) => SubagentOutcome::no_changes(),
-                Ok(PatchApplyResult::Conflict {
-                    patch_path,
-                    failure_reason,
-                }) => {
-                    let warning = if failure_reason.is_empty() {
-                        format!(
-                            "Subagent {} changes could not be merged. Patch saved to: {}",
-                            args.subagent_name,
-                            patch_path.display()
-                        )
-                    } else {
-                        format!(
-                            "Subagent {} changes could not be merged.\n  Reason: {}\n  Patch saved to: {}",
-                            args.subagent_name,
-                            failure_reason.trim(),
-                            patch_path.display()
-                        )
-                    };
-                    invocation
-                        .session
-                        .send_event(
-                            invocation.turn.as_ref(),
-                            EventMsg::Warning(WarningEvent { message: warning }),
-                        )
-                        .await;
-                    let reason = if failure_reason.is_empty() {
-                        None
-                    } else {
-                        Some(failure_reason.trim().to_string())
-                    };
-                    SubagentOutcome::conflict(patch_path.to_string_lossy().to_string(), reason)
-                }
-                Err(e) => {
-                    let warning = format!("Subagent {} merge failed: {}", args.subagent_name, e);
-                    invocation
-                        .session
-                        .send_event(
-                            invocation.turn.as_ref(),
-                            EventMsg::Warning(WarningEvent { message: warning }),
-                        )
-                        .await;
-                    SubagentOutcome::failed(e.to_string())
-                }
-            }
-        } else {
-            // Direct mode: Changes were applied immediately, no isolation
-            SubagentOutcome::no_filesystem()
-        };
-
-        let result = SubagentTaskResult::new(exec_outcome, session_id, file_outcome);
+        let result = SubagentTaskResult::new(exec_outcome, session_id);
 
         Ok(ToolOutput::Function {
             success: Some(true),
