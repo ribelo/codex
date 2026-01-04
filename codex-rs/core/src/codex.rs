@@ -2674,7 +2674,32 @@ async fn try_run_turn(
     let outcome: CodexResult<TurnRunResult> = loop {
         let event = match stream.next().or_cancel(&cancellation_token).await {
             Ok(event) => event,
-            Err(codex_async_utils::CancelErr::Cancelled) => break Err(CodexErr::TurnAborted),
+            Err(codex_async_utils::CancelErr::Cancelled) => {
+                // Record a synthetic interruption message if:
+                // 1. We were actively streaming content (active_item.is_some())
+                // 2. No tool calls are pending (in_flight.is_empty())
+                // This ensures User -> Model -> User alternation for providers like Gemini.
+                // If tools are pending, they take precedence and drain_in_flight will record them.
+                if active_item.is_some() && in_flight.is_empty() {
+                    tracing::info!(
+                        "Turn cancelled while streaming; recording synthetic interruption message"
+                    );
+                    let interrupted_item = ResponseItem::Message {
+                        id: None,
+                        role: "assistant".to_string(),
+                        content: vec![codex_protocol::models::ContentItem::OutputText {
+                            text: "[Response interrupted]".to_string(),
+                            signature: None,
+                        }],
+                    };
+                    sess.record_conversation_items(
+                        &turn_context,
+                        std::slice::from_ref(&interrupted_item),
+                    )
+                    .await;
+                }
+                break Err(CodexErr::TurnAborted);
+            }
         };
 
         let event = match event {
