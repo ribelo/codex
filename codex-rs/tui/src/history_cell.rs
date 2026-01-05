@@ -783,6 +783,31 @@ impl HistoryCell for UnifiedExecSessionsCell {
     fn desired_height(&self, width: u16) -> u16 {
         self.display_lines(width).len() as u16
     }
+
+    fn transcript_lines(&self, _width: u16) -> Vec<Line<'static>> {
+        let mut out: Vec<Line<'static>> = Vec::new();
+        out.push(vec!["Background terminals".bold()].into());
+        out.push("".into());
+
+        if self.sessions.is_empty() {
+            out.push("  • No background terminals running.".italic().into());
+            return out;
+        }
+
+        let prefix = "  • ";
+        for command in &self.sessions {
+            let (first_line, has_more) = match command.split_once('\n') {
+                Some((f, _)) => (f, true),
+                None => (command.as_str(), false),
+            };
+            let mut spans = vec![prefix.into(), Span::from(first_line.to_string())];
+            if has_more {
+                spans.push(" [...]".dim());
+            }
+            out.push(Line::from(spans));
+        }
+        out
+    }
 }
 
 pub(crate) fn new_unified_exec_sessions_output(sessions: Vec<String>) -> CompositeHistoryCell {
@@ -3599,5 +3624,62 @@ mod tests {
         assert_eq!(rendered.len(), 3);
         assert!(rendered[0].contains("High level plan"));
         assert!(rendered[2].contains("We should fix the bug next"));
+    }
+
+    #[test]
+    fn ps_output_empty_snapshot() {
+        let cell = new_unified_exec_sessions_output(Vec::new());
+        let rendered = render_lines(&cell.display_lines(60)).join("\n");
+        insta::assert_snapshot!(rendered);
+    }
+
+    #[test]
+    fn ps_output_multiline_snapshot() {
+        let cell = new_unified_exec_sessions_output(vec![
+            "echo hello\nand then some extra text".to_string(),
+            "rg \"foo\" src".to_string(),
+        ]);
+        let rendered = render_lines(&cell.display_lines(40)).join("\n");
+        insta::assert_snapshot!(rendered);
+    }
+
+    #[test]
+    fn ps_output_long_command_snapshot() {
+        let cell = new_unified_exec_sessions_output(vec![String::from(
+            "rg \"foo\" src --glob '**/*.rs' --max-count 1000 --no-ignore --hidden --follow --glob '!target/**'",
+        )]);
+        let rendered = render_lines(&cell.display_lines(36)).join("\n");
+        insta::assert_snapshot!(rendered);
+    }
+    #[test]
+    fn ps_output_many_sessions_snapshot() {
+        let cell =
+            new_unified_exec_sessions_output((0..20).map(|idx| format!("command {idx}")).collect());
+        let rendered = render_lines(&cell.display_lines(32)).join("\n");
+        insta::assert_snapshot!(rendered);
+    }
+
+    #[test]
+    fn ps_output_transcript_no_truncation() {
+        // Create a UnifiedExecSessionsCell with 25 sessions (more than the 16 limit in display_lines)
+        let sessions_cell =
+            UnifiedExecSessionsCell::new((0..25).map(|idx| format!("command {idx}")).collect());
+
+        // Get the transcript which should include all sessions
+        let transcript = sessions_cell.transcript_lines(80);
+
+        // Should have: header + blank line + 25 session lines = 27 lines
+        assert_eq!(
+            transcript.len(),
+            27,
+            "transcript should include all 25 sessions plus header and blank line"
+        );
+
+        // Verify last session is included (command 24)
+        let last_line = render_lines(&[transcript.last().unwrap().clone()]).join("");
+        assert!(
+            last_line.contains("command 24"),
+            "transcript should include last session"
+        );
     }
 }

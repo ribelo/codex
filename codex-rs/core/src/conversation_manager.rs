@@ -11,6 +11,7 @@ use crate::config::Config;
 use crate::error::CodexErr;
 use crate::error::Result as CodexResult;
 use crate::openai_models::models_manager::ModelsManager;
+use crate::project_doc_manager::ProjectDocManager;
 use crate::protocol::Event;
 use crate::protocol::EventMsg;
 use crate::protocol::SessionConfiguredEvent;
@@ -55,6 +56,7 @@ pub struct ConversationManager {
     session_source: SessionSource,
     mcp_connection_manager: Arc<RwLock<McpConnectionManager>>,
     skills_manager: Arc<SkillsManager>,
+    project_doc_manager: Arc<ProjectDocManager>,
 }
 
 impl ConversationManager {
@@ -70,6 +72,7 @@ impl ConversationManager {
             models_manager: Arc::new(ModelsManager::new(auth_manager)),
             mcp_connection_manager: Arc::new(RwLock::new(McpConnectionManager::default())),
             skills_manager: Arc::new(SkillsManager::new(codex_home)),
+            project_doc_manager: Arc::new(ProjectDocManager::new()),
         }
     }
 
@@ -89,6 +92,7 @@ impl ConversationManager {
             models_manager: Arc::new(ModelsManager::with_provider(auth_manager, provider)),
             mcp_connection_manager: Arc::new(RwLock::new(McpConnectionManager::default())),
             skills_manager: Arc::new(SkillsManager::new(codex_home)),
+            project_doc_manager: Arc::new(ProjectDocManager::new()),
         }
     }
 
@@ -126,6 +130,7 @@ impl ConversationManager {
             self.session_source.clone(),
             Some(self.mcp_connection_manager.clone()),
             self.skills_manager.clone(),
+            self.project_doc_manager.clone(),
         )
         .await?;
         self.finalize_spawn(codex, conversation_id).await
@@ -205,6 +210,7 @@ impl ConversationManager {
             self.session_source.clone(),
             Some(self.mcp_connection_manager.clone()),
             self.skills_manager.clone(),
+            self.project_doc_manager.clone(),
         )
         .await?;
         self.finalize_spawn(codex, conversation_id).await
@@ -248,6 +254,7 @@ impl ConversationManager {
             self.session_source.clone(),
             Some(self.mcp_connection_manager.clone()),
             self.skills_manager.clone(),
+            self.project_doc_manager.clone(),
         )
         .await?;
 
@@ -296,6 +303,7 @@ impl ConversationManager {
             },
             Some(self.mcp_connection_manager.clone()),
             self.skills_manager.clone(),
+            self.project_doc_manager.clone(),
         )
         .await?;
 

@@ -27,6 +27,7 @@ pub enum SlashCommand {
     Diff,
     Mention,
     Status,
+    Ps,
     Mcp,
     Logout,
     Quit,
@@ -58,6 +59,7 @@ impl SlashCommand {
             SlashCommand::Profile => "switch to a different profile (starts new session)",
             SlashCommand::Approvals => "choose what Codex can do without approval",
             SlashCommand::Mcp => "list configured MCP tools",
+            SlashCommand::Ps => "list background terminals",
             SlashCommand::Logout => "log out of Codex",
             SlashCommand::Rollout => "print the rollout file path",
             SlashCommand::TestApproval => "test approval request",
@@ -95,6 +97,7 @@ impl SlashCommand {
             | SlashCommand::Exit => true,
             SlashCommand::Rollout => true,
             SlashCommand::TestApproval => true,
+            SlashCommand::Ps => true,
         }
     }
 

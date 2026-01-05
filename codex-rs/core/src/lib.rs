@@ -80,6 +80,7 @@ pub use loop_detector::LoopDetector;
 pub use loop_detector::LoopType;
 pub mod default_client;
 pub mod project_doc;
+pub mod project_doc_manager;
 mod rollout;
 pub(crate) mod safety;
 pub mod seatbelt;

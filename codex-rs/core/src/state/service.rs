@@ -6,6 +6,7 @@ use crate::RolloutRecorder;
 use crate::delegation::DelegationRegistry;
 use crate::mcp_connection_manager::McpConnectionManager;
 use crate::openai_models::models_manager::ModelsManager;
+use crate::project_doc_manager::ProjectDocManager;
 use crate::skills::SkillLoadOutcome;
 use crate::skills::SkillsManager;
 use crate::subagents::SubagentSession;
@@ -32,4 +33,5 @@ pub(crate) struct SessionServices {
     pub(crate) delegation_registry: DelegationRegistry,
     pub(crate) skills: Option<SkillLoadOutcome>,
     pub(crate) skills_manager: Arc<SkillsManager>,
+    pub(crate) project_doc_manager: Arc<ProjectDocManager>,
 }

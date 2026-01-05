@@ -62,6 +62,7 @@ pub(crate) async fn run_codex_conversation_interactive(
         }),
         Some(parent_session.services.mcp_connection_manager.clone()),
         Arc::clone(&parent_session.services.skills_manager),
+        Arc::clone(&parent_session.services.project_doc_manager),
     )
     .await?;
     let codex = Arc::new(codex);

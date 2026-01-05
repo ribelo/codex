@@ -1904,6 +1904,9 @@ impl ChatWidget {
             SlashCommand::Status => {
                 self.add_status_output();
             }
+            SlashCommand::Ps => {
+                self.add_ps_output();
+            }
             SlashCommand::Mcp => {
                 self.add_mcp_output();
             }
@@ -2443,7 +2446,7 @@ impl ChatWidget {
         // If the task completed or aborted, move the cell from active_subagent_cells to history
         if matches!(
             inner.as_ref(),
-            EventMsg::TaskComplete(_) | EventMsg::TurnAborted(_)
+            EventMsg::TaskComplete(_) | EventMsg::TurnAborted(_) | EventMsg::Error(_)
         ) {
             if subagent_name == "review" {
                 if let EventMsg::TaskComplete(tc) = inner.as_ref()
@@ -2634,6 +2637,10 @@ impl ChatWidget {
             EventMsg::TurnAborted(_) => {
                 guard.status = history_cell::SubagentTaskStatus::Failed;
             }
+            EventMsg::Error(e) => {
+                guard.status = history_cell::SubagentTaskStatus::Failed;
+                guard.final_message = Some(format!("Error: {}", e.message));
+            }
             _ => {}
         }
     }
@@ -2739,6 +2746,14 @@ impl ChatWidget {
             Local::now(),
             self.model_family.get_model_slug(),
         ));
+    }
+    pub(crate) fn add_ps_output(&mut self) {
+        let sessions = self
+            .running_unified_exec_sessions
+            .iter()
+            .map(|session| session.command_display.clone())
+            .collect();
+        self.add_to_history(history_cell::new_unified_exec_sessions_output(sessions));
     }
     fn stop_rate_limit_poller(&mut self) {
         if let Some(handle) = self.rate_limit_poller.take() {

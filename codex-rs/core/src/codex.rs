@@ -80,7 +80,7 @@ use crate::loop_detector::LoopDetector;
 use crate::loop_detector::LoopType;
 use crate::mcp::auth::compute_auth_statuses;
 use crate::mcp_connection_manager::McpConnectionManager;
-use crate::project_doc::get_user_instructions;
+use crate::project_doc_manager::ProjectDocManager;
 use crate::protocol::AgentMessageDeltaEvent;
 use crate::protocol::AgentReasoningDeltaEvent;
 use crate::protocol::AgentReasoningRawContentDeltaEvent;
@@ -179,6 +179,7 @@ impl Codex {
         session_source: SessionSource,
         mcp_connection_manager: Option<Arc<RwLock<McpConnectionManager>>>,
         skills_manager: Arc<SkillsManager>,
+        project_doc_manager: Arc<ProjectDocManager>,
     ) -> CodexResult<CodexSpawnOk> {
         let (tx_sub, rx_sub) = async_channel::bounded(SUBMISSION_CHANNEL_CAPACITY);
         let (tx_event, rx_event) = async_channel::unbounded();
@@ -197,13 +198,14 @@ impl Codex {
 
         let skills_outcome = loaded_skills.clone();
 
-        let user_instructions = get_user_instructions(
-            &config,
-            skills_outcome
-                .as_ref()
-                .map(|outcome| outcome.skills.as_slice()),
-        )
-        .await;
+        let user_instructions = project_doc_manager
+            .get_user_instructions(
+                &config,
+                skills_outcome
+                    .as_ref()
+                    .map(|outcome| outcome.skills.as_slice()),
+            )
+            .await;
 
         let exec_policy = load_exec_policy_for_features(&config.features, &config.codex_home)
             .await
@@ -247,6 +249,7 @@ impl Codex {
             skills_outcome.clone(),
             mcp_connection_manager,
             skills_manager,
+            project_doc_manager,
         )
         .await
         .map_err(|e| {
@@ -576,6 +579,7 @@ impl Session {
         skills: Option<SkillLoadOutcome>,
         mcp_connection_manager: Option<Arc<RwLock<McpConnectionManager>>>,
         skills_manager: Arc<SkillsManager>,
+        project_doc_manager: Arc<ProjectDocManager>,
     ) -> anyhow::Result<Arc<Self>> {
         debug!(
             "Configuring session: model={}; provider={:?}",
@@ -699,6 +703,7 @@ impl Session {
             delegation_registry: crate::delegation::DelegationRegistry::new(),
             skills: skills.clone(),
             skills_manager: Arc::clone(&skills_manager),
+            project_doc_manager: Arc::clone(&project_doc_manager),
         };
 
         let sess = Arc::new(Session {
@@ -915,6 +920,18 @@ impl Session {
         );
         if let Some(final_schema) = updates.final_output_json_schema {
             turn_context.final_output_json_schema = final_schema;
+        }
+
+        // Refresh user instructions (AGENTS.md) if files changed
+        let skills = self.services.skills.as_ref().map(|o| o.skills.as_slice());
+        let refresh_config = Self::build_per_turn_config(&session_configuration);
+        if let Some(instructions) = self
+            .services
+            .project_doc_manager
+            .get_user_instructions(&refresh_config, skills)
+            .await
+        {
+            turn_context.user_instructions = Some(instructions);
         }
         Arc::new(turn_context)
     }
@@ -3296,6 +3313,7 @@ mod tests {
             otel_event_manager(conversation_id, config.as_ref(), &model_family);
 
         let skills_manager = Arc::new(SkillsManager::new(codex_home.path().to_path_buf()));
+        let project_doc_manager = Arc::new(ProjectDocManager::new());
 
         let state = SessionState::new(session_configuration.clone());
 
@@ -3314,6 +3332,7 @@ mod tests {
             delegation_registry: crate::delegation::DelegationRegistry::new(),
             skills: None,
             skills_manager,
+            project_doc_manager,
         };
 
         let turn_context = Session::make_turn_context(
@@ -3386,6 +3405,7 @@ mod tests {
             otel_event_manager(conversation_id, config.as_ref(), &model_family);
 
         let skills_manager = Arc::new(SkillsManager::new(codex_home.path().to_path_buf()));
+        let project_doc_manager = Arc::new(ProjectDocManager::new());
 
         let state = SessionState::new(session_configuration.clone());
 
@@ -3404,6 +3424,7 @@ mod tests {
             delegation_registry: crate::delegation::DelegationRegistry::new(),
             skills: None,
             skills_manager,
+            project_doc_manager,
         };
 
         let turn_context = Arc::new(Session::make_turn_context(
