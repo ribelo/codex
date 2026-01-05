@@ -1229,6 +1229,13 @@ impl Session {
         self.features.clone()
     }
 
+    pub(crate) async fn terminate_unified_exec_sessions(&self) {
+        self.services
+            .unified_exec_manager
+            .terminate_all_sessions()
+            .await;
+    }
+
     async fn send_raw_response_items(&self, turn_context: &TurnContext, items: &[ResponseItem]) {
         for item in items {
             self.send_event(

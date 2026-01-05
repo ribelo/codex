@@ -60,6 +60,7 @@ fn make_chatwidget_manual() -> (ChatWidget, tokio::sync::mpsc::UnboundedReceiver
         reasoning_stream_controller: None,
         running_commands: HashMap::new(),
         suppressed_exec_calls: HashSet::new(),
+        running_unified_exec_sessions: Vec::new(),
         last_unified_wait: None,
         task_complete_pending: false,
         mcp_startup_status: None,

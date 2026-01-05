@@ -155,6 +155,11 @@ struct RunningCommand {
     source: ExecCommandSource,
 }
 
+struct UnifiedExecSessionSummary {
+    key: String,
+    command_display: String,
+}
+
 struct UnifiedExecWaitState {
     command_display: String,
 }
@@ -308,6 +313,7 @@ pub(crate) struct ChatWidget {
     reasoning_stream_controller: Option<ReasoningStreamController>,
     running_commands: HashMap<String, RunningCommand>,
     suppressed_exec_calls: HashSet<String>,
+    running_unified_exec_sessions: Vec<UnifiedExecSessionSummary>,
     last_unified_wait: Option<UnifiedExecWaitState>,
     task_complete_pending: bool,
     mcp_startup_status: Option<HashMap<String, McpStartupStatus>>,
@@ -601,6 +607,7 @@ impl ChatWidget {
         }
         // If a stream is currently active, finalize it.
         self.flush_answer_stream_with_separator();
+        self.flush_wait_cell();
         // Mark task stopped and request redraw now that all content is in history.
         self.bottom_pane.set_task_running(false);
         self.running_commands.clear();
@@ -928,6 +935,7 @@ impl ChatWidget {
 
     fn on_exec_command_begin(&mut self, ev: ExecCommandBeginEvent) {
         self.flush_answer_stream_with_separator();
+        self.track_unified_exec_session_begin(&ev);
         let ev2 = ev.clone();
         self.defer_or_handle(|q| q.push_exec_begin(ev), |s| s.handle_exec_begin_now(ev2));
     }
@@ -939,8 +947,60 @@ impl ChatWidget {
         // TODO: Handle streaming exec output if/when implemented
     }
 
-    fn on_terminal_interaction(&mut self, _ev: TerminalInteractionEvent) {
-        // TODO: Handle once design is ready
+    fn on_terminal_interaction(&mut self, ev: TerminalInteractionEvent) {
+        let command_display = self
+            .running_unified_exec_sessions
+            .iter()
+            .find(|session| session.key == ev.process_id)
+            .map(|session| session.command_display.clone());
+        if ev.stdin.is_empty() {
+            // Empty stdin means we are still waiting on background output; keep a live shimmer cell.
+            if let Some(wait_cell) = self.active_cell.as_mut().and_then(|cell| {
+                cell.as_any_mut()
+                    .downcast_mut::<history_cell::UnifiedExecWaitCell>()
+            }) && wait_cell.matches(command_display.as_deref())
+            {
+                // Same session still waiting; update command display if it shows up late.
+                wait_cell.update_command_display(command_display);
+                self.request_redraw();
+                return;
+            }
+            let has_non_wait_active = matches!(
+                self.active_cell.as_ref(),
+                Some(active)
+                    if active
+                        .as_any()
+                        .downcast_ref::<history_cell::UnifiedExecWaitCell>()
+                        .is_none()
+            );
+            if has_non_wait_active {
+                // Do not preempt non-wait active cells with a wait entry.
+                return;
+            }
+            self.flush_wait_cell();
+            self.active_cell = Some(Box::new(history_cell::new_unified_exec_wait_live(
+                command_display,
+                self.config.animations,
+            )));
+            self.request_redraw();
+        } else {
+            if let Some(wait_cell) = self.active_cell.as_ref().and_then(|cell| {
+                cell.as_any()
+                    .downcast_ref::<history_cell::UnifiedExecWaitCell>()
+            }) {
+                // Convert the live wait cell into a static "(waited)" entry before logging stdin.
+                let waited_command = wait_cell.command_display().or(command_display.clone());
+                self.active_cell = None;
+                self.add_to_history(history_cell::new_unified_exec_interaction(
+                    waited_command,
+                    String::new(),
+                ));
+            }
+            self.add_to_history(history_cell::new_unified_exec_interaction(
+                command_display,
+                ev.stdin,
+            ));
+        }
     }
 
     fn on_patch_apply_begin(&mut self, event: PatchApplyBeginEvent) {
@@ -968,6 +1028,7 @@ impl ChatWidget {
     }
 
     fn on_exec_command_end(&mut self, ev: ExecCommandEndEvent) {
+        self.track_unified_exec_session_end(&ev);
         let ev2 = ev.clone();
         self.defer_or_handle(|q| q.push_exec_end(ev), |s| s.handle_exec_end_now(ev2));
     }
@@ -1477,6 +1538,7 @@ impl ChatWidget {
             reasoning_stream_controller: None,
             running_commands: HashMap::new(),
             suppressed_exec_calls: HashSet::new(),
+            running_unified_exec_sessions: Vec::new(),
             last_unified_wait: None,
             task_complete_pending: false,
             mcp_startup_status: None,
@@ -1574,6 +1636,7 @@ impl ChatWidget {
             reasoning_stream_controller: None,
             running_commands: HashMap::new(),
             suppressed_exec_calls: HashSet::new(),
+            running_unified_exec_sessions: Vec::new(),
             last_unified_wait: None,
             task_complete_pending: false,
             mcp_startup_status: None,
@@ -1918,6 +1981,7 @@ impl ChatWidget {
     }
 
     fn flush_active_cell(&mut self) {
+        self.flush_wait_cell();
         // Don't flush an in-progress ExecCell - it should stay active until the command completes.
         // Flushing it early would create a static "Running" snapshot in history, then a separate
         // "Ran" cell when the command finishes.
@@ -1934,6 +1998,73 @@ impl ChatWidget {
             self.needs_final_message_separator = true;
             self.app_event_tx.send(AppEvent::InsertHistoryCell(active));
         }
+    }
+
+    // Only flush a live wait cell here; other active cells must finalize via their end events.
+    fn flush_wait_cell(&mut self) {
+        // Wait cells are transient: convert them into "(waited)" history entries if present.
+        // Leave non-wait active cells intact so their end events can finalize them.
+        let Some(active) = self.active_cell.take() else {
+            return;
+        };
+        let Some(wait_cell) = active
+            .as_any()
+            .downcast_ref::<history_cell::UnifiedExecWaitCell>()
+        else {
+            self.active_cell = Some(active);
+            return;
+        };
+        self.needs_final_message_separator = true;
+        let cell =
+            history_cell::new_unified_exec_interaction(wait_cell.command_display(), String::new());
+        self.app_event_tx
+            .send(AppEvent::InsertHistoryCell(Box::new(cell)));
+    }
+
+    fn track_unified_exec_session_begin(&mut self, ev: &ExecCommandBeginEvent) {
+        if ev.source != ExecCommandSource::UnifiedExecStartup {
+            return;
+        }
+        let key = ev
+            .process_id
+            .clone()
+            .unwrap_or_else(|| ev.call_id.to_string());
+        let command_display = strip_bash_lc_and_escape(&ev.command);
+        if let Some(existing) = self
+            .running_unified_exec_sessions
+            .iter_mut()
+            .find(|s| s.key == key)
+        {
+            existing.command_display = command_display;
+        } else {
+            self.running_unified_exec_sessions
+                .push(UnifiedExecSessionSummary {
+                    key,
+                    command_display,
+                });
+        }
+        self.sync_unified_exec_footer();
+    }
+
+    fn track_unified_exec_session_end(&mut self, ev: &ExecCommandEndEvent) {
+        let key = ev
+            .process_id
+            .clone()
+            .unwrap_or_else(|| ev.call_id.to_string());
+        let before = self.running_unified_exec_sessions.len();
+        self.running_unified_exec_sessions.retain(|s| s.key != key);
+        if self.running_unified_exec_sessions.len() != before {
+            self.sync_unified_exec_footer();
+        }
+    }
+
+    fn sync_unified_exec_footer(&mut self) {
+        let sessions: Vec<String> = self
+            .running_unified_exec_sessions
+            .iter()
+            .map(|s| s.command_display.clone())
+            .collect();
+        self.bottom_pane.set_unified_exec_sessions(sessions);
     }
 
     fn add_to_history(&mut self, cell: impl HistoryCell + 'static) {

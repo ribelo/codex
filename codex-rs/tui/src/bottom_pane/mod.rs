@@ -41,6 +41,8 @@ mod scroll_state;
 mod selection_popup_common;
 mod textarea;
 pub(crate) use feedback_view::FeedbackNoteView;
+mod unified_exec_footer;
+use unified_exec_footer::UnifiedExecFooter;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CancellationEvent {
@@ -81,6 +83,8 @@ pub(crate) struct BottomPane {
     queued_user_messages: QueuedUserMessages,
     context_window_percent: Option<i64>,
     context_window_used_tokens: Option<i64>,
+    /// Footer showing unified exec sessions running in background.
+    unified_exec_footer: UnifiedExecFooter,
 }
 
 pub(crate) struct BottomPaneParams {
@@ -135,6 +139,7 @@ impl BottomPane {
             animations_enabled,
             context_window_percent: None,
             context_window_used_tokens: None,
+            unified_exec_footer: UnifiedExecFooter::new(),
         }
     }
 
@@ -424,6 +429,12 @@ impl BottomPane {
         self.request_redraw();
     }
 
+    pub(crate) fn set_unified_exec_sessions(&mut self, sessions: Vec<String>) {
+        if self.unified_exec_footer.set_sessions(sessions) {
+            self.request_redraw();
+        }
+    }
+
     /// Update custom prompts available for the slash popup.
     pub(crate) fn set_custom_prompts(&mut self, prompts: Vec<CustomPrompt>) {
         self.composer.set_custom_prompts(prompts);
@@ -557,6 +568,9 @@ impl BottomPane {
             RenderableItem::Borrowed(view)
         } else {
             let mut flex = FlexRenderable::new();
+            if !self.unified_exec_footer.is_empty() {
+                flex.push(0, RenderableItem::Borrowed(&self.unified_exec_footer));
+            }
             if let Some(status) = &self.status {
                 flex.push(0, RenderableItem::Borrowed(status));
             }

@@ -1836,6 +1836,115 @@ mod tests {
     use tokio::sync::mpsc;
     use tokio_util::io::ReaderStream;
 
+    #[tokio::test]
+    async fn test_reasoning_text_accumulated_in_output_item_done() {
+        let body = "data: ".to_owned()
+            + &serde_json::json!({
+                "candidates": [{
+                    "content": {
+                        "parts": [
+                            { "text": "Reasoning part 1. ", "thought": true }
+                        ]
+                    }
+                }]
+            })
+            .to_string()
+            + "\n\n"
+            + "data: "
+            + &serde_json::json!({
+                "candidates": [{
+                    "content": {
+                        "parts": [
+                            { "text": "Reasoning part 2.", "thought": true }
+                        ]
+                    }
+                }]
+            })
+            .to_string()
+            + "\n\n";
+
+        let (tx, mut rx) = mpsc::channel::<Result<ResponseEvent>>(16);
+        let stream = ReaderStream::new(std::io::Cursor::new(body)).map_err(CodexErr::Io);
+
+        tokio::spawn(process_gemini_sse(
+            stream,
+            tx,
+            std::time::Duration::from_millis(10_000),
+            otel(),
+        ));
+
+        let mut final_item = None;
+        while let Some(event) = rx.recv().await {
+            if let Ok(ResponseEvent::OutputItemDone(item)) = event
+                && matches!(item, ResponseItem::Reasoning { .. })
+            {
+                final_item = Some(item);
+            }
+        }
+
+        let item = final_item.expect("Should have received OutputItemDone for Reasoning");
+        if let ResponseItem::Reasoning { summary, .. } = item {
+            assert_eq!(summary.len(), 1);
+            if let codex_protocol::models::ReasoningItemReasoningSummary::SummaryText { text } =
+                &summary[0]
+            {
+                assert_eq!(text, "Reasoning part 1. Reasoning part 2.");
+            } else {
+                panic!("Summary should be SummaryText");
+            }
+        } else {
+            panic!("Item should be Reasoning");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_reasoning_preserved_in_tool_loop() {
+        use crate::client_common::Prompt;
+        use codex_protocol::models::ReasoningItemReasoningSummary;
+
+        let prompt = Prompt {
+            input: vec![
+                // Need a user message first for valid Gemini history
+                ResponseItem::Message {
+                    id: None,
+                    role: "user".into(),
+                    content: vec![ContentItem::InputText {
+                        text: "Hello".into(),
+                    }],
+                },
+                ResponseItem::Reasoning {
+                    id: "r1".to_string(),
+                    summary: vec![ReasoningItemReasoningSummary::SummaryText {
+                        text: "I am thinking about calling a tool.".to_string(),
+                    }],
+                    content: None,
+                    encrypted_content: Some("sig123".to_string()),
+                },
+            ],
+            ..Default::default()
+        };
+
+        let (messages, _) = build_gemini_messages(&prompt, "", "gemini-1.5-pro")
+            .expect("build_gemini_messages should succeed");
+
+        // The reasoning should be in the model's message as a part with thought: true
+        let model_msg = messages
+            .iter()
+            .find(|m| m.role == "model")
+            .expect("Should have model message");
+
+        let thought_part = model_msg
+            .parts
+            .iter()
+            .find(|p| p.thought == Some(true))
+            .expect("Should have thought part");
+
+        assert_eq!(
+            thought_part.text,
+            Some("I am thinking about calling a tool.".to_string())
+        );
+    }
+
     fn otel() -> OtelEventManager {
         OtelEventManager::new(
             codex_protocol::ConversationId::new(),

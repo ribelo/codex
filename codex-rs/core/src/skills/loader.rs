@@ -3,6 +3,7 @@ use crate::git_info::resolve_root_git_project_for_trust;
 use crate::skills::model::SkillError;
 use crate::skills::model::SkillLoadOutcome;
 use crate::skills::model::SkillMetadata;
+use crate::skills::system::system_cache_root_dir;
 use codex_protocol::protocol::SkillScope;
 use dunce::canonicalize as normalize_path;
 use serde::Deserialize;
@@ -31,6 +32,13 @@ pub(crate) fn user_skills_root(codex_home: &Path) -> SkillRoot {
     SkillRoot {
         path: codex_home.join(SKILLS_DIR_NAME),
         scope: SkillScope::User,
+    }
+}
+
+pub(crate) fn system_skills_root(codex_home: &Path) -> SkillRoot {
+    SkillRoot {
+        path: system_cache_root_dir(codex_home),
+        scope: SkillScope::System,
     }
 }
 
@@ -108,6 +116,7 @@ pub fn load_skills(config: &Config) -> SkillLoadOutcome {
     if let Some(repo_root) = repo_skills_root(&config.cwd) {
         roots.insert(0, repo_root); // Repo skills take precedence
     }
+    roots.push(system_skills_root(&config.codex_home));
     load_skills_from_roots(roots).0
 }
 

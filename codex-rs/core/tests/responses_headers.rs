@@ -245,7 +245,7 @@ async fn responses_respects_model_family_overrides_from_config() {
 
     let codex_home = TempDir::new().expect("failed to create TempDir");
     let mut config = load_default_config_for_test(&codex_home);
-    config.model = Some("gpt-3.5-turbo".to_string());
+    config.model = Some("o3".to_string());
     config.model_provider_id = provider.name.clone();
     config.model_provider = provider.clone();
     config.model_reasoning_summary = ReasoningSummary::Detailed;

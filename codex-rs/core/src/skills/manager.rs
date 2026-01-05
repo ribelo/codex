@@ -7,6 +7,8 @@ use std::time::SystemTime;
 use super::SkillLoadOutcome;
 use super::load_skills_from_roots;
 use super::repo_skills_root;
+use super::system::install_system_skills;
+use super::system_skills_root;
 use super::user_skills_root;
 
 #[derive(Clone)]
@@ -30,6 +32,10 @@ pub struct SkillsManager {
 
 impl SkillsManager {
     pub fn new(codex_home: PathBuf) -> Self {
+        if let Err(err) = install_system_skills(&codex_home) {
+            tracing::error!("failed to install system skills: {err}");
+        }
+
         Self {
             codex_home,
             cache_by_cwd: RwLock::new(HashMap::new()),
@@ -47,6 +53,8 @@ impl SkillsManager {
             roots.push(repo_root);
         }
         roots.push(user_skills_root(&self.codex_home));
+        // System skills have lowest priority (can be overridden by user/repo skills)
+        roots.push(system_skills_root(&self.codex_home));
 
         // Get current mtimes
         let current_root_states: Vec<(PathBuf, Option<SystemTime>)> = roots
@@ -137,6 +145,7 @@ impl SkillsManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::skills::SkillMetadata;
     use std::fs;
     use std::process::Command;
     use tempfile::tempdir;
@@ -148,6 +157,13 @@ mod tests {
         fs::write(skill_dir.join("SKILL.md"), content).unwrap();
     }
 
+    // Number of system skills that are automatically installed
+    const SYSTEM_SKILLS_COUNT: usize = 2;
+
+    fn find_skill<'a>(outcome: &'a SkillLoadOutcome, name: &str) -> Option<&'a SkillMetadata> {
+        outcome.skills.iter().find(|s| s.name == name)
+    }
+
     #[test]
     fn test_cache_invalidation_on_new_skill() {
         let home = tempdir().unwrap();
@@ -157,8 +173,8 @@ mod tests {
         // 1. Initial load
         write_skill(home.path(), "skill1", "skill1", "desc1");
         let outcome = manager.skills_for_cwd(cwd);
-        assert_eq!(outcome.skills.len(), 1);
-        assert_eq!(outcome.skills[0].name, "skill1");
+        assert_eq!(outcome.skills.len(), 1 + SYSTEM_SKILLS_COUNT);
+        assert!(find_skill(&outcome, "skill1").is_some());
 
         // 2. Add new skill - directory mtime changes
         // Sleep to ensure mtime differs
@@ -166,7 +182,7 @@ mod tests {
         write_skill(home.path(), "skill2", "skill2", "desc2");
 
         let outcome = manager.skills_for_cwd(cwd);
-        assert_eq!(outcome.skills.len(), 2);
+        assert_eq!(outcome.skills.len(), 2 + SYSTEM_SKILLS_COUNT);
     }
 
     #[test]
@@ -177,7 +193,10 @@ mod tests {
 
         write_skill(home.path(), "skill1", "skill1", "original");
         let outcome = manager.skills_for_cwd(cwd);
-        assert_eq!(outcome.skills[0].description, "original");
+        assert_eq!(
+            find_skill(&outcome, "skill1").unwrap().description,
+            "original"
+        );
 
         // Modify content without changing directory structure
         let skill_file = home.path().join("skills/skill1/SKILL.md");
@@ -190,7 +209,10 @@ mod tests {
 
         // Reload - expected to invalidate cache because file mtime changed
         let outcome = manager.skills_for_cwd(cwd);
-        assert_eq!(outcome.skills[0].description, "CHANGED");
+        assert_eq!(
+            find_skill(&outcome, "skill1").unwrap().description,
+            "CHANGED"
+        );
     }
 
     #[test]
@@ -203,7 +225,7 @@ mod tests {
         write_skill(home.path(), "skill1", "skill1", "desc1");
         write_skill(home.path(), "skill2", "skill2", "desc2");
         let outcome = manager.skills_for_cwd(cwd);
-        assert_eq!(outcome.skills.len(), 2);
+        assert_eq!(outcome.skills.len(), 2 + SYSTEM_SKILLS_COUNT);
 
         // 2. Remove one skill directory
         std::thread::sleep(std::time::Duration::from_millis(50));
@@ -211,8 +233,9 @@ mod tests {
 
         // 3. Reload - should detect removal
         let outcome = manager.skills_for_cwd(cwd);
-        assert_eq!(outcome.skills.len(), 1);
-        assert_eq!(outcome.skills[0].name, "skill1");
+        assert_eq!(outcome.skills.len(), 1 + SYSTEM_SKILLS_COUNT);
+        assert!(find_skill(&outcome, "skill1").is_some());
+        assert!(find_skill(&outcome, "skill2").is_none());
     }
 
     #[test]
@@ -315,7 +338,7 @@ mod tests {
         write_skill(home.path(), "category/skill1", "skill1", "desc1");
 
         let outcome = manager.skills_for_cwd(cwd);
-        assert_eq!(outcome.skills.len(), 1);
+        assert_eq!(outcome.skills.len(), 1 + SYSTEM_SKILLS_COUNT);
 
         // 2. Add another skill in the same nested category
         // skills/category/skill2/SKILL.md
@@ -324,6 +347,10 @@ mod tests {
         write_skill(home.path(), "category/skill2", "skill2", "desc2");
 
         let outcome = manager.skills_for_cwd(cwd);
-        assert_eq!(outcome.skills.len(), 2, "Should detect new nested skill");
+        assert_eq!(
+            outcome.skills.len(),
+            2 + SYSTEM_SKILLS_COUNT,
+            "Should detect new nested skill"
+        );
     }
 }

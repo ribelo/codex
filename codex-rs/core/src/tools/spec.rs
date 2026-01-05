@@ -2311,4 +2311,73 @@ Examples of valid command strings:
             "Should have exactly 3 tools: search_session_log, read_session_log, update_plan"
         );
     }
+
+    #[test]
+    fn test_mcp_tools_empty_server_list() {
+        let list_tool = super::create_list_mcp_resources_tool(&[]);
+        let templates_tool = super::create_list_mcp_resource_templates_tool(&[]);
+        let read_tool = super::create_read_mcp_resource_tool(&[]);
+
+        if let ToolSpec::Function(t) = list_tool {
+            assert_eq!(
+                t.description,
+                "Lists resources provided by MCP servers. No MCP servers are currently available."
+            );
+        } else {
+            panic!("expected function tool");
+        }
+
+        if let ToolSpec::Function(t) = templates_tool {
+            assert_eq!(
+                t.description,
+                "Lists resource templates provided by MCP servers. No MCP servers are currently available."
+            );
+        } else {
+            panic!("expected function tool");
+        }
+
+        if let ToolSpec::Function(t) = read_tool {
+            assert_eq!(
+                t.description,
+                "Read a specific resource from an MCP server. No MCP servers are currently available. For local file access, use shell_command."
+            );
+        } else {
+            panic!("expected function tool");
+        }
+    }
+
+    #[test]
+    fn test_mcp_tools_with_server_names() {
+        let servers = vec!["test-server".to_string()];
+        let list_tool = super::create_list_mcp_resources_tool(&servers);
+        let templates_tool = super::create_list_mcp_resource_templates_tool(&servers);
+        let read_tool = super::create_read_mcp_resource_tool(&servers);
+
+        if let ToolSpec::Function(t) = list_tool {
+            assert!(
+                t.description
+                    .contains("Available servers: [\"test-server\"]")
+            );
+        } else {
+            panic!("expected function tool");
+        }
+
+        if let ToolSpec::Function(t) = templates_tool {
+            assert!(
+                t.description
+                    .contains("Available servers: [\"test-server\"]")
+            );
+        } else {
+            panic!("expected function tool");
+        }
+
+        if let ToolSpec::Function(t) = read_tool {
+            assert!(
+                t.description
+                    .contains("Available servers: [\"test-server\"]")
+            );
+        } else {
+            panic!("expected function tool");
+        }
+    }
 }

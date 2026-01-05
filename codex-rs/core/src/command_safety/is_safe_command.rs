@@ -51,19 +51,40 @@ fn is_safe_to_call_with_exec(command: &[String]) -> bool {
         Some(
             "cat" |
             "cd" |
+            "cut" |
             "echo" |
+            "expr" |
             "false" |
             "grep" |
             "head" |
+            "id" |
             "ls" |
             "nl" |
+            "numfmt" |
+            "paste" |
             "pwd" |
+            "rev" |
+            "seq" |
+            "stat" |
+            "tac" |
             "tail" |
+            "tr" |
             "true" |
+            "uname" |
+            "uniq" |
             "wc" |
-            "which") => {
+            "whoami" |
+            "which"
+        ) => {
             true
         },
+
+        Some("base64") => {
+            // base64 is safe unless -o or --output is used
+            !command
+                .iter()
+                .any(|arg| arg == "-o" || arg.starts_with("--output"))
+        }
 
         Some("find") => {
             // Certain options to `find` can delete files, write to files, or
@@ -175,6 +196,39 @@ fn is_valid_sed_n_arg(arg: Option<&str>) -> bool {
 mod tests {
     use super::*;
     use std::string::ToString;
+
+    #[test]
+    fn new_safe_commands() {
+        for cmd in [
+            "cut", "expr", "id", "paste", "rev", "seq", "stat", "tr", "uname", "uniq", "whoami",
+            "numfmt", "tac",
+        ] {
+            assert!(is_safe_to_call_with_exec(&vec_str(&[cmd])));
+        }
+        // base64 is safe without output flag
+        assert!(is_safe_to_call_with_exec(&vec_str(&[
+            "base64",
+            "input.txt"
+        ])));
+    }
+
+    #[test]
+    fn base64_output_options_are_unsafe() {
+        assert!(!is_safe_to_call_with_exec(&vec_str(&[
+            "base64",
+            "-o",
+            "output.txt"
+        ])));
+        assert!(!is_safe_to_call_with_exec(&vec_str(&[
+            "base64",
+            "--output",
+            "output.txt"
+        ])));
+        assert!(!is_safe_to_call_with_exec(&vec_str(&[
+            "base64",
+            "--output=output.txt"
+        ])));
+    }
 
     fn vec_str(args: &[&str]) -> Vec<String> {
         args.iter().map(ToString::to_string).collect()

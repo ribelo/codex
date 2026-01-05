@@ -163,6 +163,7 @@ impl Session {
         for task in self.take_all_running_tasks().await {
             self.handle_task_abort(task, reason.clone()).await;
         }
+        self.terminate_unified_exec_sessions().await;
     }
 
     pub async fn on_task_finished(
@@ -185,6 +186,8 @@ impl Session {
             *active = None;
         }
         drop(active);
+
+        self.terminate_unified_exec_sessions().await;
 
         let event = EventMsg::TaskComplete(TaskCompleteEvent {
             last_agent_message,

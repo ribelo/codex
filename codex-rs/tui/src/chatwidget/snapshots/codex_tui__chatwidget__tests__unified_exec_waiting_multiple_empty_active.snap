@@ -1,0 +1,5 @@
+---
+source: tui/src/chatwidget/tests.rs
+expression: active_blob(&chat)
+---
+• Running just fix

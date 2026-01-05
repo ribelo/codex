@@ -7,11 +7,13 @@ use crate::exec_cell::output_lines;
 use crate::exec_cell::spinner;
 use crate::exec_command::relativize_to_home;
 use crate::exec_command::strip_bash_lc_and_escape;
+use crate::live_wrap::take_prefix_by_width;
 use crate::markdown::append_markdown;
 use crate::render::line_utils::line_to_static;
 use crate::render::line_utils::prefix_lines;
 use crate::render::line_utils::push_owned_lines;
 use crate::render::renderable::Renderable;
+use crate::shimmer::shimmer_spans;
 use crate::style::user_message_style;
 use crate::text_formatting::format_and_truncate_tool_result;
 use crate::text_formatting::truncate_text;
@@ -384,6 +386,145 @@ impl HistoryCell for UpdateAvailableHistoryCell {
 }
 
 #[derive(Debug)]
+pub(crate) struct UnifiedExecInteractionCell {
+    command_display: Option<String>,
+    stdin: String,
+}
+
+impl UnifiedExecInteractionCell {
+    pub(crate) fn new(command_display: Option<String>, stdin: String) -> Self {
+        Self {
+            command_display,
+            stdin,
+        }
+    }
+}
+
+impl HistoryCell for UnifiedExecInteractionCell {
+    fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
+        if width == 0 {
+            return Vec::new();
+        }
+        let wrap_width = width as usize;
+
+        let mut header_spans = vec!["↳ ".dim(), "Interacted with background terminal".bold()];
+        if let Some(command) = &self.command_display
+            && !command.is_empty()
+        {
+            header_spans.push(" · ".dim());
+            header_spans.push(command.clone().dim());
+        }
+        let header = Line::from(header_spans);
+
+        let mut out: Vec<Line<'static>> = Vec::new();
+        let header_wrapped = word_wrap_line(&header, RtOptions::new(wrap_width));
+        push_owned_lines(&header_wrapped, &mut out);
+
+        let input_lines: Vec<Line<'static>> = if self.stdin.is_empty() {
+            vec![vec!["(waited)".dim()].into()]
+        } else {
+            self.stdin
+                .lines()
+                .map(|line| Line::from(line.to_string()))
+                .collect()
+        };
+
+        let input_wrapped = word_wrap_lines(
+            input_lines,
+            RtOptions::new(wrap_width)
+                .initial_indent(Line::from("  └ ".dim()))
+                .subsequent_indent(Line::from("    ".dim())),
+        );
+        out.extend(input_wrapped);
+        out
+    }
+
+    fn desired_height(&self, width: u16) -> u16 {
+        self.display_lines(width).len() as u16
+    }
+}
+
+pub(crate) fn new_unified_exec_interaction(
+    command_display: Option<String>,
+    stdin: String,
+) -> UnifiedExecInteractionCell {
+    UnifiedExecInteractionCell::new(command_display, stdin)
+}
+
+#[derive(Debug)]
+// Live-only wait cell that shimmers while we poll; flushes into a static entry later.
+pub(crate) struct UnifiedExecWaitCell {
+    command_display: Option<String>,
+    animations_enabled: bool,
+}
+
+impl UnifiedExecWaitCell {
+    pub(crate) fn new(command_display: Option<String>, animations_enabled: bool) -> Self {
+        Self {
+            command_display: command_display.filter(|display| !display.is_empty()),
+            animations_enabled,
+        }
+    }
+
+    pub(crate) fn matches(&self, command_display: Option<&str>) -> bool {
+        let command_display = command_display.filter(|display| !display.is_empty());
+        match (self.command_display.as_deref(), command_display) {
+            (Some(current), Some(incoming)) => current == incoming,
+            _ => true,
+        }
+    }
+
+    pub(crate) fn update_command_display(&mut self, command_display: Option<String>) {
+        if self.command_display.is_none() {
+            self.command_display = command_display.filter(|display| !display.is_empty());
+        }
+    }
+
+    pub(crate) fn command_display(&self) -> Option<String> {
+        self.command_display.clone()
+    }
+}
+
+impl HistoryCell for UnifiedExecWaitCell {
+    fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
+        if width == 0 {
+            return Vec::new();
+        }
+        let wrap_width = width as usize;
+
+        let mut header_spans = vec!["• ".dim()];
+        if self.animations_enabled {
+            header_spans.extend(shimmer_spans("Waiting for background terminal"));
+        } else {
+            header_spans.push("Waiting for background terminal".bold());
+        }
+        if let Some(command) = &self.command_display
+            && !command.is_empty()
+        {
+            header_spans.push(" · ".dim());
+            header_spans.push(command.clone().dim());
+        }
+        let header = Line::from(header_spans);
+
+        let mut out: Vec<Line<'static>> = Vec::new();
+        let header_wrapped = word_wrap_line(&header, RtOptions::new(wrap_width));
+        push_owned_lines(&header_wrapped, &mut out);
+        out
+    }
+
+    fn desired_height(&self, width: u16) -> u16 {
+        self.display_lines(width).len() as u16
+    }
+}
+
+pub(crate) fn new_unified_exec_wait_live(
+    command_display: Option<String>,
+    animations_enabled: bool,
+) -> UnifiedExecWaitCell {
+    UnifiedExecWaitCell::new(command_display, animations_enabled)
+}
+
+#[derive(Debug)]
 pub(crate) struct PrefixedWrappedHistoryCell {
     text: Text<'static>,
     initial_prefix: Line<'static>,
@@ -565,6 +706,91 @@ pub(crate) fn with_border(lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
 /// This is useful when callers have already clamped their content to a
 /// specific width and want the border math centralized here instead of
 /// duplicating padding logic in the TUI widgets themselves.
+#[derive(Debug)]
+struct UnifiedExecSessionsCell {
+    sessions: Vec<String>,
+}
+
+impl UnifiedExecSessionsCell {
+    fn new(sessions: Vec<String>) -> Self {
+        Self { sessions }
+    }
+}
+
+impl HistoryCell for UnifiedExecSessionsCell {
+    fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
+        if width == 0 {
+            return Vec::new();
+        }
+
+        let wrap_width = width as usize;
+        let max_sessions = 16usize;
+        let mut out: Vec<Line<'static>> = Vec::new();
+        out.push(vec!["Background terminals".bold()].into());
+        out.push("".into());
+
+        if self.sessions.is_empty() {
+            out.push("  • No background terminals running.".italic().into());
+            return out;
+        }
+
+        let prefix = "  • ";
+        let prefix_width = UnicodeWidthStr::width(prefix);
+        let truncation_suffix = " [...]";
+        let truncation_suffix_width = UnicodeWidthStr::width(truncation_suffix);
+        let mut shown = 0usize;
+        for command in &self.sessions {
+            if shown >= max_sessions {
+                break;
+            }
+            let (snippet, snippet_truncated) = {
+                let (first_line, has_more_lines) = match command.split_once('\n') {
+                    Some((first, _)) => (first, true),
+                    None => (command.as_str(), false),
+                };
+
+                let mut snippet = first_line.to_string();
+                let mut snippet_truncated = has_more_lines;
+
+                let available_width = wrap_width.saturating_sub(prefix_width);
+                if UnicodeWidthStr::width(snippet.as_str()) > available_width {
+                    let (truncated, _, _) = take_prefix_by_width(
+                        &snippet,
+                        available_width.saturating_sub(truncation_suffix_width),
+                    );
+                    snippet = truncated;
+                    snippet_truncated = true;
+                }
+                (snippet, snippet_truncated)
+            };
+
+            let mut line_spans = vec![prefix.into(), snippet.into()];
+            if snippet_truncated {
+                line_spans.push(truncation_suffix.dim());
+            }
+            out.push(Line::from(line_spans));
+            shown += 1;
+        }
+
+        if self.sessions.len() > max_sessions {
+            let remaining = self.sessions.len() - max_sessions;
+            out.push(Line::from(format!("  ...and {remaining} more").dim()));
+        }
+
+        out
+    }
+
+    fn desired_height(&self, width: u16) -> u16 {
+        self.display_lines(width).len() as u16
+    }
+}
+
+pub(crate) fn new_unified_exec_sessions_output(sessions: Vec<String>) -> CompositeHistoryCell {
+    let command = PlainHistoryCell::new(vec!["/ps".magenta().into()]);
+    let summary = UnifiedExecSessionsCell::new(sessions);
+    CompositeHistoryCell::new(vec![Box::new(command), Box::new(summary)])
+}
+
 pub(crate) fn with_border_with_inner_width(
     lines: Vec<Line<'static>>,
     inner_width: usize,
@@ -1327,38 +1553,35 @@ impl HistoryCell for SubagentTaskCell {
 
         // Task description with └ prefix
         lines.push(Line::from(vec![
-            content_indent.clone().into(),
+            content_indent.into(),
             "└ ".dim(),
             truncate_text(&self.task_description, wrap_width.saturating_sub(2)).dim(),
         ]));
 
         // Items (Interleaved)
-        let total_activities = items
-            .iter()
-            .filter(|i| matches!(i, SubagentLogEntry::Activity(_)))
-            .count();
-        let skip_activities = total_activities.saturating_sub(5);
+        let total_items = items.len();
+        let skip_count = total_items.saturating_sub(3);
 
-        let mut activity_counter = 0;
+        let mut item_counter = 0;
         let mut skipped_block_count = 0;
 
         for item in items {
+            item_counter += 1;
+            if item_counter <= skip_count {
+                skipped_block_count += 1;
+                continue;
+            }
+
+            if skipped_block_count > 0 {
+                lines.push(Line::from(vec![
+                    activity_indent.clone().into(),
+                    format!("... +{skipped_block_count} more").dim().italic(),
+                ]));
+                skipped_block_count = 0;
+            }
+
             match item {
                 SubagentLogEntry::Activity(activity) => {
-                    activity_counter += 1;
-                    if activity_counter <= skip_activities {
-                        skipped_block_count += 1;
-                        continue;
-                    }
-
-                    if skipped_block_count > 0 {
-                        lines.push(Line::from(vec![
-                            content_indent.clone().into(),
-                            format!("... +{skipped_block_count} more").dim().italic(),
-                        ]));
-                        skipped_block_count = 0;
-                    }
-
                     let indicator: Span<'static> = match activity.success {
                         Some(true) => "✓".green(),
                         Some(false) => "✗".red(),
@@ -1372,13 +1595,6 @@ impl HistoryCell for SubagentTaskCell {
                     ]));
                 }
                 SubagentLogEntry::Child(idx) => {
-                    if skipped_block_count > 0 {
-                        lines.push(Line::from(vec![
-                            activity_indent.clone().into(),
-                            format!("... +{skipped_block_count} more").dim().italic(),
-                        ]));
-                        skipped_block_count = 0;
-                    }
                     if let Some(child) = self.children.get(idx) {
                         lines.extend(child.display_lines(width));
                     }
@@ -3098,12 +3314,12 @@ mod tests {
             false,
         );
 
-        // display_lines should show only 5 activities + "... +5 more"
+        // display_lines should show only 3 activities + "... +7 more"
         let display = cell.display_lines(80);
         let display_rendered = render_lines(&display);
         assert!(
-            display_rendered.iter().any(|l| l.contains("... +5 more")),
-            "display_lines should show +5 more indicator"
+            display_rendered.iter().any(|l| l.contains("... +7 more")),
+            "display_lines should show +7 more indicator"
         );
 
         // transcript_lines should show all 10 activities
@@ -3342,6 +3558,13 @@ mod tests {
 
         let rendered = render_transcript(cell.as_ref());
         assert_eq!(rendered, vec!["• **High level reasoning without closing"]);
+    }
+
+    #[test]
+    fn unified_exec_wait_cell_renders_wait() {
+        let cell = new_unified_exec_wait_live(None, false);
+        let lines = render_transcript(&cell);
+        assert_eq!(lines, vec!["• Waiting for background terminal"]);
     }
 
     #[test]
