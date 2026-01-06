@@ -27,6 +27,10 @@ pub enum LoopType {
 pub struct LoopDetector {
     last_tool_key: Option<u64>,
     tool_repetition_count: i32,
+    /// Track the hash of the last tool output
+    last_output_hash: Option<u64>,
+    /// Whether the last output differed from the one before it
+    last_output_was_novel: bool,
     content_buffer: String,
     content_history: String,
     chunk_positions: HashMap<String, Vec<usize>>,
@@ -46,11 +50,31 @@ impl LoopDetector {
             content_buffer: String::new(),
             content_history: String::new(),
             chunk_positions: HashMap::new(),
+            last_output_hash: None,
+            last_output_was_novel: false, // First output doesn't count as novel
         }
     }
 
     pub fn reset(&mut self) {
         *self = Self::new();
+    }
+
+    /// Call this after a tool execution completes to track whether output varies.
+    /// This helps distinguish legitimate polling (varied output) from stuck loops (same output).
+    pub fn observe_output(&mut self, output: &str) {
+        let mut hasher = DefaultHasher::new();
+        output.hash(&mut hasher);
+        let new_hash = hasher.finish();
+
+        // Output is novel if it differs from the previous output
+        // If this is the first output, it doesn't count as novel (no progress shown yet)
+        if let Some(prev_hash) = self.last_output_hash {
+            self.last_output_was_novel = prev_hash != new_hash;
+        } else {
+            // First output - don't mark as novel since we have no previous output to compare
+            self.last_output_was_novel = false;
+        }
+        self.last_output_hash = Some(new_hash);
     }
 
     pub fn check_tool_call(&mut self, name: &str, args: &str) -> Option<LoopType> {
@@ -64,10 +88,22 @@ impl LoopDetector {
         let key = hasher.finish();
 
         if self.last_tool_key == Some(key) {
-            self.tool_repetition_count += 1;
+            // Same tool call as before - but check if output was novel
+            if self.last_output_was_novel {
+                // Previous execution produced new data, so this is valid progress (polling)
+                // Consume the novelty credit and reset count - novel output breaks the chain
+                self.last_output_was_novel = false;
+                self.tool_repetition_count = 1;
+            } else {
+                // Previous execution produced identical output - this is a stuck loop
+                self.tool_repetition_count += 1;
+            }
         } else {
             self.last_tool_key = Some(key);
             self.tool_repetition_count = 1;
+            // Reset output tracking when switching tools
+            self.last_output_hash = None;
+            self.last_output_was_novel = false;
         }
 
         // Reset content tracking on tool call (content loops are per-stream)
@@ -197,13 +233,93 @@ mod tests {
     #[test]
     fn test_tool_loop_detection() {
         let mut detector = LoopDetector::new();
-        for _ in 0..4 {
-            assert_eq!(detector.check_tool_call("ls", "."), None);
+        let output = "same output";
+
+        // First 4 calls with identical output
+        for i in 0..4 {
+            assert_eq!(
+                detector.check_tool_call("ls", "."),
+                None,
+                "call {} should not trigger",
+                i + 1
+            );
+            detector.observe_output(output);
         }
+
+        // 5th call should trigger loop detection
         assert_eq!(
             detector.check_tool_call("ls", "."),
             Some(LoopType::ConsecutiveIdenticalToolCalls)
         );
+    }
+
+    #[test]
+    fn test_tool_loop_with_identical_output() {
+        let mut detector = LoopDetector::new();
+        let output = "same output";
+
+        // Simulate polling with identical output - should trigger
+        for i in 0..4 {
+            assert_eq!(
+                detector.check_tool_call("ls", "."),
+                None,
+                "call {} should not trigger",
+                i + 1
+            );
+            detector.observe_output(output);
+        }
+
+        // 5th call triggers detection
+        assert_eq!(
+            detector.check_tool_call("ls", "."),
+            Some(LoopType::ConsecutiveIdenticalToolCalls)
+        );
+    }
+
+    #[test]
+    fn test_tool_polling_with_varied_output() {
+        let mut detector = LoopDetector::new();
+
+        // Simulate polling with varied output - should never trigger
+        let args = r#"{"session_id": 1}"#; // Constant arguments
+        for i in 0..20 {
+            // First observe novel output from the previous call
+            detector.observe_output(&format!("output line {i}"));
+            // Then make the same tool call
+            assert_eq!(detector.check_tool_call("write_stdin", args), None);
+        }
+    }
+
+    #[test]
+    fn test_tool_output_varies_after_identical_calls() {
+        let mut detector = LoopDetector::new();
+
+        // First 3 calls with identical output
+        for i in 0..3 {
+            assert_eq!(
+                detector.check_tool_call("ls", "."),
+                None,
+                "identical call {}",
+                i + 1
+            );
+            detector.observe_output("same");
+        }
+
+        // 4th call: output changes to "different"
+        assert_eq!(detector.check_tool_call("ls", "."), None);
+        detector.observe_output("different");
+
+        // Now we can have many more calls with "different" output
+        // and they won't trigger because output keeps being novel
+        for i in 0..10 {
+            assert_eq!(
+                detector.check_tool_call("ls", "."),
+                None,
+                "different call {}",
+                i + 1
+            );
+            detector.observe_output(&format!("different-{i}"));
+        }
     }
 
     #[test]

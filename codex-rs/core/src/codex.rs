@@ -1701,23 +1701,6 @@ async fn submission_loop(sess: Arc<Session>, config: Arc<Config>, rx_sub: Receiv
                 handlers::delegate_subagent(&sess, sub.id.clone(), description, prompt, agent)
                     .await;
             }
-            Op::DelegateCommand {
-                description,
-                prompt,
-                agent,
-                profile,
-            } => {
-                handlers::delegate_command(
-                    &sess,
-                    &config,
-                    sub.id.clone(),
-                    description,
-                    prompt,
-                    agent,
-                    profile,
-                )
-                .await;
-            }
             Op::ListSkills { cwds } => {
                 handlers::list_skills(&sess, sub.id.clone(), cwds).await;
             }
@@ -1742,7 +1725,6 @@ mod handlers {
     use crate::mcp::auth::compute_auth_statuses;
     use crate::mcp::collect_mcp_snapshot_from_manager;
 
-    use crate::tasks::CommandDelegateTask;
     use crate::tasks::CompactTask;
     use crate::tasks::HandoffTask;
     use crate::tasks::RegularTask;
@@ -2044,47 +2026,6 @@ mod handlers {
                 call_id,
                 tool_name,
                 args_str,
-            },
-        )
-        .await;
-    }
-
-    pub async fn delegate_command(
-        sess: &Arc<Session>,
-        _config: &Arc<Config>,
-        sub_id: String,
-        description: String,
-        prompt: String,
-        agent: Option<String>,
-        profile: Option<String>,
-    ) {
-        if agent.is_some() && profile.is_some() {
-            let turn_context = sess
-                .new_turn_with_sub_id(sub_id.clone(), SessionSettingsUpdate::default())
-                .await;
-            let event = Event {
-                id: sub_id,
-                msg: EventMsg::Error(ErrorEvent {
-                    message:
-                        "Cannot specify both 'agent' and 'profile' for a command. Use one or the other.".to_string(),
-                    codex_error_info: Some(CodexErrorInfo::Other),
-                }),
-            };
-            sess.send_event(&turn_context, event.msg).await;
-            return;
-        }
-
-        let turn_context = sess
-            .new_turn_with_sub_id(sub_id, SessionSettingsUpdate::default())
-            .await;
-        sess.spawn_task(
-            turn_context,
-            Vec::new(),
-            CommandDelegateTask {
-                description,
-                prompt,
-                agent,
-                profile,
             },
         )
         .await;
@@ -2642,10 +2583,31 @@ async fn drain_in_flight(
     in_flight: &mut FuturesOrdered<BoxFuture<'static, CodexResult<ResponseInputItem>>>,
     sess: Arc<Session>,
     turn_context: Arc<TurnContext>,
+    loop_detector: SharedLoopDetector,
 ) -> CodexResult<()> {
     while let Some(res) = in_flight.next().await {
         match res {
             Ok(response_input) => {
+                // Notify loop detector of output without unnecessary cloning
+                let mut ld = loop_detector.lock().await;
+                match &response_input {
+                    ResponseInputItem::FunctionCallOutput { output, .. } => {
+                        ld.observe_output(&output.content);
+                    }
+                    ResponseInputItem::CustomToolCallOutput { output, .. } => {
+                        ld.observe_output(output);
+                    }
+                    ResponseInputItem::McpToolCallOutput { result, .. } => {
+                        let s = match result {
+                            Ok(r) => serde_json::to_string(r)
+                                .unwrap_or_else(|_| "<serialization_error>".to_string()),
+                            Err(e) => e.clone(),
+                        };
+                        ld.observe_output(&s);
+                    }
+                    _ => {}
+                }
+
                 sess.record_conversation_items(&turn_context, &[response_input.into()])
                     .await;
             }
@@ -2856,7 +2818,13 @@ async fn try_run_turn(
         }
     };
 
-    drain_in_flight(&mut in_flight, sess.clone(), turn_context.clone()).await?;
+    drain_in_flight(
+        &mut in_flight,
+        sess.clone(),
+        turn_context.clone(),
+        loop_detector.clone(),
+    )
+    .await?;
 
     if should_emit_turn_diff {
         let unified_diff = {
@@ -2868,7 +2836,6 @@ async fn try_run_turn(
             sess.send_event(&turn_context, msg).await;
         }
     }
-
     outcome
 }
 
