@@ -77,7 +77,7 @@ impl ProjectDocManager {
         if let Some(cached) = cached_entry {
             // Compare file states (both paths and mtimes)
             if cached.file_states == current_states {
-                return cached.user_instructions.clone();
+                return cached.user_instructions;
             }
         }
 
@@ -109,6 +109,7 @@ mod tests {
     use crate::config::ConfigOverrides;
     use crate::config::ConfigToml;
     use std::fs;
+    use std::path::Path;
     use tempfile::TempDir;
 
     fn test_config(cwd: &Path) -> Config {
@@ -192,8 +193,7 @@ mod tests {
         // Should be None or not contain the deleted content
         assert!(
             second.is_none() || !second.as_ref().unwrap().contains("to be deleted"),
-            "Expected None or no 'to be deleted' content, got: {:?}",
-            second
+            "Expected None or no 'to be deleted' content, got: {second:?}"
         );
     }
 }
