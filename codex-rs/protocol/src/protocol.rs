@@ -218,20 +218,6 @@ pub enum Op {
         agent: String,
     },
 
-    /// Delegate a custom command in a new session.
-    DelegateCommand {
-        /// Short description (e.g. command name)
-        description: String,
-        /// Expanded command content (Markdown body) to use as the user message.
-        prompt: String,
-        /// Optional subagent slug to use for the command (mutually exclusive with profile).
-        #[serde(skip_serializing_if = "Option::is_none")]
-        agent: Option<String>,
-        /// Optional profile name to use for the command (mutually exclusive with agent).
-        #[serde(skip_serializing_if = "Option::is_none")]
-        profile: Option<String>,
-    },
-
     /// Request the list of available models.
     ListModels,
 

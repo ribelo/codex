@@ -644,6 +644,7 @@ impl App {
                                         path.display()
                                     );
                                 } else {
+                                    let _ = tui.enter_alt_screen();
                                     self.overlay = Some(Overlay::new_transcript(cells));
                                     tui.frame_requester().schedule_frame();
                                 }
@@ -1147,17 +1148,15 @@ impl App {
             AppEvent::OpenReviewCustomPrompt => {
                 self.chat_widget.show_review_custom_prompt();
             }
-            AppEvent::SubmitCommand {
+            AppEvent::DelegateAgent {
                 description,
                 prompt,
                 agent,
-                profile,
             } => {
-                self.chat_widget.submit_op(Op::DelegateCommand {
+                self.chat_widget.submit_op(Op::DelegateSubagent {
                     description,
                     prompt,
                     agent,
-                    profile,
                 });
             }
             AppEvent::FullScreenApprovalRequest(request) => match request {

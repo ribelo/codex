@@ -170,16 +170,14 @@ pub(crate) enum AppEvent {
         category: FeedbackCategory,
     },
 
-    /// Submit a custom command to be executed in a new session.
-    SubmitCommand {
-        /// Short description for the task (typically the command name).
+    /// Delegate a task to a subagent.
+    DelegateAgent {
+        /// Short description for the task.
         description: String,
-        /// The fully expanded command content to send.
+        /// The prompt to send to the agent.
         prompt: String,
-        /// Optional subagent slug to run the command under.
-        agent: Option<String>,
-        /// Optional profile name to run the command under.
-        profile: Option<String>,
+        /// Subagent slug.
+        agent: String,
     },
 }
 

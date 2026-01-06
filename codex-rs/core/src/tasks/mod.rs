@@ -1,4 +1,3 @@
-mod command_delegate;
 mod compact;
 mod ghost_snapshot;
 mod handoff;
@@ -31,7 +30,6 @@ use crate::state::RunningTask;
 use crate::state::TaskKind;
 use codex_protocol::user_input::UserInput;
 
-pub(crate) use command_delegate::CommandDelegateTask;
 pub(crate) use compact::CompactTask;
 pub(crate) use ghost_snapshot::GhostSnapshotTask;
 pub use handoff::HandoffTask;

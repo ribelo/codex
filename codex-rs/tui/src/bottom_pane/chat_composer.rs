@@ -82,11 +82,10 @@ pub enum InputResult {
     Submitted(String),
     Command(SlashCommand),
     CommandWithArgs(SlashCommand, String),
-    DelegateCommand {
+    DelegateAgent {
         description: String,
         prompt: String,
-        agent: Option<String>,
-        profile: Option<String>,
+        agent: String,
     },
     None,
 }
@@ -517,7 +516,19 @@ impl ChatComposer {
                 // Ensure popup filtering/selection reflects the latest composer text
                 // before applying completion.
                 let first_line = self.textarea.text().lines().next().unwrap_or("");
-                popup.on_composer_text_change(first_line.to_string());
+
+                // Detect if there's an @agent prefix and extract the slash portion.
+                let (agent_prefix, slash_portion) = if let Some((_, rest)) =
+                    parse_agent_mention(first_line)
+                    && rest.starts_with('/')
+                {
+                    let prefix_len = first_line.len() - rest.len();
+                    (&first_line[..prefix_len], rest)
+                } else {
+                    ("", first_line)
+                };
+
+                popup.on_composer_text_change(slash_portion.to_string());
                 if let Some(sel) = popup.selected_item() {
                     let mut cursor_target: Option<usize> = None;
                     match sel {
@@ -527,11 +538,12 @@ impl ChatComposer {
                                 return (InputResult::Command(cmd), true);
                             }
 
-                            let starts_with_cmd = first_line
+                            let starts_with_cmd = slash_portion
                                 .trim_start()
                                 .starts_with(&format!("/{}", cmd.command()));
                             if !starts_with_cmd {
-                                self.textarea.set_text(&format!("/{} ", cmd.command()));
+                                self.textarea
+                                    .set_text(&format!("{agent_prefix}/{} ", cmd.command()));
                             }
                             if !self.textarea.text().is_empty() {
                                 cursor_target = Some(self.textarea.text().len());
@@ -541,12 +553,14 @@ impl ChatComposer {
                             if let Some(prompt) = popup.prompt(idx) {
                                 match prompt_selection_action(
                                     prompt,
-                                    first_line,
+                                    slash_portion,
                                     PromptSelectionMode::Completion,
                                 ) {
                                     PromptSelectionAction::Insert { text, cursor } => {
-                                        let target = cursor.unwrap_or(text.len());
-                                        self.textarea.set_text(&text);
+                                        let full_text = format!("{agent_prefix}{text}");
+                                        let target =
+                                            agent_prefix.len() + cursor.unwrap_or(text.len());
+                                        self.textarea.set_text(&full_text);
                                         cursor_target = Some(target);
                                     }
                                     PromptSelectionAction::Submit { .. } => {}
@@ -557,12 +571,14 @@ impl ChatComposer {
                             if let Some(command) = popup.command(idx) {
                                 match command_selection_action(
                                     command,
-                                    first_line,
+                                    slash_portion,
                                     PromptSelectionMode::Completion,
                                 ) {
                                     PromptSelectionAction::Insert { text, cursor } => {
-                                        let target = cursor.unwrap_or(text.len());
-                                        self.textarea.set_text(&text);
+                                        let full_text = format!("{agent_prefix}{text}");
+                                        let target =
+                                            agent_prefix.len() + cursor.unwrap_or(text.len());
+                                        self.textarea.set_text(&full_text);
                                         cursor_target = Some(target);
                                     }
                                     PromptSelectionAction::Submit { .. } => {}
@@ -585,31 +601,58 @@ impl ChatComposer {
                 // positional args for a numeric-style template, expand and submit
                 // immediately regardless of the popup selection.
                 let first_line = self.textarea.text().lines().next().unwrap_or("");
-                if let Some((name, _rest)) = parse_slash_name(first_line)
+
+                // Detect if there's an @agent prefix and extract the slash portion.
+                let (agent_from_prefix, slash_portion) = if let Some((agent_name, rest)) =
+                    parse_agent_mention(first_line)
+                    && rest.starts_with('/')
+                {
+                    (Some(agent_name.to_string()), rest)
+                } else {
+                    (None, first_line)
+                };
+
+                if let Some((name, _rest)) = parse_slash_name(slash_portion)
                     && let Some(prompt_name) = name.strip_prefix(&format!("{PROMPTS_CMD_PREFIX}:"))
                     && let Some(prompt) = self.custom_prompts.iter().find(|p| p.name == prompt_name)
                     && let Some(expanded) =
-                        expand_if_numeric_with_positional_args(prompt, first_line)
+                        expand_if_numeric_with_positional_args(prompt, slash_portion)
                 {
                     self.textarea.set_text("");
-                    return (InputResult::Submitted(expanded), true);
+                    return if let Some(agent) = agent_from_prefix {
+                        (
+                            InputResult::DelegateAgent {
+                                description: prompt.name.clone(),
+                                prompt: expanded,
+                                agent,
+                            },
+                            true,
+                        )
+                    } else {
+                        (InputResult::Submitted(expanded), true)
+                    };
                 }
 
-                if let Some((name, _rest)) = parse_slash_name(first_line)
+                if let Some((name, _rest)) = parse_slash_name(slash_portion)
                     && let Some(command_name) =
                         name.strip_prefix(&format!("{COMMANDS_CMD_PREFIX}:"))
                     && let Some(command) =
                         self.custom_commands.iter().find(|c| c.name == command_name)
                     && let Some(expanded) =
-                        expand_if_numeric_with_positional_args_command(command, first_line)
+                        expand_if_numeric_with_positional_args_command(command, slash_portion)
                 {
                     self.textarea.set_text("");
+                    // Agent from @prefix takes precedence over command's agent field.
+                    let agent = agent_from_prefix.or_else(|| command.agent.clone());
                     return (
-                        InputResult::DelegateCommand {
-                            description: command.name.clone(),
-                            prompt: expanded,
-                            agent: command.agent.clone(),
-                            profile: command.profile.clone(),
+                        if let Some(agent) = agent {
+                            InputResult::DelegateAgent {
+                                description: command.name.clone(),
+                                prompt: expanded,
+                                agent,
+                            }
+                        } else {
+                            InputResult::Submitted(expanded)
                         },
                         true,
                     );
@@ -625,16 +668,34 @@ impl ChatComposer {
                             if let Some(prompt) = popup.prompt(idx) {
                                 match prompt_selection_action(
                                     prompt,
-                                    first_line,
+                                    slash_portion,
                                     PromptSelectionMode::Submit,
                                 ) {
                                     PromptSelectionAction::Submit { text } => {
                                         self.textarea.set_text("");
-                                        return (InputResult::Submitted(text), true);
+                                        return if let Some(ref agent) = agent_from_prefix {
+                                            (
+                                                InputResult::DelegateAgent {
+                                                    description: prompt.name.clone(),
+                                                    prompt: text,
+                                                    agent: agent.clone(),
+                                                },
+                                                true,
+                                            )
+                                        } else {
+                                            (InputResult::Submitted(text), true)
+                                        };
                                     }
                                     PromptSelectionAction::Insert { text, cursor } => {
-                                        let target = cursor.unwrap_or(text.len());
-                                        self.textarea.set_text(&text);
+                                        let full_text = if agent_from_prefix.is_some() {
+                                            let prefix_len = first_line.len() - slash_portion.len();
+                                            format!("{}{text}", &first_line[..prefix_len])
+                                        } else {
+                                            text.clone()
+                                        };
+                                        let prefix_len = full_text.len() - text.len();
+                                        let target = prefix_len + cursor.unwrap_or(text.len());
+                                        self.textarea.set_text(&full_text);
                                         self.textarea.set_cursor(target);
                                         return (InputResult::None, true);
                                     }
@@ -646,24 +707,38 @@ impl ChatComposer {
                             if let Some(command) = popup.command(idx) {
                                 match command_selection_action(
                                     command,
-                                    first_line,
+                                    slash_portion,
                                     PromptSelectionMode::Submit,
                                 ) {
                                     PromptSelectionAction::Submit { text } => {
                                         self.textarea.set_text("");
+                                        // Agent from @prefix takes precedence over command's agent field.
+                                        let agent = agent_from_prefix
+                                            .clone()
+                                            .or_else(|| command.agent.clone());
                                         return (
-                                            InputResult::DelegateCommand {
-                                                description: command.name.clone(),
-                                                prompt: text,
-                                                agent: command.agent.clone(),
-                                                profile: command.profile.clone(),
+                                            if let Some(agent) = agent {
+                                                InputResult::DelegateAgent {
+                                                    description: command.name.clone(),
+                                                    prompt: text,
+                                                    agent,
+                                                }
+                                            } else {
+                                                InputResult::Submitted(text)
                                             },
                                             true,
                                         );
                                     }
                                     PromptSelectionAction::Insert { text, cursor } => {
-                                        let target = cursor.unwrap_or(text.len());
-                                        self.textarea.set_text(&text);
+                                        let full_text = if agent_from_prefix.is_some() {
+                                            let prefix_len = first_line.len() - slash_portion.len();
+                                            format!("{}{text}", &first_line[..prefix_len])
+                                        } else {
+                                            text.clone()
+                                        };
+                                        let prefix_len = full_text.len() - text.len();
+                                        let target = prefix_len + cursor.unwrap_or(text.len());
+                                        self.textarea.set_text(&full_text);
                                         self.textarea.set_cursor(target);
                                         return (InputResult::None, true);
                                     }
@@ -1296,22 +1371,28 @@ impl ChatComposer {
                 text = text.trim().to_string();
 
                 if !input_starts_with_space
-                    && let Some((profile_name, rest)) = parse_agent_mention(&text)
+                    && let Some((agent_name, rest)) = parse_agent_mention(&text)
                     && !rest.is_empty()
                 {
-                    let prompt = rest.to_string();
-                    let name = profile_name.to_string();
-                    let (agent, profile) = if self.available_agents.contains(&name) {
-                        (Some(name), None)
+                    // Expand any /prompts: or /commands: in the rest of the text
+                    let prompt = if let Ok(Some(expanded)) =
+                        expand_custom_prompt(rest, &self.custom_prompts)
+                    {
+                        expanded
+                    } else if let Ok(Some(expanded)) =
+                        expand_custom_command(rest, &self.custom_commands)
+                    {
+                        expanded
                     } else {
-                        (None, Some(name))
+                        rest.to_string()
                     };
+                    let agent = agent_name.to_string();
+                    let description = text.clone();
                     return (
-                        InputResult::DelegateCommand {
-                            description: text,
+                        InputResult::DelegateAgent {
+                            description,
                             prompt,
                             agent,
-                            profile,
                         },
                         true,
                     );
@@ -1373,12 +1454,14 @@ impl ChatComposer {
                     && let Some(command) =
                         self.custom_commands.iter().find(|c| c.name == command_name)
                 {
+                    if command.agent.is_none() {
+                        return (InputResult::Submitted(expanded), true);
+                    }
                     return (
-                        InputResult::DelegateCommand {
+                        InputResult::DelegateAgent {
                             description: command.name.clone(),
                             prompt: expanded,
-                            agent: command.agent.clone(),
-                            profile: command.profile.clone(),
+                            agent: command.agent.clone().unwrap(),
                         },
                         true,
                     );
@@ -1806,18 +1889,33 @@ impl ChatComposer {
     /// If the cursor is currently within a slash command on the first line,
     /// extract the command name and the rest of the line after it.
     /// Returns None if the cursor is outside a slash command.
-    fn slash_command_under_cursor(first_line: &str, cursor: usize) -> Option<(&str, &str)> {
-        if !first_line.starts_with('/') {
+    ///
+    /// Supports both `/command ...` and `@agent /command ...` patterns.
+    /// Returns (name, rest_after_name, slash_offset) where slash_offset is the byte index
+    /// of the '/' character in first_line.
+    fn slash_command_under_cursor(first_line: &str, cursor: usize) -> Option<(&str, &str, usize)> {
+        // Find where the slash command starts - either at position 0 or after `@agent `.
+        let slash_offset = if first_line.starts_with('/') {
+            0
+        } else if let Some((_, rest)) = parse_agent_mention(first_line) {
+            // rest is the part after "@agent ", check if it starts with '/'
+            if rest.starts_with('/') {
+                first_line.len() - rest.len()
+            } else {
+                return None;
+            }
+        } else {
             return None;
-        }
+        };
 
-        let name_start = 1usize;
+        let name_start = slash_offset + 1;
         let name_end = first_line[name_start..]
             .find(char::is_whitespace)
             .map(|idx| name_start + idx)
             .unwrap_or_else(|| first_line.len());
 
-        if cursor > name_end {
+        // Only trigger if cursor is within the slash command name (after the slash_offset).
+        if cursor < slash_offset || cursor > name_end {
             return None;
         }
 
@@ -1828,7 +1926,7 @@ impl ChatComposer {
             .unwrap_or(name_end);
         let rest = &first_line[rest_start..];
 
-        Some((name, rest))
+        Some((name, rest, slash_offset))
     }
 
     /// Heuristic for whether the typed slash command looks like a valid
@@ -1879,9 +1977,13 @@ impl ChatComposer {
         let cursor = self.textarea.cursor();
         let caret_on_first_line = cursor <= first_line_end;
 
-        let is_editing_slash_command_name = caret_on_first_line
-            && Self::slash_command_under_cursor(first_line, cursor)
-                .is_some_and(|(name, rest)| self.looks_like_slash_prefix(name, rest));
+        // Check if cursor is within a slash command and get the offset.
+        let slash_info = if caret_on_first_line {
+            Self::slash_command_under_cursor(first_line, cursor)
+                .filter(|(name, rest, _)| self.looks_like_slash_prefix(name, rest))
+        } else {
+            None
+        };
 
         // If the cursor is currently positioned within an `@token`, prefer the
         // file-search popup over the slash popup so users can insert a file path
@@ -1894,21 +1996,23 @@ impl ChatComposer {
         }
         match &mut self.active_popup {
             ActivePopup::Command(popup) => {
-                if is_editing_slash_command_name {
-                    popup.on_composer_text_change(first_line.to_string());
+                if let Some((_, _, slash_offset)) = slash_info {
+                    // Pass only the slash command portion to the popup.
+                    popup.on_composer_text_change(first_line[slash_offset..].to_string());
                 } else {
                     self.active_popup = ActivePopup::None;
                 }
             }
             _ => {
-                if is_editing_slash_command_name {
+                if let Some((_, _, slash_offset)) = slash_info {
                     let skills_enabled = self.skills_enabled();
                     let mut command_popup = CommandPopup::new(
                         self.custom_prompts.clone(),
                         self.custom_commands.clone(),
                         skills_enabled,
                     );
-                    command_popup.on_composer_text_change(first_line.to_string());
+                    // Pass only the slash command portion to the popup.
+                    command_popup.on_composer_text_change(first_line[slash_offset..].to_string());
                     self.active_popup = ActivePopup::Command(command_popup);
                 }
             }
@@ -3000,8 +3104,8 @@ mod tests {
                 panic!("expected command dispatch, but composer submitted literal text: {text}")
             }
             InputResult::None => panic!("expected Command result for '/init'"),
-            InputResult::DelegateCommand { .. } => {
-                panic!("unexpected DelegateCommand for '/init'")
+            InputResult::DelegateAgent { .. } => {
+                panic!("unexpected DelegateAgent for '/init'")
             }
             InputResult::CommandWithArgs(_, _) => {
                 panic!("unexpected CommandWithArgs")
@@ -3042,7 +3146,8 @@ mod tests {
             false,
         );
 
-        type_chars_humanlike(&mut composer, &['/', 'c']);
+        // Use "co" to disambiguate between /compact and /children
+        type_chars_humanlike(&mut composer, &['/', 'c', 'o']);
 
         let (_result, _needs_redraw) =
             composer.handle_key_event(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
@@ -3079,7 +3184,7 @@ mod tests {
                 panic!("expected command dispatch after Tab completion, got literal submit: {text}")
             }
             InputResult::None => panic!("expected Command result for '/diff'"),
-            InputResult::DelegateCommand { .. } => panic!("unexpected DelegateCommand for '/diff'"),
+            InputResult::DelegateAgent { .. } => panic!("unexpected DelegateAgent for '/diff'"),
             InputResult::CommandWithArgs(_, _) => {
                 panic!("unexpected CommandWithArgs")
             }
@@ -3116,8 +3221,8 @@ mod tests {
                 panic!("expected command dispatch, but composer submitted literal text: {text}")
             }
             InputResult::None => panic!("expected Command result for '/mention'"),
-            InputResult::DelegateCommand { .. } => {
-                panic!("unexpected DelegateCommand for '/mention'")
+            InputResult::DelegateAgent { .. } => {
+                panic!("unexpected DelegateAgent for '/mention'")
             }
             InputResult::CommandWithArgs(_, _) => {
                 panic!("unexpected CommandWithArgs")
@@ -4360,18 +4465,16 @@ mod tests {
             composer.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
         match result {
-            InputResult::DelegateCommand {
+            InputResult::DelegateAgent {
                 description,
                 prompt,
                 agent,
-                profile,
             } => {
                 assert_eq!(description, "@architect verify design");
                 assert_eq!(prompt, "verify design");
-                assert_eq!(agent, None);
-                assert_eq!(profile, Some("architect".to_string()));
+                assert_eq!(agent, "architect");
             }
-            _ => panic!("expected DelegateCommand, got {result:?}"),
+            _ => panic!("expected DelegateAgent, got {result:?}"),
         }
         assert!(composer.textarea.is_empty());
     }
@@ -4432,16 +4535,14 @@ mod tests {
             composer.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
         match result {
-            InputResult::DelegateCommand {
+            InputResult::DelegateAgent {
                 description: _,
                 prompt: _,
                 agent,
-                profile,
             } => {
-                assert_eq!(agent, Some("rush".to_string()));
-                assert_eq!(profile, None);
+                assert_eq!(agent, "rush");
             }
-            _ => panic!("expected DelegateCommand, got {result:?}"),
+            _ => panic!("expected DelegateAgent, got {result:?}"),
         }
     }
 

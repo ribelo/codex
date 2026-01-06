@@ -1739,17 +1739,15 @@ impl ChatWidget {
                     InputResult::CommandWithArgs(cmd, args) => {
                         self.dispatch_command_with_args(cmd, args);
                     }
-                    InputResult::DelegateCommand {
+                    InputResult::DelegateAgent {
                         description,
                         prompt,
                         agent,
-                        profile,
                     } => {
-                        self.app_event_tx.send(AppEvent::SubmitCommand {
+                        self.app_event_tx.send(AppEvent::DelegateAgent {
                             description,
                             prompt,
                             agent,
-                            profile,
                         });
                     }
                     InputResult::None => {}

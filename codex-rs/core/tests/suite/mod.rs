@@ -21,7 +21,6 @@ mod approvals;
 mod auth_refresh;
 mod cli_stream;
 mod client;
-mod command_delegate_instructions;
 mod compact;
 mod compact_remote;
 mod compact_resume_fork;
