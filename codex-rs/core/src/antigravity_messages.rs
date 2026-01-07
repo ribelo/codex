@@ -33,6 +33,84 @@ use rand::Rng;
 const ANTIGRAVITY_AUTH_HINT: &str =
     "Antigravity requires a valid OAuth login. Run `codex login --antigravity`.";
 
+/// Headers for Antigravity requests (matches reference implementations)
+const X_GOOG_API_CLIENT: &str = "google-cloud-sdk vscode_cloudshelleditor/0.1";
+const CLIENT_METADATA: &str =
+    r#"{"ideType":"IDE_UNSPECIFIED","platform":"PLATFORM_UNSPECIFIED","pluginType":"GEMINI"}"#;
+
+/// Alternative "Gemini CLI" headers to use when Antigravity headers are rate-limited.
+/// This allows bypassing Antigravity-specific quotas by masquerading as the official Node.js client.
+const GEMINI_CLI_USER_AGENT: &str = "google-api-nodejs-client/9.15.1";
+const GEMINI_CLI_X_GOOG_API_CLIENT: &str = "gl-node/22.17.0";
+const GEMINI_CLI_CLIENT_METADATA: &str =
+    "ideType=IDE_UNSPECIFIED,platform=PLATFORM_UNSPECIFIED,pluginType=GEMINI";
+
+/// Anthropic beta header for interleaved thinking (real-time thinking token streaming)
+const ANTHROPIC_INTERLEAVED_THINKING_BETA: &str = "interleaved-thinking-2025-05-14";
+
+/// Check if a model is a Claude thinking model (requires interleaved thinking header)
+fn is_claude_thinking_model(model: &str) -> bool {
+    let model_lower = model.to_lowercase();
+    model_lower.contains("claude") && model_lower.contains("thinking")
+}
+
+/// Which header style to use for requests
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HeaderStyle {
+    /// Antigravity headers (default)
+    Antigravity,
+    /// Gemini CLI headers (fallback on 429)
+    GeminiCli,
+}
+
+impl HeaderStyle {
+    fn user_agent(self) -> String {
+        match self {
+            Self::Antigravity => antigravity_user_agent(),
+            Self::GeminiCli => GEMINI_CLI_USER_AGENT.to_string(),
+        }
+    }
+
+    fn x_goog_api_client(self) -> &'static str {
+        match self {
+            Self::Antigravity => X_GOOG_API_CLIENT,
+            Self::GeminiCli => GEMINI_CLI_X_GOOG_API_CLIENT,
+        }
+    }
+
+    fn client_metadata(self) -> &'static str {
+        match self {
+            Self::Antigravity => CLIENT_METADATA,
+            Self::GeminiCli => GEMINI_CLI_CLIENT_METADATA,
+        }
+    }
+
+    /// Switch to the alternate header style
+    fn alternate(self) -> Self {
+        match self {
+            Self::Antigravity => Self::GeminiCli,
+            Self::GeminiCli => Self::Antigravity,
+        }
+    }
+}
+
+/// Build the User-Agent string with platform info (matches reference implementations)
+fn antigravity_user_agent() -> String {
+    let os = if cfg!(target_os = "windows") {
+        "windows"
+    } else if cfg!(target_os = "macos") {
+        "darwin"
+    } else {
+        "linux"
+    };
+    let arch = if cfg!(target_arch = "aarch64") {
+        "arm64"
+    } else {
+        "amd64"
+    };
+    format!("antigravity/1.11.5 {os}/{arch}")
+}
+
 /// Maps model names to their Antigravity-internal variants.
 /// For Gemini models: gemini-3-pro-preview -> gemini-3-pro-low or gemini-3-pro-high
 /// Claude models should be specified directly in config (e.g., claude-opus-4-5-thinking)
@@ -127,7 +205,7 @@ pub(crate) async fn stream_antigravity_messages(
 
     let mut request_body = AntigravityRequest {
         project: String::new(),
-        user_agent: "antigravity/1.11.9".to_string(),
+        user_agent: antigravity_user_agent(),
         request_id: format!("agent-{}", Uuid::new_v4()),
         model: antigravity_model,
         request: payload,
@@ -148,6 +226,8 @@ pub(crate) async fn stream_antigravity_messages(
     };
     base_urls.dedup();
     let mut base_idx = 0_usize;
+    let mut header_style = HeaderStyle::Antigravity;
+    let mut tried_alternate_headers = false;
 
     loop {
         attempt += 1;
@@ -158,6 +238,8 @@ pub(crate) async fn stream_antigravity_messages(
             .await
             .map_err(|err| CodexErr::UnsupportedOperation(format!("{err}")))?;
         request_body.project = project_id;
+        // Update user_agent for current header style (may have changed on 429 retry)
+        request_body.user_agent = header_style.user_agent();
 
         if attempt == 1 {
             info!(
@@ -183,7 +265,20 @@ pub(crate) async fn stream_antigravity_messages(
             .header(reqwest::header::ACCEPT, "text/event-stream")
             .header(reqwest::header::HOST, host)
             .header(reqwest::header::USER_AGENT, &request_body.user_agent)
+            .header("X-Goog-Api-Client", header_style.x_goog_api_client())
+            .header("Client-Metadata", header_style.client_metadata())
             .json(&request_body);
+
+        // Add interleaved thinking header for Claude thinking models (per reference implementations)
+        let req_builder = if is_claude_thinking_model(&request_body.model) {
+            tracing::debug!(
+                model = %request_body.model,
+                "Adding anthropic-beta interleaved-thinking header for Claude thinking model"
+            );
+            req_builder.header("anthropic-beta", ANTHROPIC_INTERLEAVED_THINKING_BETA)
+        } else {
+            req_builder
+        };
 
         tracing::debug!(
             url = %url,
@@ -230,6 +325,19 @@ pub(crate) async fn stream_antigravity_messages(
                     || status == StatusCode::REQUEST_TIMEOUT
                     || status == StatusCode::CONFLICT
                     || status.is_server_error();
+
+                // On 429, try switching header style before regular retry
+                if status == StatusCode::TOO_MANY_REQUESTS && !tried_alternate_headers {
+                    tracing::info!(
+                        current_style = ?header_style,
+                        "Rate limited, switching to alternate header style"
+                    );
+                    header_style = header_style.alternate();
+                    tried_alternate_headers = true;
+                    // Header switch is free - decrement attempt counter to not consume a retry
+                    attempt = attempt.saturating_sub(1);
+                    continue;
+                }
 
                 if !is_retryable {
                     let body = resp.text().await.unwrap_or_default();
