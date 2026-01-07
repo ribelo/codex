@@ -4,7 +4,6 @@ use crate::Prompt;
 use crate::client_common::ResponseEvent;
 use crate::codex::Session;
 use crate::codex::TurnContext;
-use crate::codex::get_last_assistant_message_from_turn;
 use crate::error::CodexErr;
 use crate::error::Result as CodexResult;
 use crate::features::Feature;
@@ -21,8 +20,8 @@ use crate::util::backoff;
 use codex_app_server_protocol::AuthMode;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ReasoningItemReasoningSummary;
-use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::models::WebSearchAction;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::user_input::UserInput;
 use futures::prelude::*;
@@ -30,6 +29,23 @@ use tracing::error;
 
 pub const SUMMARIZATION_PROMPT: &str = include_str!("../templates/compact/prompt.md");
 pub const SUMMARY_PREFIX: &str = include_str!("../templates/compact/summary_prefix.md");
+
+/// System prompt for the summarization model.
+/// This establishes the "observer" role and prevents the model from continuing the conversation.
+pub const SUMMARIZATION_SYSTEM_PROMPT: &str = "You are a context summarization assistant. Your task is to update the summary \
+     of a software development session. Do not answer questions or continue the \
+     conversation. ONLY output the structured summary.";
+
+/// Maximum number of lines to keep from tool outputs before truncating.
+const MAX_TOOL_OUTPUT_LINES: usize = 100;
+/// Maximum characters to keep from any single text segment before truncating.
+const MAX_TEXT_CHARS: usize = 50_000;
+
+/// How many tokens of recent history to keep after compaction.
+/// Based on pi-mono's default of 20000 tokens.
+/// This is much more aggressive than the previous `context_window / 2` approach
+/// which kept 50% of the context window (e.g., 64K tokens for a 128K model).
+const KEEP_RECENT_TOKENS: usize = 20_000;
 
 pub(crate) fn should_use_remote_compact_task(
     session: &Session,
@@ -69,19 +85,20 @@ pub(crate) async fn run_compact_task(
 async fn run_compact_task_inner(
     sess: Arc<Session>,
     turn_context: Arc<TurnContext>,
-    input: Vec<UserInput>,
+    _input: Vec<UserInput>, // Now ignored - we build our own prompt
 ) {
-    let initial_input_for_turn: ResponseInputItem = ResponseInputItem::from(input);
+    // Get current history and identify what to summarize vs keep
+    let history_snapshot = sess.clone_history().await.get_history();
+    let turns = identify_turns(&history_snapshot);
+    // Use the smaller of: hardcoded budget OR half the model's context window
+    let model_context_window = turn_context.client.get_model_context_window() as usize;
+    let budget = KEEP_RECENT_TOKENS.min(model_context_window / 2);
+    let (mut to_summarize, mut to_keep) = select_turns_within_budget(turns, budget);
 
-    let mut history = sess.clone_history().await;
-    history.record_items(
-        &[initial_input_for_turn.into()],
-        turn_context.truncation_policy,
-        turn_context.truncation_bias,
-    );
+    // Extract previous summary if it exists (from a prior compaction)
+    let previous_summary = extract_previous_summary(&history_snapshot);
 
-    let mut truncated_count = 0usize;
-
+    let mut truncated_count = 0i32;
     let max_retries = turn_context.client.get_provider().stream_max_retries();
     let mut retries = 0;
 
@@ -96,15 +113,36 @@ async fn run_compact_task_inner(
     sess.persist_rollout_items(&[rollout_item]).await;
 
     loop {
-        let turn_input = history.get_history_for_prompt();
+        // Serialize the turns to be summarized into text
+        let items_to_serialize: Vec<ResponseItem> = to_summarize
+            .iter()
+            .flat_map(|turn| turn.items.iter().cloned())
+            .collect();
+        let serialized_conversation = serialize_history_to_text(&items_to_serialize);
+
+        // Build the XML-wrapped prompt
+        let prompt_text = build_compaction_prompt_text(
+            &previous_summary,
+            &serialized_conversation,
+            turn_context.compact_prompt(),
+        );
+
+        // Create history with just our compaction request
+        let compaction_input = vec![ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText { text: prompt_text }],
+        }];
+
         let prompt = Prompt {
-            input: turn_input.clone(),
+            base_instructions_override: Some(SUMMARIZATION_SYSTEM_PROMPT.to_string()),
+            input: compaction_input.clone(),
             ..Default::default()
         };
         let attempt_result = drain_to_completed(&sess, turn_context.as_ref(), &prompt).await;
 
         match attempt_result {
-            Ok(()) => {
+            Ok(summary_suffix) => {
                 if truncated_count > 0 {
                     sess.notify_background_event(
                         turn_context.as_ref(),
@@ -114,26 +152,78 @@ async fn run_compact_task_inner(
                     )
                     .await;
                 }
-                break;
+                // Build the summary text with prefix
+                let summary_text = format!("{SUMMARY_PREFIX}\n{summary_suffix}");
+
+                // Build the new compacted history
+                let initial_context = sess.build_initial_context(turn_context.as_ref());
+                let mut new_history =
+                    build_compacted_history(initial_context, &to_keep, &summary_text);
+
+                // Preserve ghost snapshots
+                let ghost_snapshots: Vec<ResponseItem> = history_snapshot
+                    .iter()
+                    .filter(|item| matches!(item, ResponseItem::GhostSnapshot { .. }))
+                    .cloned()
+                    .collect();
+                new_history.extend(ghost_snapshots);
+                sess.replace_history(new_history).await;
+                sess.recompute_token_usage(&turn_context).await;
+
+                let rollout_item = RolloutItem::Compacted(CompactedItem {
+                    message: summary_text.clone(),
+                    replacement_history: None,
+                });
+                sess.persist_rollout_items(&[rollout_item]).await;
+
+                let event = EventMsg::ContextCompacted(ContextCompactedEvent {});
+                sess.send_event(&turn_context, event).await;
+
+                let warning = EventMsg::Warning(WarningEvent {
+                    message: "Heads up: Long conversations and multiple compactions can cause the model to be less accurate. Start a new conversation when possible to keep conversations small and targeted.".to_string(),
+                });
+                sess.send_event(&turn_context, warning).await;
+                return;
             }
             Err(CodexErr::Interrupted) => {
                 return;
             }
-            Err(e @ CodexErr::ContextWindowExceeded) => {
-                if turn_input.len() > 1 {
-                    // Trim from the beginning to preserve cache (prefix-based) and keep recent messages intact.
-                    error!(
-                        "Context window exceeded while compacting; removing oldest history item. Error: {e}"
-                    );
-                    history.remove_first_item();
-                    truncated_count += 1;
-                    retries = 0;
+            Err(CodexErr::ContextWindowExceeded) => {
+                // The serialized prompt is too large - drop the newest turn from
+                // to_summarize and prepend it to to_keep to preserve chronological order
+                if !to_summarize.is_empty() {
+                    let dropped = to_summarize.pop().unwrap();
+                    truncated_count += dropped.items.len() as i32;
+                    to_keep.insert(0, dropped);
                     continue;
+                } else if !to_keep.is_empty() {
+                    // Nothing to summarize but we can drop the oldest kept turn
+                    // to reduce prompt size (it will be lost entirely)
+                    if let Some(first_turn) = to_keep.first()
+                        && !first_turn.items.is_empty()
+                    {
+                        let dropped = to_keep.remove(0);
+                        truncated_count += dropped.items.len() as i32;
+                        continue;
+                    }
+                    // Nothing left to drop
+                    let e = CodexErr::ContextWindowExceeded;
+                    error!("Context window exceeded with empty to_keep turn. Error: {e}");
+                    sess.set_total_tokens_full(turn_context.as_ref()).await;
+                    let event = EventMsg::Error(e.to_error_event(None));
+                    sess.send_event(&turn_context, event).await;
+                    return;
+                } else {
+                    // Nothing left to trim - this is fatal
+                    let e = CodexErr::ContextWindowExceeded;
+                    error!(
+                        "Context window exceeded while compacting with no turns left to trim. Error: {e}"
+                    );
+                    sess.set_total_tokens_full(turn_context.as_ref()).await;
+                    let event = EventMsg::Error(e.to_error_event(None));
+                    sess.send_event(&turn_context, event).await;
+                    return;
                 }
-                sess.set_total_tokens_full(turn_context.as_ref()).await;
-                let event = EventMsg::Error(e.to_error_event(None));
-                sess.send_event(&turn_context, event).await;
-                return;
             }
             Err(e) => {
                 if retries < max_retries {
@@ -155,43 +245,51 @@ async fn run_compact_task_inner(
             }
         }
     }
-
-    let history_snapshot = sess.clone_history().await.get_history();
-    let summary_suffix =
-        get_last_assistant_message_from_turn(&history_snapshot).unwrap_or_default();
-    let summary_text = format!("{SUMMARY_PREFIX}\n{summary_suffix}");
-    let turns = identify_turns(&history_snapshot);
-    let context_window = turn_context.client.get_model_context_window() as usize;
-    let budget = context_window / 2;
-    let (_to_summarize, to_keep) = select_turns_within_budget(turns, budget);
-
-    let initial_context = sess.build_initial_context(turn_context.as_ref());
-    let mut new_history = build_compacted_history(initial_context, &to_keep, &summary_text);
-
-    let ghost_snapshots: Vec<ResponseItem> = history_snapshot
-        .iter()
-        .filter(|item| matches!(item, ResponseItem::GhostSnapshot { .. }))
-        .cloned()
-        .collect();
-    new_history.extend(ghost_snapshots);
-    sess.replace_history(new_history).await;
-    sess.recompute_token_usage(&turn_context).await;
-
-    let rollout_item = RolloutItem::Compacted(CompactedItem {
-        message: summary_text.clone(),
-        replacement_history: None,
-    });
-    sess.persist_rollout_items(&[rollout_item]).await;
-
-    let event = EventMsg::ContextCompacted(ContextCompactedEvent {});
-    sess.send_event(&turn_context, event).await;
-
-    let warning = EventMsg::Warning(WarningEvent {
-        message: "Heads up: Long conversations and multiple compactions can cause the model to be less accurate. Start a new conversation when possible to keep conversations small and targeted.".to_string(),
-    });
-    sess.send_event(&turn_context, warning).await;
 }
 
+/// Extracts the previous summary from history if one exists from a prior compaction.
+fn extract_previous_summary(history: &[ResponseItem]) -> Option<String> {
+    for item in history {
+        if let ResponseItem::Message { role, content, .. } = item
+            && role == "user"
+            && let Some(text) = content_items_to_text(content)
+            && is_summary_message(&text)
+        {
+            // Strip the SUMMARY_PREFIX to get just the summary content
+            let prefix = format!("{SUMMARY_PREFIX}\n");
+            if let Some(summary) = text.strip_prefix(&prefix) {
+                return Some(summary.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Builds the compaction prompt text with XML-wrapped sections.
+fn build_compaction_prompt_text(
+    previous_summary: &Option<String>,
+    serialized_conversation: &str,
+    compaction_instructions: &str,
+) -> String {
+    let mut prompt = String::new();
+
+    // Add previous summary if it exists
+    if let Some(summary) = previous_summary {
+        prompt.push_str("<previous_summary>\n");
+        prompt.push_str(summary);
+        prompt.push_str("\n</previous_summary>\n\n");
+    }
+
+    // Add serialized conversation
+    prompt.push_str("<conversation>\n");
+    prompt.push_str(serialized_conversation);
+    prompt.push_str("\n</conversation>\n\n");
+
+    // Add compaction instructions
+    prompt.push_str(compaction_instructions);
+
+    prompt
+}
 pub fn content_items_to_text(content: &[ContentItem]) -> Option<String> {
     let mut pieces = Vec::new();
     for item in content {
@@ -238,12 +336,24 @@ fn approx_token_count_for_item(item: &ResponseItem) -> usize {
             approx_token_count(name) + approx_token_count(input)
         }
         ResponseItem::CustomToolCallOutput { output, .. } => approx_token_count(output),
-        ResponseItem::Reasoning { summary, .. } => summary
-            .iter()
-            .map(|s| match s {
-                ReasoningItemReasoningSummary::SummaryText { text } => approx_token_count(text),
-            })
-            .sum(),
+        ResponseItem::Reasoning {
+            summary,
+            encrypted_content,
+            ..
+        } => {
+            let summary_tokens: usize = summary
+                .iter()
+                .map(|s| match s {
+                    ReasoningItemReasoningSummary::SummaryText { text } => approx_token_count(text),
+                })
+                .sum();
+            // Also count encrypted_content (signature) which can be large
+            let encrypted_tokens = encrypted_content
+                .as_ref()
+                .map(|s| approx_token_count(s))
+                .unwrap_or(0);
+            summary_tokens + encrypted_tokens
+        }
         ResponseItem::GhostSnapshot { .. } => 50, // Approximate fixed cost
         ResponseItem::WebSearchCall { .. } => 20,
         ResponseItem::CompactionSummary { encrypted_content } => {
@@ -251,6 +361,126 @@ fn approx_token_count_for_item(item: &ResponseItem) -> usize {
         }
         ResponseItem::Other => 0,
     }
+}
+
+/// Truncates text to a maximum number of lines, adding a marker if truncated.
+/// Also limits total character count to prevent OOM with long single-line outputs.
+fn truncate_text(text: &str, max_lines: usize, max_chars: usize) -> String {
+    // First limit by character count
+    let text = if text.len() > max_chars {
+        let truncated = &text[..max_chars];
+        format!(
+            "{truncated}\n[... {} more chars truncated ...]",
+            text.len() - max_chars
+        )
+    } else {
+        text.to_string()
+    };
+
+    // Then limit by line count
+    let lines: Vec<&str> = text.lines().collect();
+    let total_lines = lines.len();
+    if total_lines <= max_lines {
+        text
+    } else {
+        let kept: Vec<&str> = lines.into_iter().take(max_lines).collect();
+        format!(
+            "{}\n[... {} more lines truncated ...]",
+            kept.join("\n"),
+            total_lines - max_lines
+        )
+    }
+}
+
+/// Serializes a list of ResponseItems to a labeled text format for summarization.
+///
+/// This creates a text representation like:
+/// ```text
+/// [User]: What files are in this directory?
+///
+/// [Tool call: shell]: {"cmd": "ls -la"}
+///
+/// [Tool result]: file1.rs
+/// file2.rs
+///
+/// [Assistant]: Here are the files...
+/// ```
+///
+/// Large tool outputs are truncated to prevent token blowout.
+pub(crate) fn serialize_history_to_text(items: &[ResponseItem]) -> String {
+    let mut parts: Vec<String> = Vec::new();
+
+    for item in items {
+        match item {
+            ResponseItem::Message { role, content, .. } => {
+                let Some(text) = content_items_to_text(content) else {
+                    continue;
+                };
+                if text.is_empty() {
+                    continue;
+                }
+                let label = if role == "user" { "User" } else { "Assistant" };
+                parts.push(format!("[{label}]: {text}"));
+            }
+            ResponseItem::Reasoning { summary, .. } => {
+                let text: String = summary
+                    .iter()
+                    .filter_map(|s| match s {
+                        ReasoningItemReasoningSummary::SummaryText { text } => Some(text.as_str()),
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if !text.is_empty() {
+                    parts.push(format!("[Assistant thinking]: {text}"));
+                }
+            }
+            ResponseItem::FunctionCall {
+                name, arguments, ..
+            } => {
+                parts.push(format!("[Tool call: {name}]: {arguments}"));
+            }
+            ResponseItem::FunctionCallOutput { output, .. } => {
+                let truncated =
+                    truncate_text(&output.content, MAX_TOOL_OUTPUT_LINES, MAX_TEXT_CHARS);
+                parts.push(format!("[Tool result]: {truncated}"));
+            }
+            ResponseItem::CustomToolCall { name, input, .. } => {
+                parts.push(format!("[Tool call: {name}]: {input}"));
+            }
+            ResponseItem::CustomToolCallOutput { output, .. } => {
+                let truncated = truncate_text(output, MAX_TOOL_OUTPUT_LINES, MAX_TEXT_CHARS);
+                parts.push(format!("[Tool result]: {truncated}"));
+            }
+            ResponseItem::WebSearchCall { action, .. } => {
+                let description = match action {
+                    WebSearchAction::Search { query } => {
+                        query.as_deref().unwrap_or("(no query)").to_string()
+                    }
+                    WebSearchAction::OpenPage { url } => {
+                        format!("open {}", url.as_deref().unwrap_or("(no url)"))
+                    }
+                    WebSearchAction::FindInPage { url, pattern } => {
+                        format!(
+                            "find '{}' in {}",
+                            pattern.as_deref().unwrap_or("(no pattern)"),
+                            url.as_deref().unwrap_or("(no url)")
+                        )
+                    }
+                    WebSearchAction::Other => "(unknown action)".to_string(),
+                };
+                parts.push(format!("[Web search]: {description}"));
+            }
+            ResponseItem::GhostSnapshot { .. } => {
+                // Skip ghost snapshots - they're internal bookkeeping
+            }
+            ResponseItem::CompactionSummary { .. } => {
+                // Skip compaction summaries - they're opaque encrypted content
+            }
+            ResponseItem::Other => {}
+        }
+    }
+
+    parts.join("\n\n")
 }
 
 /// Checks if a user message is a session prefix entry (AGENTS.md, environment context, etc.)
@@ -405,8 +635,9 @@ async fn drain_to_completed(
     sess: &Session,
     turn_context: &TurnContext,
     prompt: &Prompt,
-) -> CodexResult<()> {
+) -> CodexResult<String> {
     let mut stream = turn_context.client.clone().stream(prompt).await?;
+    let mut summary_text = String::new();
     loop {
         let maybe_event = stream.next().await;
         let Some(event) = maybe_event else {
@@ -417,8 +648,12 @@ async fn drain_to_completed(
         };
         match event {
             Ok(ResponseEvent::OutputItemDone(item)) => {
-                sess.record_into_history(std::slice::from_ref(&item), turn_context)
-                    .await;
+                // Extract text from the response item without recording to history
+                if let ResponseItem::Message { content, .. } = &item
+                    && let Some(text) = content_items_to_text(content)
+                {
+                    summary_text.push_str(&text);
+                }
             }
             Ok(ResponseEvent::RateLimits(snapshot)) => {
                 sess.update_rate_limits(turn_context, snapshot).await;
@@ -426,7 +661,7 @@ async fn drain_to_completed(
             Ok(ResponseEvent::Completed { token_usage, .. }) => {
                 sess.update_token_usage_info(turn_context, token_usage.as_ref())
                     .await;
-                return Ok(());
+                return Ok(summary_text);
             }
             Ok(_) => continue,
             Err(e) => return Err(e),

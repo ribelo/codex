@@ -1,4 +1,9 @@
-You are performing a CONTEXT CHECKPOINT COMPACTION. Create a structured summary that another LLM will use to continue the work.
+You are performing a CONTEXT CHECKPOINT COMPACTION.
+
+The <conversation> section contains the recent session activity serialized as labeled text.
+If a <previous_summary> section exists, UPDATE it with the new activity rather than starting fresh.
+
+Create a structured summary that another LLM will use to continue the work.
 
 Use this EXACT format:
 

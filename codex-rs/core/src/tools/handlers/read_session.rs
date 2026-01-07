@@ -164,6 +164,67 @@ impl ToolHandler for ReadSessionHandler {
         let mut sub_config = (*config).clone();
         sub_config.codex_home = codex_home.clone();
 
+        // Apply profile settings from frontmatter.
+        if let Some(profile) = subagent_def
+            .metadata
+            .load_profile(&codex_home)
+            .await
+            .map_err(|e| {
+                FunctionCallError::RespondToModel(format!(
+                    "Subagent configuration error for 'session_reader': {e}"
+                ))
+            })?
+        {
+            info!(
+                subagent = "session_reader",
+                profile_name = ?subagent_def.metadata.profile,
+                profile_model = ?profile.model,
+                profile_provider = ?profile.model_provider,
+                "read_session: loaded profile configuration"
+            );
+
+            // Apply model from profile
+            if let Some(ref model) = profile.model {
+                sub_config.model = Some(model.clone());
+                info!(
+                    subagent = "session_reader",
+                    model = %model,
+                    "read_session: applied model from profile"
+                );
+            }
+
+            // Apply model_provider from profile
+            if let Some(ref provider_id) = profile.model_provider {
+                // Build combined providers map
+                let mut providers = crate::model_provider_info::built_in_model_providers();
+                for (key, provider) in config.model_providers.iter() {
+                    providers
+                        .entry(key.clone())
+                        .or_insert_with(|| provider.clone());
+                }
+
+                if let Some(provider_info) = providers.get(provider_id) {
+                    sub_config.model_provider_id = provider_id.clone();
+                    sub_config.model_provider = provider_info.clone();
+                } else {
+                    return Err(FunctionCallError::Fatal(format!(
+                        "Model provider '{provider_id}' from profile not found"
+                    )));
+                }
+            }
+
+            // Apply reasoning settings from profile
+            if profile.model_reasoning_effort.is_some() {
+                sub_config.model_reasoning_effort = profile.model_reasoning_effort;
+            }
+            if let Some(summary) = profile.model_reasoning_summary {
+                sub_config.model_reasoning_summary = summary;
+            }
+            if profile.model_verbosity.is_some() {
+                sub_config.model_verbosity = profile.model_verbosity;
+            }
+        }
+
         // Use the session_reader's system prompt
         sub_config.base_instructions = Some(subagent_def.system_prompt.clone());
 
