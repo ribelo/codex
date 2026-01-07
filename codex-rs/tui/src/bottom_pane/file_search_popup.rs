@@ -18,7 +18,6 @@ use codex_common::fuzzy_match::fuzzy_match;
 
 #[derive(Clone, Debug)]
 pub(crate) enum MentionItem {
-    Profile(String),
     Agent(String),
     File(FileMatch),
 }
@@ -39,8 +38,6 @@ pub(crate) struct MentionsPopup {
     pending_query: String,
     /// When `true` we are still waiting for results for `pending_query`.
     waiting: bool,
-    /// All available profiles (static list).
-    profiles: Vec<String>,
     /// All available agents (static list).
     agents: Vec<String>,
     /// Unified sorted matches.
@@ -50,12 +47,11 @@ pub(crate) struct MentionsPopup {
 }
 
 impl MentionsPopup {
-    pub(crate) fn new(profiles: Vec<String>, agents: Vec<String>) -> Self {
+    pub(crate) fn new(agents: Vec<String>) -> Self {
         Self {
             display_query: String::new(),
             pending_query: String::new(),
             waiting: true,
-            profiles,
             agents,
             sorted_matches: Vec::new(),
             state: ScrollState::new(),
@@ -76,17 +72,6 @@ impl MentionsPopup {
         self.pending_query.push_str(query);
 
         let mut new_matches = Vec::new();
-
-        // Filter profiles
-        for p in &self.profiles {
-            if let Some((indices, score)) = fuzzy_match(p, query) {
-                new_matches.push(RenderableMentionItem {
-                    item: MentionItem::Profile(p.clone()),
-                    score,
-                    indices,
-                });
-            }
-        }
 
         // Filter agents
         for a in &self.agents {
@@ -114,13 +99,6 @@ impl MentionsPopup {
         self.waiting = false;
 
         let mut new_matches = Vec::new();
-        for p in &self.profiles {
-            new_matches.push(RenderableMentionItem {
-                item: MentionItem::Profile(p.clone()),
-                score: 0,
-                indices: Vec::new(),
-            });
-        }
         for a in &self.agents {
             new_matches.push(RenderableMentionItem {
                 item: MentionItem::Agent(a.clone()),
@@ -207,13 +185,6 @@ impl WidgetRef for &MentionsPopup {
                 .iter()
                 .map(|render_item| {
                     let (name, badge) = match &render_item.item {
-                        MentionItem::Profile(p) => (
-                            p.clone(),
-                            Some(Span::styled(
-                                "Profile: ",
-                                Style::default().fg(Color::Magenta),
-                            )),
-                        ),
                         MentionItem::Agent(a) => (
                             a.clone(),
                             Some(Span::styled("Agent:   ", Style::default().fg(Color::Cyan))),
@@ -259,23 +230,15 @@ mod tests {
 
     #[test]
     fn test_mentions_popup_mixed_content() {
-        let profiles = vec!["profile1".to_string(), "profile2".to_string()];
         let agents = vec!["agent1".to_string(), "agent2".to_string()];
-        let mut popup = MentionsPopup::new(profiles, agents);
+        let mut popup = MentionsPopup::new(agents);
 
         // Initial state (empty query)
         popup.set_empty_prompt();
-        assert_eq!(popup.combined_len(), 4); // 2 profiles + 2 agents
+        assert_eq!(popup.combined_len(), 2); // 2 agents
 
-        // Select first item (Profile)
+        // Select first item (Agent)
         popup.state.selected_idx = Some(0);
-        match popup.selected_item() {
-            Some(MentionItem::Profile(p)) => assert_eq!(p, "profile1"),
-            _ => panic!("Expected profile1"),
-        }
-
-        // Select third item (Agent)
-        popup.state.selected_idx = Some(2);
         match popup.selected_item() {
             Some(MentionItem::Agent(a)) => assert_eq!(a, "agent1"),
             _ => panic!("Expected agent1"),

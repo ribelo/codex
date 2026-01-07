@@ -518,9 +518,10 @@ impl ChatComposer {
                 let first_line = self.textarea.text().lines().next().unwrap_or("");
 
                 // Detect if there's an @agent prefix and extract the slash portion.
-                let (agent_prefix, slash_portion) = if let Some((_, rest)) =
+                let (agent_prefix, slash_portion) = if let Some((agent_name, rest)) =
                     parse_agent_mention(first_line)
                     && rest.starts_with('/')
+                    && self.available_agents.contains(&agent_name.to_string())
                 {
                     let prefix_len = first_line.len() - rest.len();
                     (&first_line[..prefix_len], rest)
@@ -606,6 +607,7 @@ impl ChatComposer {
                 let (agent_from_prefix, slash_portion) = if let Some((agent_name, rest)) =
                     parse_agent_mention(first_line)
                     && rest.starts_with('/')
+                    && self.available_agents.contains(&agent_name.to_string())
                 {
                     (Some(agent_name.to_string()), rest)
                 } else {
@@ -910,9 +912,6 @@ impl ChatComposer {
                             // Non-image: inserting file path.
                             self.insert_selected_path(&sel_path);
                         }
-                    }
-                    MentionItem::Profile(profile) => {
-                        self.insert_selected_path(&format!("@{profile}"));
                     }
                     MentionItem::Agent(agent) => {
                         self.insert_selected_path(&format!("@{agent}"));
@@ -1373,6 +1372,7 @@ impl ChatComposer {
                 if !input_starts_with_space
                     && let Some((agent_name, rest)) = parse_agent_mention(&text)
                     && !rest.is_empty()
+                    && self.available_agents.contains(&agent_name.to_string())
                 {
                     // Expand any /prompts: or /commands: in the rest of the text
                     let prompt = if let Ok(Some(expanded)) =
@@ -1893,21 +1893,28 @@ impl ChatComposer {
     /// Supports both `/command ...` and `@agent /command ...` patterns.
     /// Returns (name, rest_after_name, slash_offset) where slash_offset is the byte index
     /// of the '/' character in first_line.
-    fn slash_command_under_cursor(first_line: &str, cursor: usize) -> Option<(&str, &str, usize)> {
+    fn slash_command_under_cursor<'a>(
+        available_agents: &[String],
+        first_line: &'a str,
+        cursor: usize,
+    ) -> Option<(&'a str, &'a str, usize)> {
         // Find where the slash command starts - either at position 0 or after `@agent `.
         let slash_offset = if first_line.starts_with('/') {
             0
-        } else if let Some((_, rest)) = parse_agent_mention(first_line) {
-            // rest is the part after "@agent ", check if it starts with '/'
-            if rest.starts_with('/') {
-                first_line.len() - rest.len()
+        } else if let Some((agent_name, rest)) = parse_agent_mention(first_line) {
+            if available_agents.contains(&agent_name.to_string()) {
+                // rest is the part after "@agent ", check if it starts with '/'
+                if rest.starts_with('/') {
+                    first_line.len() - rest.len()
+                } else {
+                    return None;
+                }
             } else {
                 return None;
             }
         } else {
             return None;
         };
-
         let name_start = slash_offset + 1;
         let name_end = first_line[name_start..]
             .find(char::is_whitespace)
@@ -1979,7 +1986,7 @@ impl ChatComposer {
 
         // Check if cursor is within a slash command and get the offset.
         let slash_info = if caret_on_first_line {
-            Self::slash_command_under_cursor(first_line, cursor)
+            Self::slash_command_under_cursor(&self.available_agents, first_line, cursor)
                 .filter(|(name, rest, _)| self.looks_like_slash_prefix(name, rest))
         } else {
             None
@@ -2055,10 +2062,7 @@ impl ChatComposer {
                 }
             }
             _ => {
-                let mut popup = MentionsPopup::new(
-                    self.available_profiles.clone(),
-                    self.available_agents.clone(),
-                );
+                let mut popup = MentionsPopup::new(self.available_agents.clone());
                 if query.is_empty() {
                     popup.set_empty_prompt();
                 } else {
@@ -4458,6 +4462,7 @@ mod tests {
             "Ask Codex to do anything".to_string(),
             false,
         );
+        composer.available_agents = vec!["architect".to_string()];
 
         composer.textarea.set_text("@architect verify design");
 
