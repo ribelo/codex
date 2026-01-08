@@ -1125,18 +1125,6 @@ fn build_gemini_tools(tools: &[ToolSpec]) -> Result<Option<Vec<GeminiTool>>> {
     }]))
 }
 
-/// Helper to sanitize potential UTF-16 surrogate pairs in text content.
-/// In Rust, String is always valid UTF-8, so actual invalid surrogates can't exist.
-/// However, when data comes from JSON with escape sequences like \uD800 (lone surrogate),
-/// we want to ensure clean output before sending to APIs that may be strict.
-/// Note: In Rust, String is always valid UTF-8 and char is a Unicode Scalar Value,
-/// so actual surrogates cannot exist. This is a no-op placeholder in case future
-/// raw byte handling is needed.
-#[inline]
-fn sanitize_surrogates(s: &str) -> &str {
-    s
-}
-
 fn map_message_content(content: &[ContentItem]) -> Vec<GeminiPart> {
     let mut parts = Vec::new();
     for item in content {
@@ -1144,7 +1132,7 @@ fn map_message_content(content: &[ContentItem]) -> Vec<GeminiPart> {
             ContentItem::InputText { text } | ContentItem::OutputText { text, .. } => {
                 if !text.is_empty() {
                     parts.push(GeminiPart {
-                        text: Some(sanitize_surrogates(text).to_string()),
+                        text: Some(text.clone()),
                         ..Default::default()
                     });
                 }
@@ -1170,14 +1158,13 @@ fn flatten_content(content: &[ContentItem]) -> String {
                 if !acc.is_empty() {
                     acc.push_str("\n\n");
                 }
-                acc.push_str(sanitize_surrogates(text));
+                acc.push_str(text);
             }
             ContentItem::InputImage { image_url } => {
                 if !acc.is_empty() {
                     acc.push_str("\n\n");
                 }
-                let image_text = format!("[image: {image_url}]");
-                acc.push_str(sanitize_surrogates(&image_text));
+                acc.push_str(&format!("[image: {image_url}]"));
             }
         }
     }

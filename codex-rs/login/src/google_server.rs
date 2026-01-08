@@ -15,6 +15,7 @@ use codex_core::gemini::GEMINI_CLIENT_ID;
 use codex_core::gemini::GEMINI_CLIENT_SECRET;
 use codex_core::gemini::GEMINI_TOKEN_URL;
 use codex_core::token_data::GeminiTokenData;
+use rand::RngCore;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
@@ -116,15 +117,14 @@ pub async fn run_google_login_server(
     opts: GoogleServerOptions,
 ) -> std::io::Result<GoogleLoginServer> {
     let pkce = generate_pkce();
+    let state = generate_state();
+    let provider_kind = opts.provider_kind;
     let project_id = opts
         .project_id
         .as_deref()
         .map(str::trim)
         .filter(|project| !project.is_empty())
         .map(str::to_string);
-
-    let state = generate_state_with_project_id(&pkce.code_verifier, project_id.as_deref());
-    let provider_kind = opts.provider_kind;
 
     let server = bind_server(DEFAULT_PORT)?;
     let actual_port = match server.server_addr().to_ip() {
@@ -364,7 +364,7 @@ fn exchange_code_for_tokens(
     redirect_uri: &str,
     auth_url: &str,
     request_path: &str,
-    _pkce: &PkceCodes,
+    pkce: &PkceCodes,
     provider_kind: GoogleProviderKind,
 ) -> Result<TokenExchangeResponse, Box<dyn std::error::Error>> {
     let request_url = Url::parse(&format!("http://localhost{request_path}"))?;
@@ -376,7 +376,6 @@ fn exchange_code_for_tokens(
         return Err("State parameter missing".into());
     };
 
-    // Validate state matches what we sent (CSRF protection)
     let expected_state = Url::parse(auth_url)?.query_pairs().find_map(|(k, v)| {
         if k == "state" {
             Some(v.to_string())
@@ -387,10 +386,6 @@ fn exchange_code_for_tokens(
     if expected_state.as_deref() != Some(state.as_str()) {
         return Err("State mismatch".into());
     }
-
-    let state_payload = parse_state(state)?;
-    let code_verifier = state_payload.verifier;
-    let state_project_id = state_payload.project_id;
 
     let (client_id, client_secret, token_url) = provider_credentials(provider_kind);
 
@@ -407,7 +402,7 @@ fn exchange_code_for_tokens(
     let token_request = TokenRequest {
         grant_type: "authorization_code",
         code: code.clone(),
-        code_verifier,
+        code_verifier: pkce.code_verifier.clone(),
         redirect_uri: redirect_uri.to_string(),
         client_id: client_id.to_string(),
         client_secret: client_secret.to_string(),
@@ -426,8 +421,7 @@ fn exchange_code_for_tokens(
         return Err(format!("Token exchange failed: {status} {body}").into());
     }
 
-    let mut payload: TokenExchangeResponse = serde_json::from_str(&body)?;
-    payload.project_id = payload.project_id.or(state_project_id);
+    let payload: TokenExchangeResponse = serde_json::from_str(&body)?;
     Ok(payload)
 }
 
@@ -485,43 +479,11 @@ fn persist_google_tokens(
     Ok(auth)
 }
 
-fn generate_state_with_project_id(verifier: &str, project_id: Option<&str>) -> String {
-    #[derive(Serialize)]
-    struct StatePayload {
-        verifier: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        project_id: Option<String>,
-    }
-
-    let payload = StatePayload {
-        verifier: verifier.to_string(),
-        project_id: project_id.filter(|s| !s.is_empty()).map(str::to_string),
-    };
-
-    let json = serde_json::to_string(&payload).expect("JSON serialization failed");
-    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json)
-}
-
-struct StatePayload {
-    verifier: String,
-    project_id: Option<String>,
-}
-
-fn parse_state(state: &str) -> Result<StatePayload, Box<dyn std::error::Error>> {
-    #[derive(Deserialize)]
-    struct StatePayloadInner {
-        verifier: String,
-        #[serde(default)]
-        project_id: Option<String>,
-    }
-
-    let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(state)?;
-    let json = std::string::String::from_utf8(decoded)?;
-    let payload: StatePayloadInner = serde_json::from_str(&json)?;
-    Ok(StatePayload {
-        verifier: payload.verifier,
-        project_id: payload.project_id,
-    })
+fn generate_state() -> String {
+    let mut rng = rand::rng();
+    let mut state_bytes = [0u8; 32];
+    rng.fill_bytes(&mut state_bytes);
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(state_bytes)
 }
 
 fn build_authorize_url(

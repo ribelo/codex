@@ -81,9 +81,6 @@ pub const REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR: &str = "CODEX_REFRESH_TOKEN_URL_OV
 const GEMINI_PROJECT_REQUIRED_MESSAGE: &str = "Gemini requires a Google Cloud project. Run `codex login --gemini` and supply a project ID with the Gemini API enabled.";
 const ANTIGRAVITY_PROJECT_REQUIRED_MESSAGE: &str = "Antigravity requires a Google Cloud project. Run `codex login --antigravity` and supply a project ID with the Gemini API enabled.";
 const GEMINI_ACCESS_TOKEN_LEEWAY_SECONDS: i64 = 300;
-/// Fallback project ID for free-tier users who haven't set up a project.
-/// This matches the behavior of reference implementations (pi-mono).
-const ANTIGRAVITY_FALLBACK_PROJECT_ID: &str = "rising-fact-p41fc";
 const GEMINI_ONBOARD_MAX_ATTEMPTS: usize = 10;
 const GEMINI_ONBOARD_DELAY_MILLIS: u64 = 500;
 
@@ -504,13 +501,9 @@ impl CodexAuth {
             return Ok(project_id);
         }
 
-        // Final fallback: use shared project ID for free-tier users
-        // This matches the behavior of reference implementations (pi-mono)
-        tracing::warn!(
-            project_id = %ANTIGRAVITY_FALLBACK_PROJECT_ID,
-            "Using fallback project ID for Antigravity. Consider running `codex login --antigravity` with a project ID."
-        );
-        Ok(ANTIGRAVITY_FALLBACK_PROJECT_ID.to_string())
+        Err(std::io::Error::other(
+            ANTIGRAVITY_PROJECT_REQUIRED_MESSAGE.to_string(),
+        ))
     }
 
     async fn ensure_gemini_project_id_for(
