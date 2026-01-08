@@ -44,10 +44,24 @@ pub struct Prompt {
 
 impl Prompt {
     pub(crate) fn get_full_instructions<'a>(&'a self, model: &'a ModelFamily) -> Cow<'a, str> {
-        let base = self
-            .base_instructions_override
-            .as_deref()
-            .unwrap_or(model.base_instructions.deref());
+        // Determine effective base instructions based on override and model requirements.
+        // When base_instructions_required is true, we prepend the model's base instructions
+        // to any override (e.g., subagent prompts) to preserve critical protocol definitions.
+        let base: Cow<'a, str> = match self.base_instructions_override.as_deref() {
+            Some(override_text) if model.base_instructions_required => {
+                // Model requires base instructions - prepend them to the override
+                Cow::Owned(format!("{}\n\n{}", model.base_instructions, override_text))
+            }
+            Some(override_text) => {
+                // Override completely replaces base instructions
+                Cow::Borrowed(override_text)
+            }
+            None => {
+                // No override - use model's base instructions
+                Cow::Borrowed(model.base_instructions.deref())
+            }
+        };
+
         // When there are no custom instructions, add apply_patch_tool_instructions if:
         // - the model needs special instructions (4.1)
         // AND
@@ -60,19 +74,21 @@ impl Prompt {
 
         // Build the full instructions by conditionally appending apply_patch instructions.
         // Don't append extra instructions when:
-        // - base_instructions_override is set (e.g., for review tasks)
-        let needs_apply_patch_instructions = self.base_instructions_override.is_none()
+        // - base_instructions_override is set AND base_instructions_required is false
+        //   (when required is true, the base is already included so we may need apply_patch)
+        let needs_apply_patch_instructions = (self.base_instructions_override.is_none()
+            || model.base_instructions_required)
             && model.needs_special_apply_patch_instructions
             && !is_apply_patch_tool_present;
 
         // Build the full instructions by conditionally appending apply_patch instructions.
         if needs_apply_patch_instructions {
-            let mut result = base.to_string();
+            let mut result = base.into_owned();
             result.push('\n');
             result.push_str(APPLY_PATCH_TOOL_INSTRUCTIONS);
             Cow::Owned(result)
         } else {
-            Cow::Borrowed(base)
+            base
         }
     }
 
@@ -309,8 +325,7 @@ mod tests {
             let expected = if test_case.expects_apply_patch_instructions {
                 format!(
                     "{}\n{}",
-                    model_family.base_instructions,
-                    APPLY_PATCH_TOOL_INSTRUCTIONS,
+                    model_family.base_instructions, APPLY_PATCH_TOOL_INSTRUCTIONS,
                 )
             } else {
                 model_family.base_instructions.to_string()

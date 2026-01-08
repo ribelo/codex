@@ -111,6 +111,12 @@ pub struct ModelFamily {
 
     /// Truncation bias for MCP tool output.
     pub mcp_truncation_bias: TruncationBias,
+
+    /// Whether the model requires its base instructions even when overridden.
+    /// When true, base_instructions are prepended to any override (e.g., subagent prompts).
+    /// This is needed for advanced OpenAI models (GPT-5.x, O3, Codex) that have
+    /// critical protocol definitions in their base instructions.
+    pub base_instructions_required: bool,
 }
 
 impl ModelFamily {
@@ -170,6 +176,7 @@ macro_rules! model_family {
             truncation_bias: TruncationBias::Balanced,
             mcp_truncation_policy: TruncationPolicy::Bytes(DEFAULT_MCP_TOOL_OUTPUT_BYTES),
             mcp_truncation_bias: TruncationBias::Balanced,
+            base_instructions_required: false,
         };
 
         // apply overrides
@@ -189,6 +196,7 @@ pub(in crate::openai_models) fn find_family_for_model(slug: &str) -> ModelFamily
             supports_reasoning_summaries: true,
             needs_special_apply_patch_instructions: true,
             context_window: 200_000,
+            base_instructions_required: true,
         )
     } else if slug.starts_with("o4-mini") {
         model_family!(
@@ -196,6 +204,7 @@ pub(in crate::openai_models) fn find_family_for_model(slug: &str) -> ModelFamily
             supports_reasoning_summaries: true,
             needs_special_apply_patch_instructions: true,
             context_window: 200_000,
+            base_instructions_required: true,
         )
     } else if slug.starts_with("codex-mini-latest") {
         model_family!(
@@ -204,6 +213,7 @@ pub(in crate::openai_models) fn find_family_for_model(slug: &str) -> ModelFamily
             needs_special_apply_patch_instructions: true,
             shell_type: ConfigShellToolType::ShellCommand,
             context_window: 200_000,
+            base_instructions_required: true,
         )
     } else if slug.starts_with("gpt-4.1") {
         model_family!(
@@ -248,6 +258,7 @@ pub(in crate::openai_models) fn find_family_for_model(slug: &str) -> ModelFamily
             support_verbosity: true,
             truncation_policy: TruncationPolicy::Tokens(10_000),
             mcp_truncation_policy: TruncationPolicy::Tokens(10_000),
+            base_instructions_required: true,
         )
 
     // Experimental models.
@@ -264,6 +275,7 @@ pub(in crate::openai_models) fn find_family_for_model(slug: &str) -> ModelFamily
             truncation_policy: TruncationPolicy::Tokens(10_000),
             mcp_truncation_policy: TruncationPolicy::Tokens(10_000),
             context_window: CONTEXT_WINDOW_272K,
+            base_instructions_required: true,
         )
     } else if slug.starts_with("exp-") {
         model_family!(
@@ -291,6 +303,7 @@ pub(in crate::openai_models) fn find_family_for_model(slug: &str) -> ModelFamily
             support_verbosity: false,
             truncation_policy: TruncationPolicy::Tokens(10_000),
             context_window: CONTEXT_WINDOW_272K,
+            base_instructions_required: true,
         )
     } else if slug.starts_with("gpt-5.1-codex-max") {
         model_family!(
@@ -304,6 +317,7 @@ pub(in crate::openai_models) fn find_family_for_model(slug: &str) -> ModelFamily
             truncation_policy: TruncationPolicy::Tokens(10_000),
             mcp_truncation_policy: TruncationPolicy::Tokens(10_000),
             context_window: CONTEXT_WINDOW_272K,
+            base_instructions_required: true,
         )
     } else if slug.starts_with("gpt-5.1-codex") || slug.starts_with("codex-") {
         model_family!(
@@ -316,6 +330,7 @@ pub(in crate::openai_models) fn find_family_for_model(slug: &str) -> ModelFamily
             support_verbosity: false,
             truncation_policy: TruncationPolicy::Tokens(10_000),
             mcp_truncation_policy: TruncationPolicy::Tokens(10_000),
+            base_instructions_required: true,
         )
     } else if slug.starts_with("gpt-5.2") {
         model_family!(
@@ -329,6 +344,7 @@ pub(in crate::openai_models) fn find_family_for_model(slug: &str) -> ModelFamily
             truncation_policy: TruncationPolicy::Bytes(10_000),
             shell_type: ConfigShellToolType::ShellCommand,
             context_window: CONTEXT_WINDOW_272K,
+            base_instructions_required: true,
         )
     } else if slug.starts_with("gpt-5.1") {
         model_family!(
@@ -342,6 +358,7 @@ pub(in crate::openai_models) fn find_family_for_model(slug: &str) -> ModelFamily
             truncation_policy: TruncationPolicy::Bytes(DEFAULT_TOOL_OUTPUT_BYTES),
             shell_type: ConfigShellToolType::ShellCommand,
             context_window: CONTEXT_WINDOW_272K,
+            base_instructions_required: true,
         )
     } else if slug.starts_with("claude") {
         model_family!(
@@ -413,6 +430,7 @@ fn derive_default_model_family(model: &str) -> ModelFamily {
         truncation_bias: TruncationBias::Balanced,
         mcp_truncation_policy: TruncationPolicy::Bytes(DEFAULT_MCP_TOOL_OUTPUT_BYTES),
         mcp_truncation_bias: TruncationBias::Balanced,
+        base_instructions_required: false,
     }
 }
 
