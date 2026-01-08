@@ -20,6 +20,28 @@ const GPT_5_1_CODEX_MAX_INSTRUCTIONS: &str = include_str!("../../gpt-5.1-codex-m
 const PRAXIS_INSTRUCTIONS: &str = include_str!("../../praxis.md");
 pub(crate) const CONTEXT_WINDOW_272K: i64 = 272_000;
 
+/// Returns a sensible default context window for a model based on its slug.
+/// This is used when `model_context_window` is not explicitly set in config.
+pub(crate) fn default_context_window_for_model(slug: &str) -> i64 {
+    if slug.starts_with("o3") {
+        200_000
+    } else if slug.starts_with("o4-mini") {
+        200_000
+    } else if slug.starts_with("codex-mini-latest") {
+        200_000
+    } else if slug.starts_with("gpt-4.1") {
+        1_047_576
+    } else if slug.starts_with("gpt-oss") || slug.starts_with("openai/gpt-oss") {
+        96_000
+    } else if slug.starts_with("gpt-4o") {
+        128_000
+    } else if slug.starts_with("gpt-3.5") {
+        16_385
+    } else {
+        CONTEXT_WINDOW_272K
+    }
+}
+
 /// A model family is a group of models that share certain characteristics.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ModelFamily {

@@ -33,6 +33,35 @@ use rand::Rng;
 const ANTIGRAVITY_AUTH_HINT: &str =
     "Antigravity requires a valid OAuth login. Run `codex login --antigravity`.";
 
+const ANTIGRAVITY_SYSTEM_INSTRUCTION: &str = "You are Antigravity, a powerful agentic AI coding assistant designed by the Google Deepmind team working on Advanced Agentic Coding.You are pair programming with a USER to solve their coding task. The task may require creating a new codebase, modifying or debugging an existing codebase, or simply answering a question.**Absolute paths only****Proactiveness**";
+
+/// Anthropic beta header for interleaved thinking (real-time thinking token streaming)
+const ANTHROPIC_INTERLEAVED_THINKING_BETA: &str = "interleaved-thinking-2025-05-14";
+
+/// Check if a model is a Claude thinking model (requires interleaved thinking header)
+fn is_claude_thinking_model(model: &str) -> bool {
+    let model_lower = model.to_lowercase();
+    model_lower.contains("claude") && model_lower.contains("thinking")
+}
+
+/// Rewrite thinking config keys from camelCase to snake_case for Claude on Antigravity.
+/// Claude expects `thinking_budget` and `include_thoughts` instead of `thinkingBudget` and `includeThoughts`.
+fn rewrite_thinking_config_for_claude(body: &mut serde_json::Value) {
+    let Some(obj) = body
+        .pointer_mut("/request/generationConfig/thinkingConfig")
+        .and_then(serde_json::Value::as_object_mut)
+    else {
+        return;
+    };
+
+    if let Some(value) = obj.remove("thinkingBudget") {
+        obj.insert("thinking_budget".to_string(), value);
+    }
+    if let Some(value) = obj.remove("includeThoughts") {
+        obj.insert("include_thoughts".to_string(), value);
+    }
+}
+
 /// Maps model names to their Antigravity-internal variants.
 /// For Gemini models: gemini-3-pro-preview -> gemini-3-pro-low or gemini-3-pro-high
 /// Claude models should be specified directly in config (e.g., claude-opus-4-5-thinking)
@@ -94,6 +123,7 @@ fn default_safety_settings() -> Vec<SafetySetting> {
 struct AntigravityRequest {
     project: String,
     user_agent: String,
+    request_type: String,
     request_id: String,
     model: String,
     request: GeminiRequest,
@@ -112,12 +142,29 @@ pub(crate) async fn stream_antigravity_messages(
     let auth =
         auth.ok_or_else(|| CodexErr::UnsupportedOperation(ANTIGRAVITY_AUTH_HINT.to_string()))?;
 
+    crate::gemini_messages::prepend_system_instruction_part(
+        &mut payload,
+        ANTIGRAVITY_SYSTEM_INSTRUCTION,
+    );
+
     // Add Antigravity-specific fields to the request (per reference implementation)
     payload.session_id = Some(generate_session_id());
-    payload.safety_settings = Some(default_safety_settings());
 
     // Map model to Antigravity-internal variant (e.g., gemini-3-pro-preview -> gemini-3-pro-high)
     let antigravity_model = map_antigravity_model(&normalized_model, &payload);
+
+    // Claude models require different handling than Gemini models
+    let is_claude = antigravity_model.to_lowercase().contains("claude");
+    let is_claude_thinking = is_claude_thinking_model(&antigravity_model);
+    if is_claude {
+        // Claude doesn't use safety settings - they cause 429 errors
+        payload.safety_settings = None;
+        // Claude requires VALIDATED mode for function calling
+        crate::gemini_messages::set_tool_config_validated_mode(&mut payload);
+    } else {
+        // Gemini models use safety settings to disable content filtering
+        payload.safety_settings = Some(default_safety_settings());
+    }
     tracing::debug!(
         original_model = %normalized_model,
         antigravity_model = %antigravity_model,
@@ -128,6 +175,7 @@ pub(crate) async fn stream_antigravity_messages(
     let mut request_body = AntigravityRequest {
         project: String::new(),
         user_agent: "antigravity/1.11.9".to_string(),
+        request_type: "agent".to_string(),
         request_id: format!("agent-{}", Uuid::new_v4()),
         model: antigravity_model,
         request: payload,
@@ -176,6 +224,12 @@ pub(crate) async fn stream_antigravity_messages(
             .next()
             .unwrap_or(base_url);
 
+        // Serialize request body to JSON, then apply Claude-specific transformations
+        let mut request_body_json = to_value(&request_body)?;
+        if is_claude {
+            rewrite_thinking_config_for_claude(&mut request_body_json);
+        }
+
         let req_builder = client
             .post(&url)
             .bearer_auth(tokens.access_token.clone())
@@ -183,7 +237,18 @@ pub(crate) async fn stream_antigravity_messages(
             .header(reqwest::header::ACCEPT, "text/event-stream")
             .header(reqwest::header::HOST, host)
             .header(reqwest::header::USER_AGENT, &request_body.user_agent)
-            .json(&request_body);
+            .json(&request_body_json);
+
+        // Add interleaved thinking header for Claude thinking models (per reference implementations)
+        let req_builder = if is_claude_thinking {
+            tracing::debug!(
+                model = %request_body.model,
+                "Adding anthropic-beta interleaved-thinking header for Claude thinking model"
+            );
+            req_builder.header("anthropic-beta", ANTHROPIC_INTERLEAVED_THINKING_BETA)
+        } else {
+            req_builder
+        };
 
         tracing::debug!(
             url = %url,

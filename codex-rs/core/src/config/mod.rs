@@ -26,6 +26,7 @@ use crate::features::FeaturesToml;
 use crate::git_info::resolve_root_git_project_for_trust;
 use crate::model_provider_info::ModelProviderInfo;
 use crate::model_provider_info::built_in_model_providers;
+use crate::openai_models::model_family::default_context_window_for_model;
 use crate::project_doc::DEFAULT_PROJECT_DOC_FILENAME;
 use crate::project_doc::LOCAL_PROJECT_DOC_FILENAME;
 use crate::protocol::AskForApproval;
@@ -1248,12 +1249,7 @@ impl Config {
             model_context_window: config_profile
                 .model_context_window
                 .or(cfg.model_context_window)
-                .ok_or_else(|| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::InvalidInput,
-                        "model_context_window must be set in config.toml or selected profile",
-                    )
-                })?,
+                .unwrap_or_else(|| default_context_window_for_model(resolved_model.as_str())),
             model_auto_compact_token_limit: cfg.model_auto_compact_token_limit,
             model_provider_id,
             model_provider,
@@ -1455,6 +1451,7 @@ mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
 
+    use std::collections::BTreeMap;
     use std::time::Duration;
     use tempfile::TempDir;
 
@@ -1487,6 +1484,45 @@ persistence = "none"
                 max_bytes: None,
             }),
             history_no_persistence_cfg.history
+        );
+    }
+
+    #[test]
+    fn notice_model_migrations_parses() {
+        let cfg = r#"
+[notice]
+hide_rate_limit_model_nudge = true
+model_migrations = { "gpt-4o" = "gpt-5.1" }
+"#;
+
+        let parsed =
+            toml::from_str::<ConfigToml>(cfg).expect("notice model migrations should parse");
+
+        let mut expected_migrations = BTreeMap::new();
+        expected_migrations.insert("gpt-4o".to_string(), "gpt-5.1".to_string());
+
+        assert_eq!(
+            parsed.notice,
+            Some(Notice {
+                hide_rate_limit_model_nudge: Some(true),
+                model_migrations: expected_migrations,
+                ..Default::default()
+            })
+        );
+    }
+
+    #[test]
+    fn notice_unknown_field_errors() {
+        let cfg = r#"
+[notice]
+unexpected = true
+"#;
+
+        let err = toml::from_str::<ConfigToml>(cfg).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("unknown field") && msg.contains("unexpected"),
+            "{msg}"
         );
     }
 

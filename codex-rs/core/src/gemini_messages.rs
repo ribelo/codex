@@ -100,6 +100,31 @@ pub(crate) struct GeminiPart {
     thought: Option<bool>,
 }
 
+pub(crate) fn prepend_system_instruction_part(payload: &mut GeminiRequest, text: &str) {
+    let system_instruction = payload.system_instruction.get_or_insert(GeminiContent {
+        role: "user".to_string(), // Gemini requires "user" role for system instructions
+        parts: Vec::new(),
+    });
+
+    system_instruction.parts.insert(
+        0,
+        GeminiPart {
+            text: Some(text.to_string()),
+            ..Default::default()
+        },
+    );
+}
+
+/// Set tool_config to VALIDATED mode for Claude models on Antigravity.
+/// Claude requires this mode for reliable function calling.
+pub(crate) fn set_tool_config_validated_mode(payload: &mut GeminiRequest) {
+    payload.tool_config = Some(GeminiToolConfig {
+        function_calling_config: GeminiFunctionCallingConfig {
+            mode: "VALIDATED".to_string(),
+        },
+    });
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct GeminiFunctionCall {
