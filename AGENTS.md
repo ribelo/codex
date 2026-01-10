@@ -459,3 +459,5 @@ When upstream shows changes to files like these, **skip them**:
 - Do NOT preserve old behavior "just in case"
 - If we remove something, it's gone - users adapt or it breaks
 - Breaking changes are FINE - just document what changed in the commit message
+- This includes config formats and on-disk session/rollout storage; prefer the simplest design even if old files become unreadable
+- Optimize for simplicity + UX/DX over compatibility; we are the only user

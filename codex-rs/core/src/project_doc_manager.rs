@@ -114,6 +114,7 @@ mod tests {
 
     fn test_config(cwd: &Path) -> Config {
         let config_toml = ConfigToml {
+            model: Some("openai/gpt-5.1-codex-mini".to_string()),
             model_context_window: Some(128_000),
             ..Default::default()
         };

@@ -2283,7 +2283,10 @@ impl ChatWidget {
                 self.on_entered_review_mode(review_request)
             }
             EventMsg::ExitedReviewMode(review) => self.on_exited_review_mode(review),
-            EventMsg::ContextCompacted(_) => self.on_agent_message("Context compacted".to_owned()),
+            EventMsg::ContextCompacted(ev) => {
+                let tokens_before = ev.tokens_before;
+                self.on_agent_message(format!("Context compacted (was {tokens_before} tokens)"))
+            }
             EventMsg::RawResponseItem(_) => {}
             EventMsg::SubagentEvent(payload) => self.on_subagent_event(payload),
             EventMsg::HandoffDraft(_) | EventMsg::HandoffCompleted(_) => {}

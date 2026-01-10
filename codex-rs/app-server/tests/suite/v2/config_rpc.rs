@@ -37,7 +37,7 @@ async fn config_read_returns_effective_and_layers() -> Result<()> {
     write_config(
         &codex_home,
         r#"
-model = "gpt-user"
+model = "openai/gpt-user"
 sandbox_mode = "workspace-write"
 "#,
     )?;
@@ -61,7 +61,7 @@ sandbox_mode = "workspace-write"
         layers,
     } = to_response(resp)?;
 
-    assert_eq!(config.model.as_deref(), Some("gpt-user"));
+    assert_eq!(config.model.as_deref(), Some("openai/gpt-user"));
     assert_eq!(
         origins.get("model").expect("origin").name,
         ConfigLayerName::User
@@ -80,7 +80,7 @@ async fn config_read_includes_tools() -> Result<()> {
     write_config(
         &codex_home,
         r#"
-model = "gpt-user"
+model = "openai/gpt-user"
 
 [tools]
 web_search = true
@@ -138,7 +138,7 @@ async fn config_read_includes_system_layer_and_overrides() -> Result<()> {
     write_config(
         &codex_home,
         r#"
-model = "gpt-user"
+model = "openai/gpt-user"
 approval_policy = "on-request"
 sandbox_mode = "workspace-write"
 
@@ -152,7 +152,7 @@ network_access = true
     std::fs::write(
         &managed_path,
         r#"
-model = "gpt-system"
+model = "openai/gpt-system"
 approval_policy = "never"
 
 [sandbox_workspace_write]
@@ -185,7 +185,7 @@ writable_roots = ["/system"]
         layers,
     } = to_response(resp)?;
 
-    assert_eq!(config.model.as_deref(), Some("gpt-system"));
+    assert_eq!(config.model.as_deref(), Some("openai/gpt-system"));
     assert_eq!(
         origins.get("model").expect("origin").name,
         ConfigLayerName::System
@@ -240,7 +240,7 @@ async fn config_value_write_replaces_value() -> Result<()> {
     write_config(
         &codex_home,
         r#"
-model = "gpt-old"
+model = "openai/gpt-old"
 "#,
     )?;
 
@@ -264,7 +264,7 @@ model = "gpt-old"
         .send_config_value_write_request(ConfigValueWriteParams {
             file_path: None,
             key_path: "model".to_string(),
-            value: json!("gpt-new"),
+            value: json!("openai/gpt-new"),
             merge_strategy: MergeStrategy::Replace,
             expected_version,
         })
@@ -298,7 +298,7 @@ model = "gpt-old"
     )
     .await??;
     let verify: ConfigReadResponse = to_response(verify_resp)?;
-    assert_eq!(verify.config.model.as_deref(), Some("gpt-new"));
+    assert_eq!(verify.config.model.as_deref(), Some("openai/gpt-new"));
 
     Ok(())
 }
@@ -309,7 +309,7 @@ async fn config_value_write_rejects_version_conflict() -> Result<()> {
     write_config(
         &codex_home,
         r#"
-model = "gpt-old"
+model = "openai/gpt-old"
 "#,
     )?;
 
@@ -320,7 +320,7 @@ model = "gpt-old"
         .send_config_value_write_request(ConfigValueWriteParams {
             file_path: Some(codex_home.path().join("config.toml").display().to_string()),
             key_path: "model".to_string(),
-            value: json!("gpt-new"),
+            value: json!("openai/gpt-new"),
             merge_strategy: MergeStrategy::Replace,
             expected_version: Some("sha256:stale".to_string()),
         })
@@ -345,7 +345,12 @@ model = "gpt-old"
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn config_batch_write_applies_multiple_edits() -> Result<()> {
     let codex_home = TempDir::new()?;
-    write_config(&codex_home, "")?;
+    write_config(
+        &codex_home,
+        r#"
+model = "openai/gpt-old"
+"#,
+    )?;
 
     let mut mcp = McpProcess::new(codex_home.path()).await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;

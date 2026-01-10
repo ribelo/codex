@@ -1498,7 +1498,7 @@ mod tests {
                             "cli_version": "0.0.0",
                             "instructions": null,
                             "source": "Cli",
-                            "model_provider": "openai",
+                            "model": "openai/gpt-5.1-codex-mini",
                         }
                     }
                 }

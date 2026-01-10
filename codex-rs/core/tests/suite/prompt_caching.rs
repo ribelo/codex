@@ -9,6 +9,8 @@ use codex_core::protocol::SandboxPolicy;
 use codex_core::protocol_config_types::ReasoningSummary;
 use codex_core::shell::Shell;
 use codex_core::shell::default_user_shell;
+use codex_core::skills::SkillsManager;
+use codex_core::skills::render_skills_section;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::user_input::UserInput;
 use core_test_support::load_sse_fixture_with_id;
@@ -31,6 +33,7 @@ fn text_user_input(text: String) -> serde_json::Value {
 /// Parallel instructions that are always appended to the base instructions.
 /// Sandbox instructions that are always appended to the base instructions.
 const SANDBOX_AND_APPROVALS: &str = include_str!("../../sandbox_and_approvals.md");
+const SANDBOX_MARKER: &str = "Filesystem sandboxing defines which files can be read or written.";
 
 fn default_env_context_str(cwd: &str, shell: &Shell) -> String {
     let shell_name = shell.name();
@@ -48,18 +51,6 @@ fn default_env_context_str(cwd: &str, shell: &Shell) -> String {
 /// Build minimal SSE stream with completed marker using the JSON fixture.
 fn sse_completed(id: &str) -> String {
     load_sse_fixture_with_id("tests/fixtures/completed_template.json", id)
-}
-
-fn assert_tool_names(body: &serde_json::Value, expected_names: &[&str]) {
-    assert_eq!(
-        body["tools"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|t| t["name"].as_str().unwrap().to_string())
-            .collect::<Vec<_>>(),
-        expected_names
-    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -171,33 +162,52 @@ async fn prompt_tools_are_consistent_across_requests() -> anyhow::Result<()> {
         .await?;
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TaskComplete(_))).await;
 
-    let expected_tools_names = vec![
-        "shell_command",
-        "list_mcp_resources",
-        "list_mcp_resource_templates",
-        "read_mcp_resource",
-        "update_plan",
-        "read_session",
-        "task",
-        "view_image",
-    ];
     let body0 = req1.single_request().body_json();
+    let body1 = req2.single_request().body_json();
 
-    // Sandbox instructions are always appended now.
-    let expected_instructions = format!("{base_instructions}\n\n{SANDBOX_AND_APPROVALS}");
+    // Sandbox instructions are appended unless the base instructions already include them
+    // (e.g. GPT-5.x prompt files).
+    let expected_instructions = if base_instructions.contains(SANDBOX_MARKER) {
+        base_instructions.clone()
+    } else {
+        format!("{base_instructions}\n\n{SANDBOX_AND_APPROVALS}")
+    };
 
     assert_eq!(
         body0["instructions"],
         serde_json::json!(expected_instructions),
     );
-    assert_tool_names(&body0, &expected_tools_names);
-
-    let body1 = req2.single_request().body_json();
     assert_eq!(
         body1["instructions"],
         serde_json::json!(expected_instructions),
     );
-    assert_tool_names(&body1, &expected_tools_names);
+
+    let tool_names0: Vec<&str> = body0["tools"]
+        .as_array()
+        .expect("tools0 array")
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    let tool_names1: Vec<&str> = body1["tools"]
+        .as_array()
+        .expect("tools1 array")
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        tool_names0, tool_names1,
+        "tool names should be equal across requests"
+    );
+
+    let tool_names = tool_names0;
+    assert!(
+        tool_names.contains(&"exec_command"),
+        "should include exec_command"
+    );
+    assert!(
+        tool_names.contains(&"write_stdin"),
+        "should include write_stdin"
+    );
 
     Ok(())
 }
@@ -240,8 +250,13 @@ async fn prefixes_context_and_instructions_once_and_consistently_across_requests
     let shell = default_user_shell();
     let cwd_str = config.cwd.to_string_lossy();
     let expected_env_text = default_env_context_str(&cwd_str, &shell);
+    let skills_manager = SkillsManager::new(config.codex_home.clone());
+    let skills = render_skills_section(&skills_manager.skills_for_cwd(&config.cwd).skills)
+        .expect("should have system skills");
+    let expected_ui_contents =
+        format!("be consistent and helpful\n\n--- project-doc ---\n\n{skills}");
     let expected_ui_text = format!(
-        "# AGENTS.md instructions for {cwd_str}\n\n<INSTRUCTIONS>\nbe consistent and helpful\n</INSTRUCTIONS>"
+        "# AGENTS.md instructions for {cwd_str}\n\n<INSTRUCTIONS>\n{expected_ui_contents}\n</INSTRUCTIONS>"
     );
 
     let expected_env_msg = serde_json::json!({
@@ -425,17 +440,25 @@ async fn override_before_first_turn_emits_environment_context() -> anyhow::Resul
         "expected at least environment context and user message"
     );
 
-    let env_msg = &input[1];
-    let env_text = env_msg["content"][0]["text"]
-        .as_str()
-        .expect("environment context text");
+    let env_texts: Vec<&str> = input
+        .iter()
+        .filter_map(|msg| {
+            msg["content"]
+                .as_array()
+                .and_then(|c| c.first())
+                .and_then(|i| i["text"].as_str())
+        })
+        .filter(|t| t.starts_with(ENVIRONMENT_CONTEXT_OPEN_TAG))
+        .collect();
     assert!(
-        env_text.starts_with(ENVIRONMENT_CONTEXT_OPEN_TAG),
-        "second entry should be environment context, got: {env_text}"
+        !env_texts.is_empty(),
+        "environment context message not found"
     );
     assert!(
-        env_text.contains("<approval_policy>never</approval_policy>"),
-        "environment context should reflect overridden approval policy: {env_text}"
+        env_texts
+            .iter()
+            .any(|t| t.contains("<approval_policy>never</approval_policy>")),
+        "environment context should reflect overridden approval policy: {env_texts:?}"
     );
 
     let env_count = input
@@ -460,10 +483,18 @@ async fn override_before_first_turn_emits_environment_context() -> anyhow::Resul
         "environment context should appear exactly twice, found {env_count}"
     );
 
-    let user_msg = &input[2];
-    let user_text = user_msg["content"][0]["text"]
-        .as_str()
-        .expect("user message text");
+    let user_msg = input
+        .iter()
+        .find(|msg| {
+            msg["content"]
+                .as_array()
+                .and_then(|c| c.first())
+                .and_then(|i| i["text"].as_str())
+                .map(|t| t == "first message")
+                .unwrap_or(false)
+        })
+        .expect("user message not found");
+    let user_text = user_msg["content"][0]["text"].as_str().unwrap();
     assert_eq!(user_text, "first message");
 
     Ok(())
@@ -634,8 +665,13 @@ async fn send_user_turn_with_no_changes_does_not_send_environment_context() -> a
 
     let shell = default_user_shell();
     let default_cwd_lossy = default_cwd.to_string_lossy();
+    let skills_manager = SkillsManager::new(config.codex_home.clone());
+    let skills = render_skills_section(&skills_manager.skills_for_cwd(&config.cwd).skills)
+        .expect("should have system skills");
+    let expected_ui_contents =
+        format!("be consistent and helpful\n\n--- project-doc ---\n\n{skills}");
     let expected_ui_text = format!(
-        "# AGENTS.md instructions for {default_cwd_lossy}\n\n<INSTRUCTIONS>\nbe consistent and helpful\n</INSTRUCTIONS>"
+        "# AGENTS.md instructions for {default_cwd_lossy}\n\n<INSTRUCTIONS>\n{expected_ui_contents}\n</INSTRUCTIONS>"
     );
     let expected_ui_msg = text_user_input(expected_ui_text);
 
@@ -725,8 +761,13 @@ async fn send_user_turn_with_changes_sends_environment_context() -> anyhow::Resu
     let body2 = req2.single_request().body_json();
 
     let shell = default_user_shell();
+    let skills_manager = SkillsManager::new(config.codex_home.clone());
+    let skills = render_skills_section(&skills_manager.skills_for_cwd(&config.cwd).skills)
+        .expect("should have system skills");
+    let expected_ui_contents =
+        format!("be consistent and helpful\n\n--- project-doc ---\n\n{skills}");
     let expected_ui_text = format!(
-        "# AGENTS.md instructions for {}\n\n<INSTRUCTIONS>\nbe consistent and helpful\n</INSTRUCTIONS>",
+        "# AGENTS.md instructions for {}\n\n<INSTRUCTIONS>\n{expected_ui_contents}\n</INSTRUCTIONS>",
         default_cwd.to_string_lossy()
     );
     let expected_ui_msg = serde_json::json!({

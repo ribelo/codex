@@ -25,6 +25,12 @@ const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs
 async fn test_list_and_resume_conversations() -> Result<()> {
     // Prepare a temporary CODEX_HOME with a few fake rollout files.
     let codex_home = TempDir::new()?;
+    std::fs::write(
+        codex_home.path().join("config.toml"),
+        r#"
+model = "openai/gpt-4o"
+"#,
+    )?;
     create_fake_rollout(
         codex_home.path(),
         "2025-01-02T12-00-00",
@@ -181,7 +187,7 @@ async fn test_list_and_resume_conversations() -> Result<()> {
             conversation_id: None,
             history: None,
             overrides: Some(NewConversationParams {
-                model: Some("o3".to_string()),
+                model: Some("openai/o3".to_string()),
                 ..Default::default()
             }),
         })
@@ -245,7 +251,7 @@ async fn test_list_and_resume_conversations() -> Result<()> {
             conversation_id: Some(first_item.conversation_id),
             history: None,
             overrides: Some(NewConversationParams {
-                model: Some("o3".to_string()),
+                model: Some("openai/o3".to_string()),
                 ..Default::default()
             }),
         })
@@ -314,7 +320,7 @@ async fn test_list_and_resume_conversations() -> Result<()> {
             conversation_id: None,
             history: Some(history),
             overrides: Some(NewConversationParams {
-                model: Some("o3".to_string()),
+                model: Some("openai/o3".to_string()),
                 ..Default::default()
             }),
         })
@@ -362,6 +368,10 @@ async fn test_list_and_resume_conversations() -> Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn list_conversations_fetches_through_filtered_pages() -> Result<()> {
     let codex_home = TempDir::new()?;
+    std::fs::write(
+        codex_home.path().join("config.toml"),
+        "model = \"openai/gpt-4o\"\n",
+    )?;
 
     // Only the last 3 conversations match the provider filter; request 3 and
     // ensure pagination keeps fetching past non-matching pages.

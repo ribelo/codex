@@ -26,7 +26,7 @@ async fn thread_archive_moves_rollout_into_archived_directory() -> Result<()> {
     // Start a thread.
     let start_id = mcp
         .send_thread_start_request(ThreadStartParams {
-            model: Some("mock-model".to_string()),
+            model: Some("openai/mock-model".to_string()),
             ..Default::default()
         })
         .await?;
@@ -86,7 +86,7 @@ fn create_config_toml(codex_home: &Path) -> std::io::Result<()> {
 }
 
 fn config_contents() -> &'static str {
-    r#"model = "mock-model"
+    r#"model = "openai/gpt-4o"
 approval_policy = "never"
 sandbox_mode = "read-only"
 "#

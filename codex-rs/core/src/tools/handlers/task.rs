@@ -1,6 +1,3 @@
-/// Sandbox and approvals documentation to prepend to subagent prompts.
-const SANDBOX_AND_APPROVALS_PROMPT: &str = include_str!("../../../sandbox_and_approvals.md");
-
 /// Generate subagent identity prompt with parent session context.
 fn subagent_identity_prompt(parent_session_id: &str) -> String {
     format!(
@@ -332,22 +329,25 @@ impl ToolHandler for TaskHandler {
                         subagent = %args.subagent_name,
                         profile_name = ?subagent_def.metadata.profile,
                         profile_model = ?profile.model,
-                        profile_provider = ?profile.model_provider,
                         "Task handler: loaded profile configuration"
                     );
 
                     // Apply model from profile
-                    if let Some(ref model) = profile.model {
-                        sub_config.model = Some(model.clone());
-                        info!(
-                            subagent = %args.subagent_name,
-                            model = %model,
-                            "Task handler: applied model from profile"
-                        );
-                    }
+                    if let Some(ref canonical_model_id) = profile.model {
+                        // Profiles store model IDs in canonical form (`{provider}/{model}`), but the
+                        // rest of the system expects the provider-specific model slug.
+                        let (provider_id, model_name) =
+                            crate::model_provider_info::parse_canonical_model_id(
+                                canonical_model_id,
+                            )
+                            .map_err(|e| {
+                                FunctionCallError::RespondToModel(format!(
+                                    "Invalid model format in profile: {e}"
+                                ))
+                            })?;
 
-                    // Apply model_provider from profile
-                    if let Some(ref provider_id) = profile.model_provider {
+                        sub_config.model = Some(model_name.to_string());
+
                         // Build combined providers map
                         let mut providers = built_in_model_providers();
                         for (key, provider) in config.model_providers.iter() {
@@ -357,13 +357,21 @@ impl ToolHandler for TaskHandler {
                         }
 
                         if let Some(provider_info) = providers.get(provider_id) {
-                            sub_config.model_provider_id = provider_id.clone();
+                            sub_config.model_provider_id = provider_id.to_string();
                             sub_config.model_provider = provider_info.clone();
                         } else {
                             return Err(FunctionCallError::Fatal(format!(
-                                "Model provider '{provider_id}' from profile not found"
+                                "Model provider '{provider_id}' from model '{canonical_model_id}' not found"
                             )));
                         }
+
+                        info!(
+                            subagent = %args.subagent_name,
+                            canonical_model_id = %canonical_model_id,
+                            model_name = %model_name,
+                            provider_id = %provider_id,
+                            "Task handler: applied model from profile"
+                        );
                     }
 
                     // Apply reasoning settings from profile
@@ -384,23 +392,22 @@ impl ToolHandler for TaskHandler {
                     );
                 }
 
-                // Determine the base instructions for the subagent.
-                // If the agent file has a custom system prompt, use it.
-                // Otherwise, fall back to the model family's default instructions.
-                let base_prompt = if subagent_def.system_prompt.is_empty() {
-                    // Use the parent session's base instructions as fallback.
-                    // This inherits the model-appropriate prompt from the parent.
-                    config.base_instructions.clone().unwrap_or_default()
-                } else {
-                    subagent_def.system_prompt.clone()
-                };
-
                 let parent_session_id = invocation.session.conversation_id().to_string();
                 let identity_prompt = subagent_identity_prompt(&parent_session_id);
 
-                sub_config.base_instructions = Some(format!(
-                    "{base_prompt}\n\n{identity_prompt}\n\n{SANDBOX_AND_APPROVALS_PROMPT}"
-                ));
+                // Do not override `instructions` for the subagent session. Some model families
+                // (e.g. GPT-5.x) reject custom `instructions` entirely. Put subagent context in
+                // a developer message instead so it consistently reaches the model.
+                let developer_prefix = if subagent_def.system_prompt.is_empty() {
+                    identity_prompt
+                } else {
+                    format!("{}\n\n{}", subagent_def.system_prompt, identity_prompt)
+                };
+                sub_config.developer_instructions = Some(match sub_config.developer_instructions {
+                    Some(existing) => format!("{existing}\n\n{developer_prefix}"),
+                    None => developer_prefix,
+                });
+                sub_config.base_instructions = None;
 
                 // Apply sandbox_policy override (only if more restrictive than parent)
                 // If subagent specifies `Inherit`, we keep the parent's policy.

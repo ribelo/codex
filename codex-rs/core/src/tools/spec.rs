@@ -1373,7 +1373,8 @@ mod tests {
             "gpt-5.1-codex",
             &Features::with_defaults(),
             &[
-                "shell_command",
+                "exec_command",
+                "write_stdin",
                 "list_mcp_resources",
                 "list_mcp_resource_templates",
                 "read_mcp_resource",
@@ -1415,7 +1416,8 @@ mod tests {
             "gpt-5.1-codex-mini",
             &Features::with_defaults(),
             &[
-                "shell_command",
+                "exec_command",
+                "write_stdin",
                 "list_mcp_resources",
                 "list_mcp_resource_templates",
                 "read_mcp_resource",
@@ -1434,7 +1436,8 @@ mod tests {
             "gpt-5.1",
             &Features::with_defaults(),
             &[
-                "shell_command",
+                "exec_command",
+                "write_stdin",
                 "list_mcp_resources",
                 "list_mcp_resource_templates",
                 "read_mcp_resource",

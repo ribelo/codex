@@ -56,7 +56,7 @@ async fn turn_interrupt_aborts_running_turn() -> Result<()> {
     // Start a v2 thread and capture its id.
     let thread_req = mcp
         .send_thread_start_request(ThreadStartParams {
-            model: Some("mock-model".to_string()),
+            model: Some("mock_provider/mock-model".to_string()),
             ..Default::default()
         })
         .await?;
@@ -126,11 +126,9 @@ fn create_config_toml(codex_home: &std::path::Path, server_uri: &str) -> std::io
         config_toml,
         format!(
             r#"
-model = "mock-model"
+model = "mock_provider/mock-model"
 approval_policy = "never"
 sandbox_mode = "workspace-write"
-
-model_provider = "mock_provider"
 
 [model_providers.mock_provider]
 name = "Mock provider for test"

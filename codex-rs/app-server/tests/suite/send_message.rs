@@ -217,6 +217,10 @@ async fn test_send_message_raw_notifications_opt_in() -> Result<()> {
 async fn test_send_message_session_not_found() -> Result<()> {
     // Start MCP without creating a Codex session
     let codex_home = TempDir::new()?;
+    std::fs::write(
+        codex_home.path().join("config.toml"),
+        "model = \"openai/gpt-4o\"\n",
+    )?;
     let mut mcp = McpProcess::new(codex_home.path()).await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
 
@@ -250,11 +254,9 @@ fn create_config_toml(codex_home: &Path, server_uri: &str) -> std::io::Result<()
         config_toml,
         format!(
             r#"
-model = "mock-model"
+model = "mock_provider/mock-model"
 approval_policy = "never"
 sandbox_mode = "danger-full-access"
-
-model_provider = "mock_provider"
 
 [model_providers.mock_provider]
 name = "Mock provider for test"

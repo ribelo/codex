@@ -43,6 +43,8 @@ use codex_app_server_protocol::GitDiffToRemoteResponse;
 use codex_app_server_protocol::GitInfo as ApiGitInfo;
 use codex_app_server_protocol::InputItem as WireInputItem;
 use codex_app_server_protocol::InterruptConversationParams;
+use codex_app_server_protocol::ItemCompletedNotification;
+use codex_app_server_protocol::ItemStartedNotification;
 use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::ListConversationsParams;
 use codex_app_server_protocol::ListConversationsResponse;
@@ -1256,7 +1258,6 @@ impl CodexMessageProcessor {
     async fn process_new_conversation(&self, request_id: RequestId, params: NewConversationParams) {
         let NewConversationParams {
             model,
-            model_provider,
             profile,
             cwd,
             approval_policy,
@@ -1274,7 +1275,6 @@ impl CodexMessageProcessor {
             cwd: cwd.clone().map(PathBuf::from),
             approval_policy,
             sandbox_mode,
-            model_provider,
             codex_linux_sandbox_exe: self.codex_linux_sandbox_exe.clone(),
             base_instructions,
             developer_instructions,
@@ -1335,7 +1335,6 @@ impl CodexMessageProcessor {
     async fn thread_start(&mut self, request_id: RequestId, params: ThreadStartParams) {
         let overrides = self.build_thread_config_overrides(
             params.model,
-            params.model_provider,
             params.cwd,
             params.approval_policy,
             params.sandbox,
@@ -1441,7 +1440,6 @@ impl CodexMessageProcessor {
     fn build_thread_config_overrides(
         &self,
         model: Option<String>,
-        model_provider: Option<String>,
         cwd: Option<String>,
         approval_policy: Option<codex_app_server_protocol::AskForApproval>,
         sandbox: Option<SandboxMode>,
@@ -1450,7 +1448,6 @@ impl CodexMessageProcessor {
     ) -> ConfigOverrides {
         ConfigOverrides {
             model,
-            model_provider,
             cwd: cwd.map(PathBuf::from),
             approval_policy: approval_policy
                 .map(codex_app_server_protocol::AskForApproval::to_core),
@@ -1550,7 +1547,6 @@ impl CodexMessageProcessor {
             history,
             path,
             model,
-            model_provider,
             cwd,
             approval_policy,
             sandbox,
@@ -1560,7 +1556,6 @@ impl CodexMessageProcessor {
         } = params;
 
         let overrides_requested = model.is_some()
-            || model_provider.is_some()
             || cwd.is_some()
             || approval_policy.is_some()
             || sandbox.is_some()
@@ -1571,7 +1566,6 @@ impl CodexMessageProcessor {
         let config = if overrides_requested {
             let overrides = self.build_thread_config_overrides(
                 model,
-                model_provider,
                 cwd,
                 approval_policy,
                 sandbox,
@@ -2172,7 +2166,6 @@ impl CodexMessageProcessor {
             Some(overrides) => {
                 let NewConversationParams {
                     model,
-                    model_provider,
                     profile,
                     cwd,
                     approval_policy,
@@ -2199,7 +2192,6 @@ impl CodexMessageProcessor {
                     cwd: cwd.map(PathBuf::from),
                     approval_policy,
                     sandbox_mode,
-                    model_provider,
                     codex_linux_sandbox_exe: self.codex_linux_sandbox_exe.clone(),
                     base_instructions,
                     developer_instructions,
@@ -2809,6 +2801,8 @@ impl CodexMessageProcessor {
 
         match turn_id {
             Ok(turn_id) => {
+                let parent_thread_id_for_items = parent_thread_id.clone();
+                let turn_id_for_items = turn_id.clone();
                 let turn = Self::build_review_turn(turn_id, display_text);
                 self.emit_review_started(
                     request_id,
@@ -2817,6 +2811,27 @@ impl CodexMessageProcessor {
                     parent_thread_id,
                 )
                 .await;
+
+                let entered = ThreadItem::EnteredReviewMode {
+                    id: turn_id_for_items.clone(),
+                    review: display_text.to_string(),
+                };
+                let started = ItemStartedNotification {
+                    thread_id: parent_thread_id_for_items.clone(),
+                    turn_id: turn_id_for_items.clone(),
+                    item: entered.clone(),
+                };
+                self.outgoing
+                    .send_server_notification(ServerNotification::ItemStarted(started))
+                    .await;
+                let completed = ItemCompletedNotification {
+                    thread_id: parent_thread_id_for_items,
+                    turn_id: turn_id_for_items,
+                    item: entered,
+                };
+                self.outgoing
+                    .send_server_notification(ServerNotification::ItemCompleted(completed))
+                    .await;
                 Ok(())
             }
             Err(err) => Err(JSONRPCErrorError {
@@ -3355,10 +3370,7 @@ async fn read_summary_from_rollout(
     } else {
         Some(session_meta.timestamp.clone())
     };
-    let model_provider = session_meta
-        .model_provider
-        .clone()
-        .unwrap_or_else(|| fallback_provider.to_string());
+    let model_provider = session_model_provider(&session_meta, fallback_provider);
     let git_info = git.as_ref().map(map_git_info);
 
     Ok(ConversationSummary {
@@ -3400,10 +3412,7 @@ fn extract_conversation_summary(
         Some(session_meta.timestamp.clone())
     };
     let conversation_id = session_meta.id;
-    let model_provider = session_meta
-        .model_provider
-        .clone()
-        .unwrap_or_else(|| fallback_provider.to_string());
+    let model_provider = session_model_provider(session_meta, fallback_provider);
     let git_info = git.map(map_git_info);
 
     Some(ConversationSummary {
@@ -3425,6 +3434,21 @@ fn map_git_info(git_info: &CoreGitInfo) -> ConversationGitInfo {
         branch: git_info.branch.clone(),
         origin_url: git_info.repository_url.clone(),
     }
+}
+
+fn session_model_provider(session_meta: &SessionMeta, fallback_provider: &str) -> String {
+    if let Some(provider) = session_meta.model_provider.as_ref() {
+        return provider.clone();
+    }
+
+    if let Some(model) = session_meta.model.as_ref()
+        && let Some((provider, _)) = model.split_once('/')
+        && !provider.is_empty()
+    {
+        return provider.to_string();
+    }
+
+    fallback_provider.to_string()
 }
 
 fn parse_datetime(timestamp: Option<&str>) -> Option<DateTime<Utc>> {

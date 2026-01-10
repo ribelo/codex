@@ -6,8 +6,6 @@ use crate::chatwidget::ChatWidget;
 use crate::diff_render::DiffSummary;
 use crate::exec_command::strip_bash_lc_and_escape;
 use crate::file_search::FileSearchManager;
-use crate::git_warning_prompt::GitWarningPromptOutcome;
-use crate::git_warning_prompt::run_git_warning_prompt;
 use crate::handoff_review::HandoffReviewOutcome;
 use crate::handoff_review::run_handoff_review_with_edit;
 use crate::history_cell::HistoryCell;
@@ -153,18 +151,6 @@ pub(crate) struct App {
     skip_world_writable_scan_once: bool,
 }
 
-async fn is_git_repo(dir: &std::path::Path) -> bool {
-    tokio::process::Command::new("git")
-        .args(["rev-parse", "--git-dir"])
-        .current_dir(dir)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .await
-        .map(|s| s.success())
-        .unwrap_or(false)
-}
-
 impl App {
     async fn shutdown_current_conversation(&mut self) {
         if let Some(conversation_id) = self.chat_widget.conversation_id() {
@@ -219,21 +205,6 @@ impl App {
                     });
                 }
                 SubagentErrorPromptOutcome::Continue => {}
-            }
-        }
-
-        // Check if we're in a git repository and warn if not
-        if !is_git_repo(&config.cwd).await {
-            match run_git_warning_prompt(tui).await {
-                GitWarningPromptOutcome::Exit => {
-                    return Ok(AppExitInfo {
-                        token_usage: TokenUsage::default(),
-                        conversation_id: None,
-                        update_action: None,
-                        profile: None,
-                    });
-                }
-                GitWarningPromptOutcome::Continue => {}
             }
         }
 

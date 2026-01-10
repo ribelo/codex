@@ -96,6 +96,45 @@ pub(crate) async fn apply_bespoke_event_handling(
             )
             .await;
         }
+        EventMsg::SubagentEvent(payload) => {
+            if payload.subagent_name != "review" {
+                return;
+            }
+
+            let EventMsg::TaskComplete(ev) = *payload.inner else {
+                return;
+            };
+
+            let Some(raw_review) = ev.last_agent_message.or(ev.last_tool_output) else {
+                return;
+            };
+
+            let rendered_review = match serde_json::from_str::<ReviewOutputEvent>(&raw_review) {
+                Ok(output) => render_review_output_text(&output),
+                Err(_) => raw_review,
+            };
+
+            let item = ThreadItem::ExitedReviewMode {
+                id: event_turn_id.clone(),
+                review: rendered_review,
+            };
+            let started = ItemStartedNotification {
+                thread_id: conversation_id.to_string(),
+                turn_id: event_turn_id.clone(),
+                item: item.clone(),
+            };
+            outgoing
+                .send_server_notification(ServerNotification::ItemStarted(started))
+                .await;
+            let completed = ItemCompletedNotification {
+                thread_id: conversation_id.to_string(),
+                turn_id: event_turn_id,
+                item,
+            };
+            outgoing
+                .send_server_notification(ServerNotification::ItemCompleted(completed))
+                .await;
+        }
         EventMsg::ApplyPatchApprovalRequest(ApplyPatchApprovalRequestEvent {
             call_id,
             turn_id,
@@ -259,10 +298,12 @@ pub(crate) async fn apply_bespoke_event_handling(
                 .send_server_notification(ServerNotification::ItemCompleted(notification))
                 .await;
         }
-        EventMsg::ContextCompacted(..) => {
+        EventMsg::ContextCompacted(ev) => {
             let notification = ContextCompactedNotification {
                 thread_id: conversation_id.to_string(),
                 turn_id: event_turn_id.clone(),
+                tokens_before: ev.tokens_before,
+                summary: ev.summary,
             };
             outgoing
                 .send_server_notification(ServerNotification::ContextCompacted(notification))

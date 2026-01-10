@@ -1,13 +1,10 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 use std::borrow::Cow;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use anyhow::Context;
 use anyhow::Result;
-use anyhow::ensure;
 use codex_exec_server::ExecResult;
 use exec_server_test_support::InteractiveClient;
 use exec_server_test_support::create_transport;
@@ -21,8 +18,6 @@ use rmcp::model::CallToolResult;
 use rmcp::model::CreateElicitationRequestParam;
 use rmcp::model::object;
 use serde_json::json;
-use std::os::unix::fs::PermissionsExt;
-use std::os::unix::fs::symlink;
 use tempfile::TempDir;
 
 /// Verify that when using a read-only sandbox and an execpolicy that prompts,
@@ -39,9 +34,6 @@ async fn accept_elicitation_for_prompt_rule() -> Result<()> {
 prefix_rule(
   pattern = ["git", "init"],
   decision = "prompt",
-  match = [
-    "git init ."
-  ],
 )
 "#,
         codex_home.as_ref(),
@@ -72,12 +64,12 @@ prefix_rule(
 
     // Notify the MCP server about the current sandbox state before making any
     // `shell` tool calls.
-    let linux_sandbox_exe_folder = TempDir::new()?;
     let codex_linux_sandbox_exe = if cfg!(target_os = "linux") {
-        let codex_linux_sandbox_exe = linux_sandbox_exe_folder.path().join("codex-linux-sandbox");
-        let codex_cli = ensure_codex_cli()?;
-        symlink(&codex_cli, &codex_linux_sandbox_exe)?;
-        Some(codex_linux_sandbox_exe)
+        Some(
+            assert_cmd::Command::cargo_bin("codex-linux-sandbox")?
+                .get_program()
+                .into(),
+        )
     } else {
         None
     };
@@ -144,33 +136,4 @@ prefix_rule(
     assert_eq!(vec![expected_elicitation_message], elicitation_messages);
 
     Ok(())
-}
-
-fn ensure_codex_cli() -> Result<PathBuf> {
-    let codex_cli = PathBuf::from(
-        assert_cmd::Command::cargo_bin("codex")?
-            .get_program()
-            .to_os_string(),
-    );
-
-    let metadata = codex_cli.metadata().with_context(|| {
-        format!(
-            "failed to read metadata for codex binary at {}",
-            codex_cli.display()
-        )
-    })?;
-    ensure!(
-        metadata.is_file(),
-        "expected codex binary at {} to be a file; run `cargo build -p codex-cli --bin codex` before this test",
-        codex_cli.display()
-    );
-
-    let mode = metadata.permissions().mode();
-    ensure!(
-        mode & 0o111 != 0,
-        "codex binary at {} is not executable (mode {mode:o}); run `cargo build -p codex-cli --bin codex` before this test",
-        codex_cli.display()
-    );
-
-    Ok(codex_cli)
 }

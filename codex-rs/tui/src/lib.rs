@@ -180,7 +180,6 @@ pub async fn run_main(
         approval_policy,
         sandbox_mode,
         cwd,
-        model_provider: None,
         config_profile: cli.config_profile.clone(),
         codex_linux_sandbox_exe,
         base_instructions: None,
@@ -588,6 +587,7 @@ mod tests {
     fn windows_skips_trust_prompt_without_sandbox() -> std::io::Result<()> {
         let temp_dir = TempDir::new()?;
         let mut config_toml = ConfigToml::default();
+        config_toml.model = Some("openai/gpt-5.1-codex-mini".to_string());
         config_toml.model_context_window = Some(128_000);
         let mut config = Config::load_from_base_config_with_overrides(
             config_toml,
@@ -617,6 +617,7 @@ mod tests {
     fn windows_shows_trust_prompt_with_sandbox() -> std::io::Result<()> {
         let temp_dir = TempDir::new()?;
         let mut config_toml = ConfigToml::default();
+        config_toml.model = Some("openai/gpt-5.1-codex-mini".to_string());
         config_toml.model_context_window = Some(128_000);
         let mut config = Config::load_from_base_config_with_overrides(
             config_toml,
@@ -646,6 +647,7 @@ mod tests {
         use codex_protocol::config_types::TrustLevel;
         let temp_dir = TempDir::new()?;
         let mut config_toml = ConfigToml::default();
+        config_toml.model = Some("openai/gpt-5.1-codex-mini".to_string());
         config_toml.model_context_window = Some(128_000);
         let mut config = Config::load_from_base_config_with_overrides(
             config_toml,
@@ -665,5 +667,4 @@ mod tests {
         Ok(())
     }
 }
-mod git_warning_prompt;
 mod subagent_error_prompt;

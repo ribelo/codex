@@ -292,7 +292,7 @@ async fn review_start_rejects_empty_custom_instructions() -> Result<()> {
 async fn start_default_thread(mcp: &mut McpProcess) -> Result<String> {
     let thread_req = mcp
         .send_thread_start_request(ThreadStartParams {
-            model: Some("mock-model".to_string()),
+            model: Some("mock_provider/mock-model".to_string()),
             ..Default::default()
         })
         .await?;
@@ -311,11 +311,9 @@ fn create_config_toml(codex_home: &std::path::Path, server_uri: &str) -> std::io
         config_toml,
         format!(
             r#"
-model = "mock-model"
+model = "mock_provider/mock-model"
 approval_policy = "never"
 sandbox_mode = "read-only"
-
-model_provider = "mock_provider"
 
 [model_providers.mock_provider]
 name = "Mock provider"

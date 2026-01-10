@@ -144,11 +144,9 @@ fn create_config_toml(codex_home: &Path, server_uri: String) -> std::io::Result<
         config_toml,
         format!(
             r#"
-model = "mock-model"
+model = "mock_provider/mock-model"
 approval_policy = "never"
 sandbox_mode = "read-only"
-
-model_provider = "mock_provider"
 
 [model_providers.mock_provider]
 name = "Mock provider for test"

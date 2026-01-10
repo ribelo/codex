@@ -49,8 +49,11 @@ impl ModelsManager {
     /// Construct a manager scoped to the provided `AuthManager`.
     pub fn new(auth_manager: Arc<AuthManager>) -> Self {
         let codex_home = auth_manager.codex_home().to_path_buf();
+        let auth_mode = auth_manager.get_auth_mode();
+        let mut presets = builtin_model_presets(auth_mode);
+        mark_default_for_auth_mode(&mut presets, auth_mode);
         Self {
-            available_models: RwLock::new(builtin_model_presets(auth_manager.get_auth_mode())),
+            available_models: RwLock::new(presets),
             remote_models: RwLock::new(Vec::new()),
             auth_manager,
             etag: RwLock::new(None),
@@ -64,8 +67,11 @@ impl ModelsManager {
     /// Construct a manager scoped to the provided `AuthManager` with a specific provider. Used for integration tests.
     pub fn with_provider(auth_manager: Arc<AuthManager>, provider: ModelProviderInfo) -> Self {
         let codex_home = auth_manager.codex_home().to_path_buf();
+        let auth_mode = auth_manager.get_auth_mode();
+        let mut presets = builtin_model_presets(auth_mode);
+        mark_default_for_auth_mode(&mut presets, auth_mode);
         Self {
-            available_models: RwLock::new(builtin_model_presets(auth_manager.get_auth_mode())),
+            available_models: RwLock::new(presets),
             remote_models: RwLock::new(Vec::new()),
             auth_manager,
             etag: RwLock::new(None),
@@ -249,9 +255,7 @@ impl ModelsManager {
             .map(Into::into)
             .filter(|preset: &ModelPreset| preset.show_in_picker)
             .collect();
-        if let Some(default) = model_presets.first_mut() {
-            default.is_default = true;
-        }
+        mark_default_for_auth_mode(&mut model_presets, self.auth_manager.get_auth_mode());
         {
             let mut available_models_guard = self.available_models.write().await;
             *available_models_guard = model_presets;
@@ -260,6 +264,30 @@ impl ModelsManager {
 
     fn cache_path(&self) -> PathBuf {
         self.codex_home.join(MODEL_CACHE_FILE)
+    }
+}
+
+fn mark_default_for_auth_mode(models: &mut [ModelPreset], auth_mode: Option<AuthMode>) {
+    for model in models.iter_mut() {
+        model.is_default = false;
+    }
+
+    let default_model = if auth_mode == Some(AuthMode::ChatGPT)
+        && models
+            .iter()
+            .any(|model| model.model == CODEX_AUTO_BALANCED_MODEL)
+    {
+        CODEX_AUTO_BALANCED_MODEL
+    } else if auth_mode == Some(AuthMode::ChatGPT) {
+        OPENAI_DEFAULT_CHATGPT_MODEL
+    } else {
+        OPENAI_DEFAULT_API_MODEL
+    };
+
+    if let Some(default) = models.iter_mut().find(|model| model.model == default_model) {
+        default.is_default = true;
+    } else if let Some(default) = models.first_mut() {
+        default.is_default = true;
     }
 }
 

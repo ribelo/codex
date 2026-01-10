@@ -33,7 +33,7 @@ async fn thread_resume_returns_original_thread() -> Result<()> {
     // Start a thread.
     let start_id = mcp
         .send_thread_start_request(ThreadStartParams {
-            model: Some("gpt-5.1-codex-max".to_string()),
+            model: Some("mock_provider/gpt-5.1-codex-max".to_string()),
             ..Default::default()
         })
         .await?;
@@ -139,7 +139,7 @@ async fn thread_resume_prefers_path_over_thread_id() -> Result<()> {
 
     let start_id = mcp
         .send_thread_start_request(ThreadStartParams {
-            model: Some("gpt-5.1-codex-max".to_string()),
+            model: Some("mock_provider/gpt-5.1-codex-max".to_string()),
             ..Default::default()
         })
         .await?;
@@ -184,7 +184,7 @@ async fn thread_resume_supports_history_and_overrides() -> Result<()> {
     // Start a thread.
     let start_id = mcp
         .send_thread_start_request(ThreadStartParams {
-            model: Some("gpt-5.1-codex-max".to_string()),
+            model: Some("mock_provider/gpt-5.1-codex-max".to_string()),
             ..Default::default()
         })
         .await?;
@@ -209,8 +209,7 @@ async fn thread_resume_supports_history_and_overrides() -> Result<()> {
         .send_thread_resume_request(ThreadResumeParams {
             thread_id: thread.id,
             history: Some(history),
-            model: Some("mock-model".to_string()),
-            model_provider: Some("mock_provider".to_string()),
+            model: Some("mock_provider/mock-model".to_string()),
             ..Default::default()
         })
         .await?;
@@ -238,11 +237,9 @@ fn create_config_toml(codex_home: &std::path::Path, server_uri: &str) -> std::io
         config_toml,
         format!(
             r#"
-model = "mock-model"
+model = "mock_provider/mock-model"
 approval_policy = "never"
 sandbox_mode = "read-only"
-
-model_provider = "mock_provider"
 
 [model_providers.mock_provider]
 name = "Mock provider for test"

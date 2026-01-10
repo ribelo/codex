@@ -53,7 +53,8 @@ async fn model_selects_expected_tools() {
     assert_eq!(
         codex_tools,
         vec![
-            "shell_command".to_string(),
+            "exec_command".to_string(),
+            "write_stdin".to_string(),
             "list_mcp_resources".to_string(),
             "list_mcp_resource_templates".to_string(),
             "read_mcp_resource".to_string(),
@@ -70,7 +71,8 @@ async fn model_selects_expected_tools() {
     assert_eq!(
         gpt51_codex_tools,
         vec![
-            "shell_command".to_string(),
+            "exec_command".to_string(),
+            "write_stdin".to_string(),
             "list_mcp_resources".to_string(),
             "list_mcp_resource_templates".to_string(),
             "read_mcp_resource".to_string(),
@@ -87,7 +89,8 @@ async fn model_selects_expected_tools() {
     assert_eq!(
         gpt51_tools,
         vec![
-            "shell_command".to_string(),
+            "exec_command".to_string(),
+            "write_stdin".to_string(),
             "list_mcp_resources".to_string(),
             "list_mcp_resource_templates".to_string(),
             "read_mcp_resource".to_string(),

@@ -14,9 +14,6 @@ use codex_protocol::openai_models::ReasoningEffort;
 #[serde(deny_unknown_fields)]
 pub struct ConfigProfile {
     pub model: Option<String>,
-    /// The key in the `model_providers` map identifying the
-    /// [`ModelProviderInfo`] to use.
-    pub model_provider: Option<String>,
     pub approval_policy: Option<AskForApproval>,
     pub sandbox_mode: Option<SandboxMode>,
     pub model_context_window: Option<i64>,
@@ -47,7 +44,6 @@ impl From<ConfigProfile> for codex_app_server_protocol::Profile {
     fn from(config_profile: ConfigProfile) -> Self {
         Self {
             model: config_profile.model,
-            model_provider: config_profile.model_provider,
             approval_policy: config_profile.approval_policy,
             model_reasoning_effort: config_profile.model_reasoning_effort,
             model_reasoning_summary: config_profile.model_reasoning_summary,

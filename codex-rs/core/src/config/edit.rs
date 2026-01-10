@@ -565,7 +565,7 @@ mod tests {
             codex_home,
             None,
             &[ConfigEdit::SetModel {
-                model: Some("gpt-5.1-codex".to_string()),
+                model: Some("openai/gpt-5.1-codex".to_string()),
                 effort: Some(ReasoningEffort::High),
             }],
         )
@@ -573,7 +573,7 @@ mod tests {
 
         let contents =
             std::fs::read_to_string(codex_home.join(CONFIG_TOML_FILE)).expect("read config");
-        let expected = r#"model = "gpt-5.1-codex"
+        let expected = r#"model = "openai/gpt-5.1-codex"
 model_reasoning_effort = "high"
 "#;
         assert_eq!(contents, expected);
@@ -607,7 +607,7 @@ model_reasoning_effort = "high"
             codex_home.join(CONFIG_TOML_FILE),
             r#"profile = "fast"
 
-profiles = { fast = { model = "gpt-4o", sandbox_mode = "strict" } }
+profiles = { fast = { model = "openai/gpt-4o", sandbox_mode = "strict" } }
 "#,
         )
         .expect("seed");
@@ -616,7 +616,7 @@ profiles = { fast = { model = "gpt-4o", sandbox_mode = "strict" } }
             codex_home,
             None,
             &[ConfigEdit::SetModel {
-                model: Some("o4-mini".to_string()),
+                model: Some("openai/o4-mini".to_string()),
                 effort: None,
             }],
         )
@@ -640,7 +640,7 @@ profiles = { fast = { model = "gpt-4o", sandbox_mode = "strict" } }
         );
         assert_eq!(
             fast_tbl.get("model").and_then(|v| v.as_str()),
-            Some("o4-mini")
+            Some("openai/o4-mini")
         );
     }
 
@@ -697,7 +697,7 @@ model_reasoning_effort = "low"
             codex_home,
             None,
             &[ConfigEdit::SetModel {
-                model: Some("o5-preview".to_string()),
+                model: Some("openai/o5-preview".to_string()),
                 effort: Some(ReasoningEffort::Minimal),
             }],
         )
@@ -709,7 +709,7 @@ model_reasoning_effort = "low"
 
 [profiles.team]
 model_reasoning_effort = "minimal"
-model = "o5-preview"
+model = "openai/o5-preview"
 "#;
         assert_eq!(contents, expected);
     }
@@ -721,7 +721,7 @@ model = "o5-preview"
         std::fs::write(
             codex_home.join(CONFIG_TOML_FILE),
             r#"[profiles."team a"]
-model = "gpt-5.1-codex"
+model = "openai/gpt-5.1-codex"
 "#,
         )
         .expect("seed");
@@ -730,7 +730,7 @@ model = "gpt-5.1-codex"
             codex_home,
             Some("team a"),
             &[ConfigEdit::SetModel {
-                model: Some("o4-mini".to_string()),
+                model: Some("openai/o4-mini".to_string()),
                 effort: None,
             }],
         )
@@ -739,7 +739,7 @@ model = "gpt-5.1-codex"
         let contents =
             std::fs::read_to_string(codex_home.join(CONFIG_TOML_FILE)).expect("read config");
         let expected = r#"[profiles."team a"]
-model = "o4-mini"
+model = "openai/o4-mini"
 "#;
         assert_eq!(contents, expected);
     }

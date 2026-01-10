@@ -17,6 +17,10 @@ const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(10);
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn user_info_returns_email_from_auth_json() -> Result<()> {
     let codex_home = TempDir::new()?;
+    std::fs::write(
+        codex_home.path().join("config.toml"),
+        "model = \"openai/gpt-4o\"\n",
+    )?;
 
     write_chatgpt_auth(
         codex_home.path(),

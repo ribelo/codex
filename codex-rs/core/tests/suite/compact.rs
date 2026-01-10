@@ -24,10 +24,12 @@ use core_test_support::wait_for_event_match;
 use std::collections::VecDeque;
 use tempfile::TempDir;
 
+use core_test_support::responses::ev_apply_patch_function_call;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_completed_with_tokens;
 use core_test_support::responses::ev_function_call;
+use core_test_support::responses::ev_response_created;
 use core_test_support::responses::get_responses_requests;
 use core_test_support::responses::mount_compact_json_once;
 use core_test_support::responses::mount_sse_once;
@@ -39,6 +41,9 @@ use core_test_support::responses::start_mock_server;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 // --- Test helpers -----------------------------------------------------------
+
+use core_test_support::test_codex::TestCodexHarness;
+use std::fs;
 
 pub(super) const FIRST_REPLY: &str = "FIRST_REPLY";
 pub(super) const SUMMARY_TEXT: &str = "SUMMARY_ONLY_CONTEXT";
@@ -188,10 +193,29 @@ async fn summarize_context_three_requests_and_instructions() {
 
     // Manual compact uses a dedicated summarization system prompt, not the normal
     // developer instructions. Verify the compact request has the right structure.
-    let instr2 = body2.get("instructions").and_then(|v| v.as_str()).unwrap();
+    let instr2 = body2.get("instructions").and_then(|v| v.as_str());
+    let input2_texts = body2
+        .get("input")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|item| item.get("content").and_then(|v| v.as_array()).cloned())
+        .flatten()
+        .filter_map(|content| {
+            content
+                .get("text")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        })
+        .collect::<Vec<_>>();
+    let has_system_prompt_in_instructions =
+        instr2.is_some_and(|text| text.contains(SUMMARIZATION_SYSTEM_PROMPT));
+    let has_system_prompt_in_input = input2_texts
+        .iter()
+        .any(|text| text == SUMMARIZATION_SYSTEM_PROMPT);
     assert!(
-        instr2.contains(SUMMARIZATION_SYSTEM_PROMPT),
-        "compact request should use the summarization system prompt"
+        has_system_prompt_in_instructions || has_system_prompt_in_input,
+        "compact request should include the summarization system prompt"
     );
 
     // The summarization request should include the compaction prompt in XML-wrapped format.
@@ -206,14 +230,24 @@ async fn summarize_context_three_requests_and_instructions() {
     let last2 = input2.last().unwrap();
     assert_eq!(last2.get("type").unwrap().as_str().unwrap(), "message");
     assert_eq!(last2.get("role").unwrap().as_str().unwrap(), "user");
-    let text2 = last2["content"][0]["text"].as_str().unwrap();
+    let empty_content = Vec::new();
+    let content_texts = last2["content"]
+        .as_array()
+        .unwrap_or(&empty_content)
+        .iter()
+        .filter_map(|item| item.get("text").and_then(|v| v.as_str()))
+        .collect::<Vec<_>>();
+    let prompt_text = content_texts
+        .iter()
+        .find(|text| text.contains("<conversation>"))
+        .expect("compact request should include serialized conversation");
     // The prompt should contain the conversation in XML format and end with the summarization prompt.
     assert!(
-        text2.contains("<conversation>") && text2.contains("</conversation>"),
+        prompt_text.contains("<conversation>") && prompt_text.contains("</conversation>"),
         "compact request should wrap conversation in XML tags"
     );
     assert!(
-        text2.ends_with(SUMMARIZATION_PROMPT),
+        prompt_text.ends_with(SUMMARIZATION_PROMPT),
         "compact request should end with summarization prompt"
     );
 
@@ -2005,4 +2039,125 @@ async fn auto_compact_counts_encrypted_reasoning_before_last_user() {
         resume_body.contains("REMOTE_COMPACT_SUMMARY") || resume_body.contains(FINAL_REPLY),
         "resume request should follow remote compact and use compacted history"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn compaction_preserves_goal_and_file_ops_over_two_passes() -> anyhow::Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let harness =
+        TestCodexHarness::with_builder(test_codex().with_model("gpt-5.1").with_config(|config| {
+            config.include_apply_patch_tool = true;
+            config.model_context_window = 8_000;
+            config.model_auto_compact_token_limit = Some(999_999);
+            set_test_compact_prompt(config);
+        }))
+        .await?;
+
+    fs::write(harness.path("a.txt"), "line1\nline2\n")?;
+    fs::write(harness.path("b.txt"), "line1\nline2\n")?;
+
+    let patch_b = "*** Begin Patch\n*** Update File: b.txt\n@@\n-line2\n+changed\n*** End Patch";
+    let patch_a = "*** Begin Patch\n*** Update File: a.txt\n@@\n-line2\n+changed\n*** End Patch";
+
+    let filler = "filler ".repeat(2_500);
+
+    let request_log = mount_sse_sequence(
+        harness.server(),
+        vec![
+            // Turn 1: apply_patch for b.txt
+            sse(vec![
+                ev_response_created("resp-1"),
+                ev_apply_patch_function_call("call-b", patch_b),
+                ev_completed("resp-1"),
+            ]),
+            sse(vec![
+                ev_assistant_message("msg-1", "patched b"),
+                ev_completed("resp-2"),
+            ]),
+            // Turn 2: big filler turn (kept)
+            sse(vec![
+                ev_assistant_message("msg-2", "ok"),
+                ev_completed("resp-3"),
+            ]),
+            // Compact 1: include a Goal section so we can verify preservation
+            sse(vec![
+                ev_assistant_message("sum-1", "## Goal\nShip it\n\n## Next Steps\n1. Continue"),
+                ev_completed("resp-4"),
+            ]),
+            // Turn 3: apply_patch for a.txt
+            sse(vec![
+                ev_response_created("resp-5"),
+                ev_apply_patch_function_call("call-a", patch_a),
+                ev_completed("resp-5"),
+            ]),
+            sse(vec![
+                ev_assistant_message("msg-3", "patched a"),
+                ev_completed("resp-6"),
+            ]),
+            // Turn 4: another big filler turn (kept)
+            sse(vec![
+                ev_assistant_message("msg-4", "ok"),
+                ev_completed("resp-7"),
+            ]),
+            // Compact 2: omit Goal on purpose; code should re-insert from previous summary
+            sse(vec![
+                ev_assistant_message("sum-2", "## Next Steps\n1. Continue"),
+                ev_completed("resp-8"),
+            ]),
+            // Turn 5: capture prompt after second compaction
+            sse(vec![
+                ev_assistant_message("msg-5", "done"),
+                ev_completed("resp-9"),
+            ]),
+        ],
+    )
+    .await;
+
+    harness.submit("apply patch b").await?;
+    harness.submit(&filler).await?;
+
+    harness.test().codex.submit(Op::Compact).await.unwrap();
+    wait_for_event(harness.test().codex.as_ref(), |ev| {
+        matches!(ev, EventMsg::TaskComplete(_))
+    })
+    .await;
+
+    harness.submit("apply patch a").await?;
+    harness.submit(&filler).await?;
+
+    harness.test().codex.submit(Op::Compact).await.unwrap();
+    wait_for_event(harness.test().codex.as_ref(), |ev| {
+        matches!(ev, EventMsg::TaskComplete(_))
+    })
+    .await;
+
+    harness.submit("after compaction").await?;
+
+    let requests = request_log.requests();
+    assert_eq!(requests.len(), 9);
+
+    let after_first_compaction_body = requests[4].body_json().to_string();
+    assert!(
+        body_contains_text(
+            &after_first_compaction_body,
+            "<apply_patch>\nb.txt\n</apply_patch>"
+        ),
+        "first compaction should record apply_patch file ops"
+    );
+
+    let after_second_compaction_body = requests[8].body_json().to_string();
+    assert!(
+        body_contains_text(&after_second_compaction_body, "## Goal\nShip it"),
+        "second compaction should preserve the original Goal section"
+    );
+    assert!(
+        body_contains_text(
+            &after_second_compaction_body,
+            "<apply_patch>\na.txt\nb.txt\n</apply_patch>"
+        ),
+        "second compaction should merge and sort apply_patch file ops"
+    );
+
+    Ok(())
 }

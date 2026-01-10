@@ -147,7 +147,11 @@ impl RolloutRecorder {
                         cli_version: env!("CARGO_PKG_VERSION").to_string(),
                         instructions,
                         source,
-                        model_provider: Some(config.model_provider_id.clone()),
+                        model: config
+                            .model
+                            .as_ref()
+                            .map(|model| format!("{}/{model}", config.model_provider_id)),
+                        model_provider: None,
                     }),
                 )
             }

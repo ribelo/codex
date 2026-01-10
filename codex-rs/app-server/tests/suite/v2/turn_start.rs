@@ -60,7 +60,7 @@ async fn turn_start_emits_notifications_and_accepts_model_override() -> Result<(
     // Start a thread (v2) and capture its id.
     let thread_req = mcp
         .send_thread_start_request(ThreadStartParams {
-            model: Some("mock-model".to_string()),
+            model: Some("mock_provider/mock-model".to_string()),
             ..Default::default()
         })
         .await?;
@@ -110,7 +110,7 @@ async fn turn_start_emits_notifications_and_accepts_model_override() -> Result<(
             input: vec![V2UserInput::Text {
                 text: "Second".to_string(),
             }],
-            model: Some("mock-model-override".to_string()),
+            model: Some("mock_provider/mock-model-override".to_string()),
             ..Default::default()
         })
         .await?;
@@ -166,7 +166,7 @@ async fn turn_start_accepts_local_image_input() -> Result<()> {
 
     let thread_req = mcp
         .send_thread_start_request(ThreadStartParams {
-            model: Some("mock-model".to_string()),
+            model: Some("mock_provider/mock-model".to_string()),
             ..Default::default()
         })
         .await?;
@@ -242,7 +242,7 @@ async fn turn_start_exec_approval_toggle_v2() -> Result<()> {
     // thread/start
     let start_id = mcp
         .send_thread_start_request(ThreadStartParams {
-            model: Some("mock-model".to_string()),
+            model: Some("mock_provider/mock-model".to_string()),
             ..Default::default()
         })
         .await?;
@@ -307,7 +307,7 @@ async fn turn_start_exec_approval_toggle_v2() -> Result<()> {
             }],
             approval_policy: Some(codex_app_server_protocol::AskForApproval::Never),
             sandbox_policy: Some(codex_app_server_protocol::SandboxPolicy::DangerFullAccess),
-            model: Some("mock-model".to_string()),
+            model: Some("mock_provider/mock-model".to_string()),
             effort: Some(ReasoningEffort::Medium),
             summary: Some(ReasoningSummary::Auto),
             ..Default::default()
@@ -364,7 +364,7 @@ async fn turn_start_exec_approval_decline_v2() -> Result<()> {
 
     let start_id = mcp
         .send_thread_start_request(ThreadStartParams {
-            model: Some("mock-model".to_string()),
+            model: Some("mock_provider/mock-model".to_string()),
             ..Default::default()
         })
         .await?;
@@ -511,7 +511,7 @@ async fn turn_start_updates_sandbox_and_cwd_between_turns_v2() -> Result<()> {
     // thread/start
     let start_id = mcp
         .send_thread_start_request(ThreadStartParams {
-            model: Some("mock-model".to_string()),
+            model: Some("mock_provider/mock-model".to_string()),
             ..Default::default()
         })
         .await?;
@@ -537,7 +537,7 @@ async fn turn_start_updates_sandbox_and_cwd_between_turns_v2() -> Result<()> {
                 exclude_tmpdir_env_var: false,
                 exclude_slash_tmp: false,
             }),
-            model: Some("mock-model".to_string()),
+            model: Some("mock_provider/mock-model".to_string()),
             effort: Some(ReasoningEffort::Medium),
             summary: Some(ReasoningSummary::Auto),
         })
@@ -563,7 +563,7 @@ async fn turn_start_updates_sandbox_and_cwd_between_turns_v2() -> Result<()> {
             cwd: Some(second_cwd.clone()),
             approval_policy: Some(codex_app_server_protocol::AskForApproval::Never),
             sandbox_policy: Some(codex_app_server_protocol::SandboxPolicy::DangerFullAccess),
-            model: Some("mock-model".to_string()),
+            model: Some("mock_provider/mock-model".to_string()),
             effort: Some(ReasoningEffort::Medium),
             summary: Some(ReasoningSummary::Auto),
         })
@@ -641,7 +641,7 @@ async fn turn_start_file_change_approval_v2() -> Result<()> {
 
     let start_req = mcp
         .send_thread_start_request(ThreadStartParams {
-            model: Some("mock-model".to_string()),
+            model: Some("mock_provider/mock-model".to_string()),
             cwd: Some(workspace.to_string_lossy().into_owned()),
             ..Default::default()
         })
@@ -807,7 +807,7 @@ async fn turn_start_file_change_approval_decline_v2() -> Result<()> {
 
     let start_req = mcp
         .send_thread_start_request(ThreadStartParams {
-            model: Some("mock-model".to_string()),
+            model: Some("mock_provider/mock-model".to_string()),
             cwd: Some(workspace.to_string_lossy().into_owned()),
             ..Default::default()
         })
@@ -955,7 +955,7 @@ unified_exec = true
 
     let start_id = mcp
         .send_thread_start_request(ThreadStartParams {
-            model: Some("mock-model".to_string()),
+            model: Some("mock_provider/mock-model".to_string()),
             ..Default::default()
         })
         .await?;
@@ -1067,11 +1067,9 @@ fn create_config_toml(
         config_toml,
         format!(
             r#"
-model = "mock-model"
+model = "mock_provider/mock-model"
 approval_policy = "{approval_policy}"
 sandbox_mode = "read-only"
-
-model_provider = "mock_provider"
 
 [model_providers.mock_provider]
 name = "Mock provider for test"

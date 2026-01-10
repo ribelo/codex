@@ -15,7 +15,7 @@ use uuid::Uuid;
 /// - `filename_ts` is the filename timestamp component in `YYYY-MM-DDThh-mm-ss` format.
 /// - `meta_rfc3339` is the envelope timestamp used in JSON lines.
 /// - `preview` is the user message preview text.
-/// - `model_provider` optionally sets the provider in the session meta payload.
+/// - `model_provider` optionally sets the provider prefix for SessionMeta.model.
 ///
 /// Returns the generated conversation/session UUID as a string.
 pub fn create_fake_rollout(
@@ -48,7 +48,8 @@ pub fn create_fake_rollout(
         cli_version: "0.0.0".to_string(),
         instructions: None,
         source: SessionSource::Cli,
-        model_provider: model_provider.map(str::to_string),
+        model: model_provider.map(|provider| format!("{provider}/test-model")),
+        model_provider: None,
     };
     let payload = serde_json::to_value(SessionMetaLine {
         meta,

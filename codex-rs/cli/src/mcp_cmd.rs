@@ -7,10 +7,9 @@ use anyhow::bail;
 use clap::ArgGroup;
 use codex_common::CliConfigOverrides;
 use codex_common::format_env_display::format_env_display;
-use codex_core::config::Config;
-use codex_core::config::ConfigOverrides;
 use codex_core::config::edit::ConfigEditsBuilder;
 use codex_core::config::find_codex_home;
+use codex_core::config::load_config_as_toml_with_cli_overrides;
 use codex_core::config::load_global_mcp_servers;
 use codex_core::config::types::McpServerConfig;
 use codex_core::config::types::McpServerTransportConfig;
@@ -199,9 +198,6 @@ async fn run_add(config_overrides: &CliConfigOverrides, add_args: AddArgs) -> Re
     let overrides = config_overrides
         .parse_overrides()
         .map_err(anyhow::Error::msg)?;
-    let config = Config::load_with_cli_overrides(overrides, ConfigOverrides::default())
-        .await
-        .context("failed to load configuration")?;
 
     let AddArgs {
         name,
@@ -280,13 +276,16 @@ async fn run_add(config_overrides: &CliConfigOverrides, add_args: AddArgs) -> Re
         env_http_headers,
     } = transport
     {
+        let config = load_config_as_toml_with_cli_overrides(&codex_home, overrides).await?;
+        let store_mode = config.mcp_oauth_credentials_store.unwrap_or_default();
+
         match supports_oauth_login(&url).await {
             Ok(true) => {
                 println!("Detected OAuth support. Starting OAuth flow…");
                 perform_oauth_login(
                     &name,
                     &url,
-                    config.mcp_oauth_credentials_store_mode,
+                    store_mode,
                     http_headers.clone(),
                     env_http_headers.clone(),
                     &Vec::new(),
@@ -341,9 +340,11 @@ async fn run_login(config_overrides: &CliConfigOverrides, login_args: LoginArgs)
     let overrides = config_overrides
         .parse_overrides()
         .map_err(anyhow::Error::msg)?;
-    let config = Config::load_with_cli_overrides(overrides, ConfigOverrides::default())
+    let codex_home = find_codex_home().context("failed to resolve CODEX_HOME")?;
+    let config = load_config_as_toml_with_cli_overrides(&codex_home, overrides)
         .await
         .context("failed to load configuration")?;
+    let store_mode = config.mcp_oauth_credentials_store.unwrap_or_default();
 
     let LoginArgs { name, scopes } = login_args;
 
@@ -364,7 +365,7 @@ async fn run_login(config_overrides: &CliConfigOverrides, login_args: LoginArgs)
     perform_oauth_login(
         &name,
         &url,
-        config.mcp_oauth_credentials_store_mode,
+        store_mode,
         http_headers,
         env_http_headers,
         &scopes,
@@ -378,9 +379,11 @@ async fn run_logout(config_overrides: &CliConfigOverrides, logout_args: LogoutAr
     let overrides = config_overrides
         .parse_overrides()
         .map_err(anyhow::Error::msg)?;
-    let config = Config::load_with_cli_overrides(overrides, ConfigOverrides::default())
+    let codex_home = find_codex_home().context("failed to resolve CODEX_HOME")?;
+    let config = load_config_as_toml_with_cli_overrides(&codex_home, overrides)
         .await
         .context("failed to load configuration")?;
+    let store_mode = config.mcp_oauth_credentials_store.unwrap_or_default();
 
     let LogoutArgs { name } = logout_args;
 
@@ -394,7 +397,7 @@ async fn run_logout(config_overrides: &CliConfigOverrides, logout_args: LogoutAr
         _ => bail!("OAuth logout is only supported for streamable_http transports."),
     };
 
-    match delete_oauth_tokens(&name, &url, config.mcp_oauth_credentials_store_mode) {
+    match delete_oauth_tokens(&name, &url, store_mode) {
         Ok(true) => println!("Removed OAuth credentials for '{name}'."),
         Ok(false) => println!("No OAuth credentials stored for '{name}'."),
         Err(err) => return Err(anyhow!("failed to delete OAuth credentials: {err}")),
@@ -407,17 +410,15 @@ async fn run_list(config_overrides: &CliConfigOverrides, list_args: ListArgs) ->
     let overrides = config_overrides
         .parse_overrides()
         .map_err(anyhow::Error::msg)?;
-    let config = Config::load_with_cli_overrides(overrides, ConfigOverrides::default())
+    let codex_home = find_codex_home().context("failed to resolve CODEX_HOME")?;
+    let config = load_config_as_toml_with_cli_overrides(&codex_home, overrides)
         .await
         .context("failed to load configuration")?;
+    let store_mode = config.mcp_oauth_credentials_store.unwrap_or_default();
 
     let mut entries: Vec<_> = config.mcp_servers.iter().collect();
     entries.sort_by(|(a, _), (b, _)| a.cmp(b));
-    let auth_statuses = compute_auth_statuses(
-        config.mcp_servers.iter(),
-        config.mcp_oauth_credentials_store_mode,
-    )
-    .await;
+    let auth_statuses = compute_auth_statuses(config.mcp_servers.iter(), store_mode).await;
 
     if list_args.json {
         let json_entries: Vec<_> = entries
@@ -664,7 +665,8 @@ async fn run_get(config_overrides: &CliConfigOverrides, get_args: GetArgs) -> Re
     let overrides = config_overrides
         .parse_overrides()
         .map_err(anyhow::Error::msg)?;
-    let config = Config::load_with_cli_overrides(overrides, ConfigOverrides::default())
+    let codex_home = find_codex_home().context("failed to resolve CODEX_HOME")?;
+    let config = load_config_as_toml_with_cli_overrides(&codex_home, overrides)
         .await
         .context("failed to load configuration")?;
 

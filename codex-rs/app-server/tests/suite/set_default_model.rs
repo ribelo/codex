@@ -22,7 +22,7 @@ async fn set_default_model_persists_overrides() -> Result<()> {
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
 
     let params = SetDefaultModelParams {
-        model: Some("gpt-4.1".to_string()),
+        model: Some("openai/gpt-4.1".to_string()),
         reasoning_effort: None,
     };
 
@@ -42,7 +42,7 @@ async fn set_default_model_persists_overrides() -> Result<()> {
 
     assert_eq!(
         ConfigToml {
-            model: Some("gpt-4.1".to_string()),
+            model: Some("openai/gpt-4.1".to_string()),
             model_reasoning_effort: None,
             ..Default::default()
         },
@@ -57,7 +57,7 @@ fn create_config_toml(codex_home: &Path) -> std::io::Result<()> {
     std::fs::write(
         config_toml,
         r#"
-model = "gpt-5.1-codex-max"
+model = "openai/gpt-5.1-codex-max"
 model_reasoning_effort = "medium"
 "#,
     )

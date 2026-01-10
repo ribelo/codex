@@ -16,6 +16,7 @@ use rmcp::transport::ConfigureCommandExt;
 use rmcp::transport::TokioChildProcess;
 use serde_json::json;
 use std::collections::HashSet;
+use std::env;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -32,23 +33,36 @@ where
 {
     let mcp_executable = assert_cmd::Command::cargo_bin("codex-exec-mcp-server")?;
     let execve_wrapper = assert_cmd::Command::cargo_bin("codex-execve-wrapper")?;
-    let bash = Path::new(env!("CARGO_MANIFEST_DIR"))
+    let dotslash_manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
-        .join("..")
-        .join("tests")
         .join("suite")
         .join("bash");
 
-    // Need to ensure the artifact associated with the bash DotSlash file is
-    // available before it is run in a read-only sandbox.
-    let status = Command::new("dotslash")
-        .arg("--")
-        .arg("fetch")
-        .arg(bash.clone())
-        .env("DOTSLASH_CACHE", dotslash_cache.as_ref())
-        .status()
-        .await?;
-    assert!(status.success(), "dotslash fetch failed: {status:?}");
+    // The Bash binary referenced by the DotSlash manifest must be materialized
+    // before the sandbox is enabled (since a read-only sandbox cannot write to
+    // the DotSlash cache).
+    let mut dotslash_cmd = Command::new("dotslash");
+    dotslash_cmd.arg("--").arg("fetch").arg(&dotslash_manifest);
+    dotslash_cmd.env("DOTSLASH_CACHE", dotslash_cache.as_ref());
+    let mut paths: Vec<PathBuf> =
+        env::split_paths(&env::var_os("PATH").unwrap_or_default()).collect();
+    if let Some(home) = env::var_os("HOME") {
+        let cargo_bin = PathBuf::from(home).join(".cargo").join("bin");
+        if !paths.iter().any(|p| p == &cargo_bin) {
+            paths.insert(0, cargo_bin);
+        }
+    }
+    dotslash_cmd.env("PATH", env::join_paths(paths)?);
+
+    let dotslash_output = dotslash_cmd.output().await?;
+    if !dotslash_output.status.success() {
+        return Err(anyhow::anyhow!(
+            "dotslash fetch failed: {}",
+            String::from_utf8_lossy(&dotslash_output.stderr)
+        ));
+    }
+    let bash = String::from_utf8(dotslash_output.stdout)?;
+    let bash = PathBuf::from(bash.trim());
 
     let transport =
         TokioChildProcess::new(Command::new(mcp_executable.get_program()).configure(|cmd| {

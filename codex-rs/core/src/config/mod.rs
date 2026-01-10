@@ -26,6 +26,7 @@ use crate::features::FeaturesToml;
 use crate::git_info::resolve_root_git_project_for_trust;
 use crate::model_provider_info::ModelProviderInfo;
 use crate::model_provider_info::built_in_model_providers;
+use crate::model_provider_info::parse_canonical_model_id;
 use crate::openai_models::model_family::default_context_window_for_model;
 use crate::project_doc::DEFAULT_PROJECT_DOC_FILENAME;
 use crate::project_doc::LOCAL_PROJECT_DOC_FILENAME;
@@ -88,6 +89,7 @@ pub(crate) fn test_config() -> Config {
 #[cfg(test)]
 pub(crate) fn test_config_toml() -> ConfigToml {
     ConfigToml {
+        model: Some("openai/gpt-5.1-codex-mini".to_string()),
         model_context_window: Some(128_000),
         ..Default::default()
     }
@@ -96,7 +98,11 @@ pub(crate) fn test_config_toml() -> ConfigToml {
 /// Application configuration loaded from disk and merged with overrides.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
-    /// Optional override of model selection.
+    /// Provider-specific model slug (e.g. `"gpt-5.1-codex-mini"` or `"anthropic/claude-3.5-sonnet"`).
+    ///
+    /// Note: `config.toml` uses canonical model IDs (`{provider}/{model}`), but internally we keep the
+    /// provider ID separate (`model_provider_id`) and pass only the provider-specific slug to the
+    /// [`crate::client::ModelClient`].
     pub model: Option<String>,
 
     /// Available configuration profiles.
@@ -573,9 +579,6 @@ pub struct ConfigToml {
     /// Review model override used by the `/review` feature.
     pub review_model: Option<String>,
 
-    /// Provider to use from the model_providers map.
-    pub model_provider: Option<String>,
-
     /// Size of the context window for the model, in tokens.
     pub model_context_window: Option<i64>,
 
@@ -966,7 +969,6 @@ pub struct ConfigOverrides {
     pub cwd: Option<PathBuf>,
     pub approval_policy: Option<AskForApproval>,
     pub sandbox_mode: Option<SandboxMode>,
-    pub model_provider: Option<String>,
     pub config_profile: Option<String>,
     pub codex_linux_sandbox_exe: Option<PathBuf>,
     pub base_instructions: Option<String>,
@@ -995,7 +997,6 @@ impl Config {
             cwd,
             approval_policy: approval_policy_override,
             sandbox_mode,
-            model_provider,
             config_profile: config_profile_key,
             codex_linux_sandbox_exe,
             base_instructions,
@@ -1120,19 +1121,46 @@ impl Config {
             model_providers.entry(key).or_insert(provider);
         }
 
-        let model_provider_id = model_provider
-            .or(config_profile.model_provider)
-            .or(cfg.model_provider)
-            .unwrap_or_else(|| "openai".to_string());
-        let model_provider = model_providers
-            .get(&model_provider_id)
-            .ok_or_else(|| {
-                std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    format!("Model provider `{model_provider_id}` not found"),
+        // Resolve canonical model ID from overrides -> profile -> config, then split it into:
+        // - model_provider_id (provider selection)
+        // - model slug used by ModelClient requests
+        let (_canonical_model, model_provider_id, model_provider, resolved_model) = match model
+            .as_ref()
+            .or(config_profile.model.as_ref())
+            .or(cfg.model.as_ref())
+        {
+            Some(model_str) => {
+                let (provider_id, model_name) =
+                    parse_canonical_model_id(model_str).map_err(|e| {
+                        std::io::Error::new(std::io::ErrorKind::InvalidInput, e.to_string())
+                    })?;
+
+                let provider = model_providers.get(provider_id).ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        format!(
+                            "Provider '{provider_id}' (from model '{model_str}') not found. \
+                             Available providers: {:?}",
+                            model_providers.keys().collect::<Vec<_>>()
+                        ),
+                    )
+                })?;
+
+                (
+                    model_str,
+                    provider_id.to_string(),
+                    provider.clone(),
+                    model_name.to_string(),
                 )
-            })?
-            .clone();
+            }
+            None => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "Model not specified. Please set 'model' in config.toml or via command line \
+                     using canonical format '{provider}/{model}' (e.g., 'openai/gpt-5.1-codex-mini').",
+                ));
+            }
+        };
 
         let profile_name_for_error = active_profile_name.as_deref().unwrap_or("<default>");
 
@@ -1181,10 +1209,8 @@ impl Config {
 
         let forced_login_method = cfg.forced_login_method;
 
-        let model = model.or(config_profile.model).or(cfg.model);
-        let resolved_model = model
-            .clone()
-            .unwrap_or_else(|| OPENAI_DEFAULT_REVIEW_MODEL.to_string());
+        // Use the provider-specific model slug internally. Keep `canonical_model` for error messages.
+        let model = Some(resolved_model.clone());
 
         let compact_prompt = compact_prompt.or(cfg.compact_prompt).and_then(|value| {
             let trimmed = value.trim();
@@ -1750,6 +1776,7 @@ trust_level = "trusted"
         let codex_home = TempDir::new()?;
         let cfg = ConfigToml {
             cli_auth_credentials_store: Some(AuthCredentialsStoreMode::Keyring),
+            model: Some("openai/gpt-5.1-codex-mini".to_string()),
             model_context_window: Some(128_000),
             ..Default::default()
         };
@@ -1794,6 +1821,7 @@ trust_level = "trusted"
         profiles.insert(
             "work".to_string(),
             ConfigProfile {
+                model: Some("openai/gpt-5.1-codex-mini".to_string()),
                 tools_view_image: Some(false),
                 ..Default::default()
             },
@@ -1823,6 +1851,7 @@ trust_level = "trusted"
         profiles.insert(
             "work".to_string(),
             ConfigProfile {
+                model: Some("openai/gpt-5.1-codex-mini".to_string()),
                 sandbox_mode: Some(SandboxMode::DangerFullAccess),
                 ..Default::default()
             },
@@ -1857,6 +1886,7 @@ trust_level = "trusted"
         profiles.insert(
             "work".to_string(),
             ConfigProfile {
+                model: Some("openai/gpt-5.1-codex-mini".to_string()),
                 sandbox_mode: Some(SandboxMode::DangerFullAccess),
                 ..Default::default()
             },
@@ -1900,6 +1930,7 @@ trust_level = "trusted"
         entries.insert("apply_patch_freeform".to_string(), false);
         let cfg = ConfigToml {
             features: Some(crate::features::FeaturesToml { entries }),
+            model: Some("openai/gpt-5.1-codex-mini".to_string()),
             model_context_window: Some(128_000),
             ..Default::default()
         };
@@ -1922,6 +1953,7 @@ trust_level = "trusted"
         let cfg = ConfigToml {
             experimental_use_unified_exec_tool: Some(true),
             experimental_use_freeform_apply_patch: Some(true),
+            model: Some("openai/gpt-5.1-codex-mini".to_string()),
             model_context_window: Some(128_000),
             ..Default::default()
         };
@@ -1945,6 +1977,7 @@ trust_level = "trusted"
         let codex_home = TempDir::new()?;
         let cfg = ConfigToml {
             mcp_oauth_credentials_store: Some(OAuthCredentialsStoreMode::File),
+            model: Some("openai/gpt-5.1-codex-mini".to_string()),
             model_context_window: Some(128_000),
             ..Default::default()
         };
@@ -1971,7 +2004,7 @@ trust_level = "trusted"
 
         std::fs::write(
             &config_path,
-            "mcp_oauth_credentials_store = \"file\"\nmodel_context_window = 128000\n",
+            "model = \"openai/gpt-5.1-codex-mini\"\nmcp_oauth_credentials_store = \"file\"\nmodel_context_window = 128000\n",
         )?;
         std::fs::write(&managed_path, "mcp_oauth_credentials_store = \"keyring\"\n")?;
 
@@ -2744,7 +2777,7 @@ url = "https://example.com/mcp"
         let codex_home = TempDir::new()?;
 
         ConfigEditsBuilder::new(codex_home.path())
-            .set_model(Some("gpt-5.1-codex"), Some(ReasoningEffort::High))
+            .set_model(Some("openai/gpt-5.1-codex"), Some(ReasoningEffort::High))
             .apply()
             .await?;
 
@@ -2752,7 +2785,7 @@ url = "https://example.com/mcp"
             tokio::fs::read_to_string(codex_home.path().join(CONFIG_TOML_FILE)).await?;
         let parsed: ConfigToml = toml::from_str(&serialized)?;
 
-        assert_eq!(parsed.model.as_deref(), Some("gpt-5.1-codex"));
+        assert_eq!(parsed.model.as_deref(), Some("openai/gpt-5.1-codex"));
         assert_eq!(parsed.model_reasoning_effort, Some(ReasoningEffort::High));
 
         Ok(())
@@ -2766,31 +2799,31 @@ url = "https://example.com/mcp"
         tokio::fs::write(
             &config_path,
             r#"
-model = "gpt-5.1-codex"
+model = "openai/gpt-5.1-codex"
 model_reasoning_effort = "medium"
 
 [profiles.dev]
-model = "gpt-4.1"
+model = "openai/gpt-4.1"
 "#,
         )
         .await?;
 
         ConfigEditsBuilder::new(codex_home.path())
-            .set_model(Some("o4-mini"), Some(ReasoningEffort::High))
+            .set_model(Some("openai/o4-mini"), Some(ReasoningEffort::High))
             .apply()
             .await?;
 
         let serialized = tokio::fs::read_to_string(config_path).await?;
         let parsed: ConfigToml = toml::from_str(&serialized)?;
 
-        assert_eq!(parsed.model.as_deref(), Some("o4-mini"));
+        assert_eq!(parsed.model.as_deref(), Some("openai/o4-mini"));
         assert_eq!(parsed.model_reasoning_effort, Some(ReasoningEffort::High));
         assert_eq!(
             parsed
                 .profiles
                 .get("dev")
                 .and_then(|profile| profile.model.as_deref()),
-            Some("gpt-4.1"),
+            Some("openai/gpt-4.1"),
         );
 
         Ok(())
@@ -2802,7 +2835,7 @@ model = "gpt-4.1"
 
         ConfigEditsBuilder::new(codex_home.path())
             .with_profile(Some("dev"))
-            .set_model(Some("gpt-5.1-codex"), Some(ReasoningEffort::Medium))
+            .set_model(Some("openai/gpt-5.1-codex"), Some(ReasoningEffort::Medium))
             .apply()
             .await?;
 
@@ -2814,7 +2847,7 @@ model = "gpt-4.1"
             .get("dev")
             .expect("profile should be created");
 
-        assert_eq!(profile.model.as_deref(), Some("gpt-5.1-codex"));
+        assert_eq!(profile.model.as_deref(), Some("openai/gpt-5.1-codex"));
         assert_eq!(
             profile.model_reasoning_effort,
             Some(ReasoningEffort::Medium)
@@ -2832,18 +2865,18 @@ model = "gpt-4.1"
             &config_path,
             r#"
 [profiles.dev]
-model = "gpt-4"
+model = "openai/gpt-4"
 model_reasoning_effort = "medium"
 
 [profiles.prod]
-model = "gpt-5.1-codex"
+model = "openai/gpt-5.1-codex"
 "#,
         )
         .await?;
 
         ConfigEditsBuilder::new(codex_home.path())
             .with_profile(Some("dev"))
-            .set_model(Some("o4-high"), Some(ReasoningEffort::Medium))
+            .set_model(Some("openai/o4-high"), Some(ReasoningEffort::Medium))
             .apply()
             .await?;
 
@@ -2854,7 +2887,7 @@ model = "gpt-5.1-codex"
             .profiles
             .get("dev")
             .expect("dev profile should survive updates");
-        assert_eq!(dev_profile.model.as_deref(), Some("o4-high"));
+        assert_eq!(dev_profile.model.as_deref(), Some("openai/o4-high"));
         assert_eq!(
             dev_profile.model_reasoning_effort,
             Some(ReasoningEffort::Medium)
@@ -2865,7 +2898,7 @@ model = "gpt-5.1-codex"
                 .profiles
                 .get("prod")
                 .and_then(|profile| profile.model.as_deref()),
-            Some("gpt-5.1-codex"),
+            Some("openai/gpt-5.1-codex"),
         );
 
         Ok(())
@@ -2923,6 +2956,7 @@ model = "gpt-5.1-codex"
 
         let cfg = ConfigToml {
             experimental_compact_prompt_file: Some(PathBuf::from("compact_prompt.txt")),
+            model: Some("openai/gpt-5.1-codex-mini".to_string()),
             model_context_window: Some(128_000),
             ..Default::default()
         };
@@ -2948,7 +2982,7 @@ model = "gpt-5.1-codex"
 
     fn create_test_fixture() -> std::io::Result<PrecedenceTestFixture> {
         let toml = r#"
-model = "o3"
+model = "openai/o3"
 approval_policy = "untrusted"
 model_context_window = 128000
 
@@ -2966,24 +3000,20 @@ stream_max_retries = 10            # retry dropped SSE streams
 stream_idle_timeout_ms = 300000    # 5m idle timeout
 
 [profiles.o3]
-model = "o3"
-model_provider = "openai"
+model = "openai/o3"
 approval_policy = "never"
 model_reasoning_effort = "high"
 model_reasoning_summary = "detailed"
 
 [profiles.gpt3]
-model = "gpt-3.5-turbo"
-model_provider = "openai-chat-completions"
+model = "openai-chat-completions/gpt-3.5-turbo"
 
 [profiles.zdr]
-model = "o3"
-model_provider = "openai"
+model = "openai/o3"
 approval_policy = "on-failure"
 
 [profiles.gpt5]
-model = "gpt-5.1"
-model_provider = "openai"
+model = "openai/gpt-5.1"
 approval_policy = "on-failure"
 model_reasoning_effort = "high"
 model_reasoning_summary = "detailed"
@@ -3116,7 +3146,7 @@ model_verbosity = "high"
                 tools_web_search_request: false,
                 experimental_tools_enable: vec![],
                 allowed_subagents: None,
-                use_experimental_unified_exec_tool: false,
+                use_experimental_unified_exec_tool: true,
                 features: Features::with_defaults(),
                 active_profile: Some("o3".to_string()),
                 active_project: ProjectConfig { trust_level: None },
@@ -3198,7 +3228,7 @@ model_verbosity = "high"
             tools_web_search_request: false,
             experimental_tools_enable: vec![],
             allowed_subagents: None,
-            use_experimental_unified_exec_tool: false,
+            use_experimental_unified_exec_tool: true,
             features: Features::with_defaults(),
             active_profile: Some("gpt3".to_string()),
             active_project: ProjectConfig { trust_level: None },
@@ -3295,7 +3325,7 @@ model_verbosity = "high"
             tools_web_search_request: false,
             experimental_tools_enable: vec![],
             allowed_subagents: None,
-            use_experimental_unified_exec_tool: false,
+            use_experimental_unified_exec_tool: true,
             features: Features::with_defaults(),
             active_profile: Some("zdr".to_string()),
             active_project: ProjectConfig { trust_level: None },
@@ -3378,7 +3408,7 @@ model_verbosity = "high"
             tools_web_search_request: false,
             experimental_tools_enable: vec![],
             allowed_subagents: None,
-            use_experimental_unified_exec_tool: false,
+            use_experimental_unified_exec_tool: true,
             features: Features::with_defaults(),
             active_profile: Some("gpt5".to_string()),
             active_project: ProjectConfig { trust_level: None },
@@ -3560,6 +3590,7 @@ trust_level = "untrusted"
 
         let cfg = ConfigToml {
             projects: Some(projects),
+            model: Some("openai/gpt-5.1-codex-mini".to_string()),
             model_context_window: Some(128_000),
             ..Default::default()
         };

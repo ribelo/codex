@@ -577,8 +577,7 @@ mod tests {
         let request = ClientRequest::NewConversation {
             request_id: RequestId::Integer(42),
             params: v1::NewConversationParams {
-                model: Some("gpt-5.1-codex-max".to_string()),
-                model_provider: None,
+                model: Some("openai/gpt-5.1-codex-max".to_string()),
                 profile: None,
                 cwd: None,
                 approval_policy: Some(AskForApproval::OnRequest),
@@ -595,8 +594,7 @@ mod tests {
                 "method": "newConversation",
                 "id": 42,
                 "params": {
-                    "model": "gpt-5.1-codex-max",
-                    "modelProvider": null,
+                    "model": "openai/gpt-5.1-codex-max",
                     "profile": null,
                     "cwd": null,
                     "approvalPolicy": "on-request",

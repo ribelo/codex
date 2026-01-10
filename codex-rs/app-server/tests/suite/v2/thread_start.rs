@@ -29,7 +29,7 @@ async fn thread_start_creates_thread_and_emits_started() -> Result<()> {
     // Start a v2 thread with an explicit model override.
     let req_id = mcp
         .send_thread_start_request(ThreadStartParams {
-            model: Some("gpt-5.1".to_string()),
+            model: Some("mock_provider/gpt-5.1".to_string()),
             ..Default::default()
         })
         .await?;
@@ -76,11 +76,9 @@ fn create_config_toml(codex_home: &Path, server_uri: &str) -> std::io::Result<()
         config_toml,
         format!(
             r#"
-model = "mock-model"
+model = "mock_provider/mock-model"
 approval_policy = "never"
 sandbox_mode = "read-only"
-
-model_provider = "mock_provider"
 
 [model_providers.mock_provider]
 name = "Mock provider for test"

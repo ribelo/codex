@@ -7,11 +7,9 @@ use crossterm::Command;
 use crossterm::cursor::MoveTo;
 use crossterm::queue;
 use crossterm::style::Color as CColor;
-use crossterm::style::Colors;
 use crossterm::style::Print;
 use crossterm::style::SetAttribute;
 use crossterm::style::SetBackgroundColor;
-use crossterm::style::SetColors;
 use crossterm::style::SetForegroundColor;
 use crossterm::terminal::Clear;
 use crossterm::terminal::ClearType;
@@ -21,6 +19,53 @@ use ratatui::style::Color;
 use ratatui::style::Modifier;
 use ratatui::text::Line;
 use ratatui::text::Span;
+
+fn sgr_color_part(color: Color, is_fg: bool) -> String {
+    let (base, base_bright, reset) = if is_fg { (30, 90, 39) } else { (40, 100, 49) };
+    match color {
+        Color::Reset => reset.to_string(),
+        Color::Black => base.to_string(),
+        Color::Red => (base + 1).to_string(),
+        Color::Green => (base + 2).to_string(),
+        Color::Yellow => (base + 3).to_string(),
+        Color::Blue => (base + 4).to_string(),
+        Color::Magenta => (base + 5).to_string(),
+        Color::Cyan => (base + 6).to_string(),
+        Color::Gray => (base + 7).to_string(),
+        Color::DarkGray => base_bright.to_string(),
+        Color::LightRed => (base_bright + 1).to_string(),
+        Color::LightGreen => (base_bright + 2).to_string(),
+        Color::LightYellow => (base_bright + 3).to_string(),
+        Color::LightBlue => (base_bright + 4).to_string(),
+        Color::LightMagenta => (base_bright + 5).to_string(),
+        Color::LightCyan => (base_bright + 6).to_string(),
+        Color::White => (base_bright + 7).to_string(),
+        Color::Indexed(i) => {
+            if is_fg {
+                format!("38;5;{i}")
+            } else {
+                format!("48;5;{i}")
+            }
+        }
+        Color::Rgb(r, g, b) => {
+            if is_fg {
+                format!("38;2;{r};{g};{b}")
+            } else {
+                format!("48;2;{r};{g};{b}")
+            }
+        }
+    }
+}
+
+fn queue_sgr_colors<W>(mut writer: W, fg: Color, bg: Color) -> io::Result<()>
+where
+    W: Write,
+{
+    let fg_part = sgr_color_part(fg, true);
+    let bg_part = sgr_color_part(bg, false);
+    queue!(writer, Print(format!("\x1b[{fg_part};{bg_part}m")))?;
+    Ok(())
+}
 
 /// Insert `lines` above the viewport using the terminal's backend writer
 /// (avoids direct stdout references).
@@ -94,18 +139,10 @@ where
 
     for line in wrapped {
         queue!(writer, Print("\r\n"))?;
-        queue!(
-            writer,
-            SetColors(Colors::new(
-                line.style
-                    .fg
-                    .map(std::convert::Into::into)
-                    .unwrap_or(CColor::Reset),
-                line.style
-                    .bg
-                    .map(std::convert::Into::into)
-                    .unwrap_or(CColor::Reset)
-            ))
+        queue_sgr_colors(
+            writer.by_ref(),
+            line.style.fg.unwrap_or(Color::Reset),
+            line.style.bg.unwrap_or(Color::Reset),
         )?;
         queue!(writer, Clear(ClearType::UntilNewLine))?;
         // Merge line-level style into each span so that ANSI colors reflect
@@ -263,10 +300,7 @@ where
         let next_fg = span.style.fg.unwrap_or(Color::Reset);
         let next_bg = span.style.bg.unwrap_or(Color::Reset);
         if next_fg != fg || next_bg != bg {
-            queue!(
-                writer,
-                SetColors(Colors::new(next_fg.into(), next_bg.into()))
-            )?;
+            queue_sgr_colors(writer.by_ref(), next_fg, next_bg)?;
             fg = next_fg;
             bg = next_bg;
         }

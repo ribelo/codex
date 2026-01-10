@@ -3,6 +3,8 @@ use std::sync::Arc;
 use crate::Prompt;
 use crate::codex::Session;
 use crate::codex::TurnContext;
+use crate::compact::SUMMARY_PREFIX;
+use crate::compact::content_items_to_text;
 use crate::error::Result as CodexResult;
 use crate::protocol::CompactedItem;
 use crate::protocol::ContextCompactedEvent;
@@ -40,6 +42,13 @@ async fn run_remote_compact_task_inner_impl(
     sess: &Arc<Session>,
     turn_context: &Arc<TurnContext>,
 ) -> CodexResult<()> {
+    let tokens_before = sess
+        .clone_history()
+        .await
+        .estimate_token_count(turn_context.as_ref())
+        .and_then(|tokens| i32::try_from(tokens).ok())
+        .unwrap_or(i32::MAX);
+
     let mut history = sess.clone_history().await;
     let prompt = Prompt {
         input: history.get_history_for_prompt(),
@@ -66,6 +75,7 @@ async fn run_remote_compact_task_inner_impl(
     sess.replace_history(new_history.clone()).await;
     sess.recompute_token_usage(turn_context).await;
 
+    let summary_suffix = extract_summary_suffix(&new_history).unwrap_or_default();
     let compacted_item = CompactedItem {
         message: String::new(),
         replacement_history: Some(new_history),
@@ -73,8 +83,26 @@ async fn run_remote_compact_task_inner_impl(
     sess.persist_rollout_items(&[RolloutItem::Compacted(compacted_item)])
         .await;
 
-    let event = EventMsg::ContextCompacted(ContextCompactedEvent {});
+    let event = EventMsg::ContextCompacted(ContextCompactedEvent {
+        tokens_before,
+        summary: summary_suffix,
+    });
     sess.send_event(turn_context, event).await;
 
     Ok(())
+}
+
+fn extract_summary_suffix(history: &[ResponseItem]) -> Option<String> {
+    for item in history {
+        if let ResponseItem::Message { role, content, .. } = item
+            && role == "user"
+            && let Some(text) = content_items_to_text(content)
+        {
+            let prefix = format!("{SUMMARY_PREFIX}\n");
+            if let Some(summary_suffix) = text.strip_prefix(&prefix) {
+                return Some(summary_suffix.to_string());
+            }
+        }
+    }
+    None
 }

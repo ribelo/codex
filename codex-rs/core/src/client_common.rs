@@ -25,6 +25,9 @@ pub const REVIEW_EXIT_SUCCESS_TMPL: &str = include_str!("../templates/review/exi
 pub const REVIEW_EXIT_INTERRUPTED_TMPL: &str =
     include_str!("../templates/review/exit_interrupted.xml");
 
+/// Sandbox and approvals instructions. Injected into all prompts.
+pub const SANDBOX_AND_APPROVALS_PROMPT: &str = include_str!("../sandbox_and_approvals.md");
+
 /// API request payload for a single model turn
 #[derive(Default, Debug, Clone)]
 pub struct Prompt {
@@ -81,15 +84,22 @@ impl Prompt {
             && model.needs_special_apply_patch_instructions
             && !is_apply_patch_tool_present;
 
-        // Build the full instructions by conditionally appending apply_patch instructions.
+        let mut result = base.into_owned();
         if needs_apply_patch_instructions {
-            let mut result = base.into_owned();
             result.push('\n');
             result.push_str(APPLY_PATCH_TOOL_INSTRUCTIONS);
-            Cow::Owned(result)
-        } else {
-            base
         }
+
+        // Some model-specific base instructions (e.g. GPT-5.x prompts) already include the
+        // sandbox/approvals guidance. Avoid duplicating it, as certain providers validate the
+        // instructions field strictly.
+        let base_instructions_already_include_sandbox =
+            result.contains("Filesystem sandboxing defines which files can be read or written.");
+        if !base_instructions_already_include_sandbox {
+            result.push_str("\n\n");
+            result.push_str(SANDBOX_AND_APPROVALS_PROMPT);
+        }
+        Cow::Owned(result)
     }
 
     pub(crate) fn get_formatted_input(&self) -> Vec<ResponseItem> {
@@ -322,14 +332,17 @@ mod tests {
             let config = test_config();
             let model_family =
                 ModelsManager::construct_model_family_offline(test_case.slug, &config);
-            let expected = if test_case.expects_apply_patch_instructions {
-                format!(
-                    "{}\n{}",
-                    model_family.base_instructions, APPLY_PATCH_TOOL_INSTRUCTIONS,
-                )
-            } else {
-                model_family.base_instructions.to_string()
-            };
+            let mut expected = model_family.base_instructions.to_string();
+            if test_case.expects_apply_patch_instructions {
+                expected.push('\n');
+                expected.push_str(APPLY_PATCH_TOOL_INSTRUCTIONS);
+            }
+            let base_instructions_already_include_sandbox = expected
+                .contains("Filesystem sandboxing defines which files can be read or written.");
+            if !base_instructions_already_include_sandbox {
+                expected.push_str("\n\n");
+                expected.push_str(SANDBOX_AND_APPROVALS_PROMPT);
+            }
 
             let full = prompt.get_full_instructions(&model_family);
             assert_eq!(full, expected);

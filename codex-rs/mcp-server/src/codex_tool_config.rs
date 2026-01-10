@@ -161,7 +161,6 @@ impl CodexToolCallParam {
             cwd: cwd.map(PathBuf::from),
             approval_policy: approval_policy.map(Into::into),
             sandbox_mode: sandbox.map(Into::into),
-            model_provider: None,
             codex_linux_sandbox_exe,
             base_instructions,
             developer_instructions,

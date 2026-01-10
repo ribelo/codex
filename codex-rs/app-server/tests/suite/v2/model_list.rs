@@ -23,6 +23,10 @@ const INVALID_REQUEST_ERROR_CODE: i64 = -32600;
 #[tokio::test]
 async fn list_models_returns_all_models_with_large_limit() -> Result<()> {
     let codex_home = TempDir::new()?;
+    std::fs::write(
+        codex_home.path().join("config.toml"),
+        "model = \"openai/gpt-5.1-codex-max\"\n",
+    )?;
     write_models_cache(codex_home.path())?;
     let mut mcp = McpProcess::new(codex_home.path()).await?;
 
@@ -186,6 +190,10 @@ async fn list_models_returns_all_models_with_large_limit() -> Result<()> {
 #[tokio::test]
 async fn list_models_pagination_works() -> Result<()> {
     let codex_home = TempDir::new()?;
+    std::fs::write(
+        codex_home.path().join("config.toml"),
+        "model = \"openai/gpt-5.1-codex-max\"\n",
+    )?;
     write_models_cache(codex_home.path())?;
     let mut mcp = McpProcess::new(codex_home.path()).await?;
 
@@ -306,6 +314,10 @@ async fn list_models_pagination_works() -> Result<()> {
 #[tokio::test]
 async fn list_models_rejects_invalid_cursor() -> Result<()> {
     let codex_home = TempDir::new()?;
+    std::fs::write(
+        codex_home.path().join("config.toml"),
+        "model = \"openai/gpt-5.1-codex-max\"\n",
+    )?;
     write_models_cache(codex_home.path())?;
     let mut mcp = McpProcess::new(codex_home.path()).await?;
 

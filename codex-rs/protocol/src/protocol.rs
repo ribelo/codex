@@ -701,7 +701,10 @@ pub struct WarningEvent {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
-pub struct ContextCompactedEvent;
+pub struct ContextCompactedEvent {
+    pub tokens_before: i32,
+    pub summary: String,
+}
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
 pub struct TaskCompleteEvent {
@@ -807,9 +810,11 @@ pub struct RateLimitSnapshot {
     pub plan_type: Option<crate::account::PlanType>,
     /// Antigravity-specific quota data with per-model quotas and credits.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub antigravity: Option<AntigravityQuota>,
     /// Gemini-specific quota data from CodeAssist API.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub gemini: Option<GeminiQuota>,
 }
 
@@ -1302,6 +1307,10 @@ pub struct SessionMeta {
     pub instructions: Option<String>,
     #[serde(default)]
     pub source: SessionSource,
+    /// Canonical model ID (e.g., "openai/gpt-5.1-codex-mini").
+    pub model: Option<String>,
+    /// Legacy field for backward compat deserialization only.
+    #[serde(skip_serializing, default)]
     pub model_provider: Option<String>,
 }
 
@@ -1315,6 +1324,7 @@ impl Default for SessionMeta {
             cli_version: String::new(),
             instructions: None,
             source: SessionSource::default(),
+            model: None,
             model_provider: None,
         }
     }

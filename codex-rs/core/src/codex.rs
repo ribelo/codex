@@ -1179,9 +1179,22 @@ impl Session {
                     if let Some(replacement) = &compacted.replacement_history {
                         history.replace(replacement.clone());
                     } else {
+                        let initial_context: Vec<ResponseItem> = snapshot
+                            .iter()
+                            .filter_map(|item| {
+                                if let ResponseItem::Message { role, content, .. } = item
+                                    && role == "user"
+                                    && compact::is_session_prefix_message(content)
+                                {
+                                    Some(item.clone())
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect();
                         let turns = compact::identify_turns(&snapshot);
                         let rebuilt = compact::build_compacted_history(
-                            self.build_initial_context(turn_context),
+                            initial_context,
                             &turns,
                             &compacted.message,
                         );

@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use std::process::ExitStatus;
 use tokio::fs::create_dir_all;
 use tokio::process::Child;
+use which::which;
 
 #[cfg(target_os = "macos")]
 async fn spawn_command_under_sandbox(
@@ -41,7 +42,7 @@ async fn spawn_command_under_sandbox(
     env: HashMap<String, String>,
 ) -> std::io::Result<Child> {
     use codex_core::landlock::spawn_command_under_linux_sandbox;
-    let codex_linux_sandbox_exe = assert_cmd::cargo::cargo_bin("codex-exec");
+    let codex_linux_sandbox_exe = assert_cmd::cargo::cargo_bin("codex-linux-sandbox");
     spawn_command_under_linux_sandbox(
         codex_linux_sandbox_exe,
         command,
@@ -57,6 +58,14 @@ async fn spawn_command_under_sandbox(
 #[tokio::test]
 async fn python_multiprocessing_lock_works_under_sandbox() {
     core_test_support::skip_if_sandbox!();
+
+    let python3 = match which("python3") {
+        Ok(path) => path,
+        Err(_) => {
+            eprintln!("python3 not found in PATH, skipping test.");
+            return;
+        }
+    };
     #[cfg(target_os = "macos")]
     let writable_roots = Vec::<PathBuf>::new();
 
@@ -92,7 +101,7 @@ if __name__ == '__main__':
     let sandbox_cwd = command_cwd.clone();
     let mut child = spawn_command_under_sandbox(
         vec![
-            "python3".to_string(),
+            python3.to_string_lossy().into_owned(),
             "-c".to_string(),
             python_code.to_string(),
         ],
@@ -113,14 +122,13 @@ if __name__ == '__main__':
 async fn python_getpwuid_works_under_sandbox() {
     core_test_support::skip_if_sandbox!();
 
-    if std::process::Command::new("python3")
-        .arg("--version")
-        .status()
-        .is_err()
-    {
-        eprintln!("python3 not found in PATH, skipping test.");
-        return;
-    }
+    let python3 = match which("python3") {
+        Ok(path) => path,
+        Err(_) => {
+            eprintln!("python3 not found in PATH, skipping test.");
+            return;
+        }
+    };
 
     let policy = SandboxPolicy::ReadOnly;
     let command_cwd = std::env::current_dir().expect("should be able to get current dir");
@@ -128,7 +136,7 @@ async fn python_getpwuid_works_under_sandbox() {
 
     let mut child = spawn_command_under_sandbox(
         vec![
-            "python3".to_string(),
+            python3.to_string_lossy().into_owned(),
             "-c".to_string(),
             "import pwd, os; print(pwd.getpwuid(os.getuid()))".to_string(),
         ],
@@ -151,6 +159,7 @@ async fn python_getpwuid_works_under_sandbox() {
 #[tokio::test]
 async fn sandbox_distinguishes_command_and_policy_cwds() {
     core_test_support::skip_if_sandbox!();
+    let touch = which("touch").expect("touch not found in PATH");
     let temp = tempfile::tempdir().expect("should be able to create temp dir");
     let sandbox_root = temp.path().join("sandbox");
     let command_root = temp.path().join("command");
@@ -208,7 +217,7 @@ async fn sandbox_distinguishes_command_and_policy_cwds() {
     // Writing to the sandbox policy cwd after changing directories into it should succeed.
     let mut child = spawn_command_under_sandbox(
         vec![
-            "/usr/bin/touch".to_string(),
+            touch.to_string_lossy().into_owned(),
             canonical_allowed_path.to_string_lossy().into_owned(),
         ],
         command_root,

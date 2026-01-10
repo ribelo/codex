@@ -15,6 +15,10 @@ async fn test_fuzzy_file_search_sorts_and_includes_indices() -> Result<()> {
     // Prepare a temporary Codex home and a separate root with test files.
     let codex_home = TempDir::new()?;
     let root = TempDir::new()?;
+    std::fs::write(
+        codex_home.path().join("config.toml"),
+        "model = \"openai/gpt-4o\"\n",
+    )?;
 
     // Create files designed to have deterministic ordering for query "abe".
     std::fs::write(root.path().join("abc"), "x")?;
@@ -87,6 +91,10 @@ async fn test_fuzzy_file_search_sorts_and_includes_indices() -> Result<()> {
 async fn test_fuzzy_file_search_accepts_cancellation_token() -> Result<()> {
     let codex_home = TempDir::new()?;
     let root = TempDir::new()?;
+    std::fs::write(
+        codex_home.path().join("config.toml"),
+        "model = \"openai/gpt-4o\"\n",
+    )?;
 
     std::fs::write(root.path().join("alpha.txt"), "contents")?;
 

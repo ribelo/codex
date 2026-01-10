@@ -2339,6 +2339,7 @@ mod tests {
 
     fn test_config() -> Config {
         let mut config_toml = ConfigToml::default();
+        config_toml.model = Some("openai/gpt-5.1-codex-mini".to_string());
         config_toml.model_context_window = Some(128_000);
         Config::load_from_base_config_with_overrides(
             config_toml,

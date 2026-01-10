@@ -55,7 +55,7 @@ fn write_session_file(
         uuid,
         num_records,
         source,
-        Some("test-provider"),
+        Some("test-provider/test-model"),
     )
 }
 
@@ -65,7 +65,7 @@ fn write_session_file_with_provider(
     uuid: Uuid,
     num_records: usize,
     source: Option<SessionSource>,
-    model_provider: Option<&str>,
+    model: Option<&str>,
 ) -> std::io::Result<(OffsetDateTime, Uuid)> {
     let format: &[FormatItem] =
         format_description!("[year]-[month]-[day]T[hour]-[minute]-[second]");
@@ -95,8 +95,8 @@ fn write_session_file_with_provider(
     if let Some(source) = source {
         payload["source"] = serde_json::to_value(source).unwrap();
     }
-    if let Some(provider) = model_provider {
-        payload["model_provider"] = serde_json::Value::String(provider.to_string());
+    if let Some(m) = model {
+        payload["model"] = serde_json::Value::String(m.to_string());
     }
 
     let meta = serde_json::json!({
@@ -218,7 +218,7 @@ async fn test_list_conversations_latest_first() {
         "originator": "test_originator",
         "cli_version": "test_version",
         "source": "vscode",
-        "model_provider": "test-provider",
+        "model": "test-provider/test-model",
     })];
     let head_2 = vec![serde_json::json!({
         "id": u2,
@@ -228,7 +228,7 @@ async fn test_list_conversations_latest_first() {
         "originator": "test_originator",
         "cli_version": "test_version",
         "source": "vscode",
-        "model_provider": "test-provider",
+        "model": "test-provider/test-model",
     })];
     let head_1 = vec![serde_json::json!({
         "id": u1,
@@ -238,7 +238,7 @@ async fn test_list_conversations_latest_first() {
         "originator": "test_originator",
         "cli_version": "test_version",
         "source": "vscode",
-        "model_provider": "test-provider",
+        "model": "test-provider/test-model",
     })];
 
     let updated_times: Vec<Option<String>> =
@@ -358,7 +358,7 @@ async fn test_pagination_cursor() {
         "originator": "test_originator",
         "cli_version": "test_version",
         "source": "vscode",
-        "model_provider": "test-provider",
+        "model": "test-provider/test-model",
     })];
     let head_4 = vec![serde_json::json!({
         "id": u4,
@@ -368,7 +368,7 @@ async fn test_pagination_cursor() {
         "originator": "test_originator",
         "cli_version": "test_version",
         "source": "vscode",
-        "model_provider": "test-provider",
+        "model": "test-provider/test-model",
     })];
     let updated_page1: Vec<Option<String>> =
         page1.items.iter().map(|i| i.updated_at.clone()).collect();
@@ -425,7 +425,7 @@ async fn test_pagination_cursor() {
         "originator": "test_originator",
         "cli_version": "test_version",
         "source": "vscode",
-        "model_provider": "test-provider",
+        "model": "test-provider/test-model",
     })];
     let head_2 = vec![serde_json::json!({
         "id": u2,
@@ -435,7 +435,7 @@ async fn test_pagination_cursor() {
         "originator": "test_originator",
         "cli_version": "test_version",
         "source": "vscode",
-        "model_provider": "test-provider",
+        "model": "test-provider/test-model",
     })];
     let updated_page2: Vec<Option<String>> =
         page2.items.iter().map(|i| i.updated_at.clone()).collect();
@@ -486,7 +486,7 @@ async fn test_pagination_cursor() {
         "originator": "test_originator",
         "cli_version": "test_version",
         "source": "vscode",
-        "model_provider": "test-provider",
+        "model": "test-provider/test-model",
     })];
     let updated_page3: Vec<Option<String>> =
         page3.items.iter().map(|i| i.updated_at.clone()).collect();
@@ -543,7 +543,7 @@ async fn test_get_conversation_contents() {
         "originator": "test_originator",
         "cli_version": "test_version",
         "source": "vscode",
-        "model_provider": "test-provider",
+        "model": "test-provider/test-model",
     })];
     let expected_page = ConversationsPage {
         items: vec![ConversationItem {
@@ -570,7 +570,7 @@ async fn test_get_conversation_contents() {
             "originator": "test_originator",
             "cli_version": "test_version",
             "source": "vscode",
-            "model_provider": "test-provider",
+            "model": "test-provider/test-model",
         }
     });
     let user_event = serde_json::json!({
@@ -608,7 +608,8 @@ async fn test_updated_at_uses_file_mtime() -> Result<()> {
                 originator: "test_originator".into(),
                 cli_version: "test_version".into(),
                 source: SessionSource::VSCode,
-                model_provider: Some("test-provider".into()),
+                model: Some("test-provider/test-model".into()),
+                model_provider: None,
             },
             git: None,
         }),
@@ -713,7 +714,7 @@ async fn test_stable_ordering_same_second_pagination() {
             "originator": "test_originator",
             "cli_version": "test_version",
             "source": "vscode",
-            "model_provider": "test-provider",
+            "model": "test-provider/test-model",
         })]
     };
     let updated_page1: Vec<Option<String>> =
@@ -851,7 +852,7 @@ async fn test_model_provider_filter_selects_only_matching_sessions() -> Result<(
         openai_id,
         1,
         Some(SessionSource::VSCode),
-        Some("openai"),
+        Some("openai/gpt-4"),
     )?;
     write_session_file_with_provider(
         home,
@@ -859,7 +860,7 @@ async fn test_model_provider_filter_selects_only_matching_sessions() -> Result<(
         beta_id,
         1,
         Some(SessionSource::VSCode),
-        Some("beta"),
+        Some("beta/some-model"),
     )?;
     write_session_file_with_provider(
         home,

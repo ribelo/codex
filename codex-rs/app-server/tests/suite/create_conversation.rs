@@ -37,7 +37,7 @@ async fn test_conversation_create_and_send_message_ok() -> Result<()> {
     // Create a conversation via the new JSON-RPC API.
     let new_conv_id = mcp
         .send_new_conversation_request(NewConversationParams {
-            model: Some("o3".to_string()),
+            model: Some("mock_provider/o3".to_string()),
             ..Default::default()
         })
         .await?;
@@ -124,11 +124,9 @@ fn create_config_toml(codex_home: &Path, server_uri: &str) -> std::io::Result<()
         config_toml,
         format!(
             r#"
-model = "mock-model"
+model = "mock_provider/mock-model"
 approval_policy = "never"
 sandbox_mode = "danger-full-access"
-
-model_provider = "mock_provider"
 
 [model_providers.mock_provider]
 name = "Mock provider for test"

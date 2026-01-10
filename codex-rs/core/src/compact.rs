@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use crate::Prompt;
@@ -25,6 +27,7 @@ use codex_protocol::models::WebSearchAction;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::user_input::UserInput;
 use futures::prelude::*;
+use serde::Deserialize;
 use tracing::error;
 
 pub const SUMMARIZATION_PROMPT: &str = include_str!("../templates/compact/prompt.md");
@@ -46,6 +49,166 @@ const MAX_TEXT_CHARS: usize = 50_000;
 /// This is much more aggressive than the previous `context_window / 2` approach
 /// which kept 50% of the context window (e.g., 64K tokens for a 128K model).
 const KEEP_RECENT_TOKENS: usize = 20_000;
+
+const MAX_FILE_OPS_PER_KIND: usize = 200;
+
+const FILE_OPS_XML_TAG: &str = "file_ops";
+const FILE_OPS_XML_READ_FILE_TAG: &str = "read_file";
+const FILE_OPS_XML_WRITE_FILE_TAG: &str = "write_file";
+const FILE_OPS_XML_APPLY_PATCH_TAG: &str = "apply_patch";
+
+#[derive(Debug, Default, Clone)]
+struct FileOps {
+    read_file_paths: BTreeSet<String>,
+    write_file_paths: BTreeSet<String>,
+    apply_patch_paths: BTreeSet<String>,
+}
+
+impl FileOps {
+    fn is_empty(&self) -> bool {
+        self.read_file_paths.is_empty()
+            && self.write_file_paths.is_empty()
+            && self.apply_patch_paths.is_empty()
+    }
+
+    fn merge(&mut self, other: FileOps) {
+        self.read_file_paths.extend(other.read_file_paths);
+        self.write_file_paths.extend(other.write_file_paths);
+        self.apply_patch_paths.extend(other.apply_patch_paths);
+    }
+
+    fn merge_with_limit(older: FileOps, newer: FileOps, limit: usize) -> FileOps {
+        FileOps {
+            read_file_paths: merge_paths_with_limit(
+                &older.read_file_paths,
+                &newer.read_file_paths,
+                limit,
+            ),
+            write_file_paths: merge_paths_with_limit(
+                &older.write_file_paths,
+                &newer.write_file_paths,
+                limit,
+            ),
+            apply_patch_paths: merge_paths_with_limit(
+                &older.apply_patch_paths,
+                &newer.apply_patch_paths,
+                limit,
+            ),
+        }
+    }
+
+    fn truncate_to_limit(&mut self, limit: usize) {
+        truncate_paths_to_limit(&mut self.read_file_paths, limit);
+        truncate_paths_to_limit(&mut self.write_file_paths, limit);
+        truncate_paths_to_limit(&mut self.apply_patch_paths, limit);
+    }
+
+    fn render_xml_block(&self) -> Option<String> {
+        if self.is_empty() {
+            return None;
+        }
+
+        let mut out = String::new();
+        out.push_str(&format!("<{FILE_OPS_XML_TAG}>\n"));
+
+        if !self.read_file_paths.is_empty() {
+            out.push_str(&format!("<{FILE_OPS_XML_READ_FILE_TAG}>\n"));
+            for path in &self.read_file_paths {
+                out.push_str(escape_xml_text(path).as_ref());
+                out.push('\n');
+            }
+            out.push_str(&format!("</{FILE_OPS_XML_READ_FILE_TAG}>\n"));
+        }
+
+        if !self.write_file_paths.is_empty() {
+            out.push_str(&format!("<{FILE_OPS_XML_WRITE_FILE_TAG}>\n"));
+            for path in &self.write_file_paths {
+                out.push_str(escape_xml_text(path).as_ref());
+                out.push('\n');
+            }
+            out.push_str(&format!("</{FILE_OPS_XML_WRITE_FILE_TAG}>\n"));
+        }
+
+        if !self.apply_patch_paths.is_empty() {
+            out.push_str(&format!("<{FILE_OPS_XML_APPLY_PATCH_TAG}>\n"));
+            for path in &self.apply_patch_paths {
+                out.push_str(escape_xml_text(path).as_ref());
+                out.push('\n');
+            }
+            out.push_str(&format!("</{FILE_OPS_XML_APPLY_PATCH_TAG}>\n"));
+        }
+
+        out.push_str(&format!("</{FILE_OPS_XML_TAG}>"));
+        Some(out)
+    }
+}
+
+fn truncate_paths_to_limit(paths: &mut BTreeSet<String>, limit: usize) {
+    if paths.len() <= limit {
+        return;
+    }
+    *paths = paths.iter().take(limit).cloned().collect();
+}
+
+fn merge_paths_with_limit(
+    older: &BTreeSet<String>,
+    newer: &BTreeSet<String>,
+    limit: usize,
+) -> BTreeSet<String> {
+    let mut merged: BTreeSet<String> = newer.iter().take(limit).cloned().collect();
+    for path in older {
+        if merged.len() >= limit {
+            break;
+        }
+        merged.insert(path.clone());
+    }
+    merged
+}
+
+fn escape_xml_text(text: &str) -> Cow<'_, str> {
+    if !text.contains('&')
+        && !text.contains('<')
+        && !text.contains('>')
+        && !text.contains('"')
+        && !text.contains('\'')
+    {
+        return Cow::Borrowed(text);
+    }
+
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&apos;"),
+            _ => out.push(ch),
+        }
+    }
+    Cow::Owned(out)
+}
+
+fn unescape_xml_text(text: &str) -> Cow<'_, str> {
+    if !text.contains('&') {
+        return Cow::Borrowed(text);
+    }
+
+    Cow::Owned(
+        text.replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&quot;", "\"")
+            .replace("&apos;", "'")
+            .replace("&amp;", "&"),
+    )
+}
+
+#[derive(Debug, Clone)]
+struct PreviousSummary {
+    summary_for_prompt: String,
+    goal_section: Option<String>,
+    file_ops: FileOps,
+}
 
 pub(crate) fn should_use_remote_compact_task(
     session: &Session,
@@ -87,6 +250,11 @@ async fn run_compact_task_inner(
     turn_context: Arc<TurnContext>,
     _input: Vec<UserInput>, // Now ignored - we build our own prompt
 ) {
+    let tokens_before = sess
+        .clone_history()
+        .await
+        .estimate_token_count(turn_context.as_ref());
+
     // Get current history and identify what to summarize vs keep
     let history_snapshot = sess.clone_history().await.get_history();
     let turns = identify_turns(&history_snapshot);
@@ -120,9 +288,21 @@ async fn run_compact_task_inner(
             .collect();
         let serialized_conversation = serialize_history_to_text(&items_to_serialize);
 
+        let current_file_ops = extract_file_ops_from_items(&items_to_serialize);
+        let previous_file_ops = previous_summary
+            .as_ref()
+            .map(|summary| summary.file_ops.clone())
+            .unwrap_or_default();
+        let merged_file_ops =
+            FileOps::merge_with_limit(previous_file_ops, current_file_ops, MAX_FILE_OPS_PER_KIND);
+
+        let previous_summary_for_prompt = previous_summary
+            .as_ref()
+            .map(|summary| summary.summary_for_prompt.as_str());
+
         // Build the XML-wrapped prompt
         let prompt_text = build_compaction_prompt_text(
-            &previous_summary,
+            &previous_summary_for_prompt,
             &serialized_conversation,
             turn_context.compact_prompt(),
         );
@@ -136,7 +316,7 @@ async fn run_compact_task_inner(
 
         let prompt = Prompt {
             base_instructions_override: Some(SUMMARIZATION_SYSTEM_PROMPT.to_string()),
-            input: compaction_input.clone(),
+            input: compaction_input,
             ..Default::default()
         };
         let attempt_result = drain_to_completed(&sess, turn_context.as_ref(), &prompt).await;
@@ -152,6 +332,12 @@ async fn run_compact_task_inner(
                     )
                     .await;
                 }
+                let previous_goal = previous_summary
+                    .as_ref()
+                    .and_then(|summary| summary.goal_section.as_deref());
+                let summary_suffix =
+                    finalize_summary_suffix(&summary_suffix, previous_goal, &merged_file_ops);
+
                 // Build the summary text with prefix
                 let summary_text = format!("{SUMMARY_PREFIX}\n{summary_suffix}");
 
@@ -176,7 +362,13 @@ async fn run_compact_task_inner(
                 });
                 sess.persist_rollout_items(&[rollout_item]).await;
 
-                let event = EventMsg::ContextCompacted(ContextCompactedEvent {});
+                let tokens_before = tokens_before
+                    .and_then(|tokens| i32::try_from(tokens).ok())
+                    .unwrap_or(i32::MAX);
+                let event = EventMsg::ContextCompacted(ContextCompactedEvent {
+                    tokens_before,
+                    summary: summary_suffix,
+                });
                 sess.send_event(&turn_context, event).await;
 
                 let warning = EventMsg::Warning(WarningEvent {
@@ -248,7 +440,7 @@ async fn run_compact_task_inner(
 }
 
 /// Extracts the previous summary from history if one exists from a prior compaction.
-fn extract_previous_summary(history: &[ResponseItem]) -> Option<String> {
+fn extract_previous_summary(history: &[ResponseItem]) -> Option<PreviousSummary> {
     for item in history {
         if let ResponseItem::Message { role, content, .. } = item
             && role == "user"
@@ -258,7 +450,13 @@ fn extract_previous_summary(history: &[ResponseItem]) -> Option<String> {
             // Strip the SUMMARY_PREFIX to get just the summary content
             let prefix = format!("{SUMMARY_PREFIX}\n");
             if let Some(summary) = text.strip_prefix(&prefix) {
-                return Some(summary.to_string());
+                let (summary_for_prompt, file_ops) = strip_file_ops_from_summary(summary);
+                let goal_section = extract_markdown_section(&summary_for_prompt, "## Goal");
+                return Some(PreviousSummary {
+                    summary_for_prompt,
+                    goal_section,
+                    file_ops,
+                });
             }
         }
     }
@@ -267,7 +465,7 @@ fn extract_previous_summary(history: &[ResponseItem]) -> Option<String> {
 
 /// Builds the compaction prompt text with XML-wrapped sections.
 fn build_compaction_prompt_text(
-    previous_summary: &Option<String>,
+    previous_summary: &Option<&str>,
     serialized_conversation: &str,
     compaction_instructions: &str,
 ) -> String {
@@ -289,6 +487,213 @@ fn build_compaction_prompt_text(
     prompt.push_str(compaction_instructions);
 
     prompt
+}
+
+#[derive(Deserialize)]
+struct ReadFileArgs {
+    file_path: String,
+}
+
+#[derive(Deserialize)]
+struct ApplyPatchArgs {
+    input: String,
+}
+
+#[derive(Deserialize)]
+struct WriteFileArgs {
+    file_path: Option<String>,
+    path: Option<String>,
+}
+
+fn extract_file_ops_from_items(items: &[ResponseItem]) -> FileOps {
+    let mut ops = FileOps::default();
+
+    for item in items {
+        match item {
+            ResponseItem::FunctionCall {
+                name, arguments, ..
+            } => {
+                if name == "read_file" {
+                    if let Ok(args) = serde_json::from_str::<ReadFileArgs>(arguments) {
+                        ops.read_file_paths.insert(args.file_path);
+                    }
+                } else if name == "write_file" {
+                    if let Ok(args) = serde_json::from_str::<WriteFileArgs>(arguments)
+                        && let Some(path) = args.file_path.or(args.path)
+                    {
+                        ops.write_file_paths.insert(path);
+                    }
+                } else if name == "apply_patch"
+                    && let Ok(args) = serde_json::from_str::<ApplyPatchArgs>(arguments)
+                {
+                    ops.apply_patch_paths
+                        .extend(extract_paths_from_apply_patch(&args.input));
+                }
+            }
+            ResponseItem::CustomToolCall { name, input, .. } => {
+                if name == "apply_patch" {
+                    ops.apply_patch_paths
+                        .extend(extract_paths_from_apply_patch(input));
+                } else if name == "write_file" {
+                    if let Ok(args) = serde_json::from_str::<WriteFileArgs>(input)
+                        && let Some(path) = args.file_path.or(args.path)
+                    {
+                        ops.write_file_paths.insert(path);
+                    }
+                } else if name == "read_file"
+                    && let Ok(args) = serde_json::from_str::<ReadFileArgs>(input)
+                {
+                    ops.read_file_paths.insert(args.file_path);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    ops
+}
+
+fn extract_paths_from_apply_patch(patch: &str) -> BTreeSet<String> {
+    let mut paths = BTreeSet::new();
+
+    for line in patch.lines() {
+        let line = line.trim();
+        for prefix in [
+            "*** Add File: ",
+            "*** Update File: ",
+            "*** Delete File: ",
+            "*** Move to: ",
+        ] {
+            if let Some(rest) = line.strip_prefix(prefix) {
+                let path = rest.trim();
+                if !path.is_empty() {
+                    paths.insert(path.to_string());
+                }
+                break;
+            }
+        }
+    }
+
+    paths
+}
+
+fn extract_xml_block<'a>(input: &'a str, tag: &str) -> Option<(&'a str, &'a str, &'a str)> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let (before_open, rest) = input.split_once(&open)?;
+    let (inside, after_close) = rest.split_once(&close)?;
+    Some((before_open, inside, after_close))
+}
+
+fn extract_all_xml_blocks<'a>(mut input: &'a str, tag: &str) -> Vec<&'a str> {
+    let mut blocks = Vec::new();
+    while let Some((_, inside, after)) = extract_xml_block(input, tag) {
+        blocks.push(inside);
+        input = after;
+    }
+    blocks
+}
+
+fn strip_file_ops_from_summary(summary: &str) -> (String, FileOps) {
+    let mut combined_ops = FileOps::default();
+    let mut remaining = summary.to_string();
+
+    loop {
+        let Some((before, inside, after)) = extract_xml_block(&remaining, FILE_OPS_XML_TAG) else {
+            break;
+        };
+
+        combined_ops.merge(parse_file_ops_xml(inside));
+        remaining = format!("{before}{after}");
+    }
+
+    while remaining.contains("\n\n\n") {
+        remaining = remaining.replace("\n\n\n", "\n\n");
+    }
+
+    combined_ops.truncate_to_limit(MAX_FILE_OPS_PER_KIND);
+    (remaining.trim().to_string(), combined_ops)
+}
+
+fn parse_file_ops_xml(xml: &str) -> FileOps {
+    let mut ops = FileOps::default();
+
+    for read in extract_all_xml_blocks(xml, FILE_OPS_XML_READ_FILE_TAG) {
+        for line in read.lines().map(str::trim).filter(|line| !line.is_empty()) {
+            ops.read_file_paths
+                .insert(unescape_xml_text(line).into_owned());
+        }
+    }
+
+    for write in extract_all_xml_blocks(xml, FILE_OPS_XML_WRITE_FILE_TAG) {
+        for line in write.lines().map(str::trim).filter(|line| !line.is_empty()) {
+            ops.write_file_paths
+                .insert(unescape_xml_text(line).into_owned());
+        }
+    }
+
+    for apply in extract_all_xml_blocks(xml, FILE_OPS_XML_APPLY_PATCH_TAG) {
+        for line in apply.lines().map(str::trim).filter(|line| !line.is_empty()) {
+            ops.apply_patch_paths
+                .insert(unescape_xml_text(line).into_owned());
+        }
+    }
+
+    ops.truncate_to_limit(MAX_FILE_OPS_PER_KIND);
+    ops
+}
+
+fn extract_markdown_section(summary: &str, heading: &str) -> Option<String> {
+    let heading_line = format!("{heading}\n");
+    let start = summary.find(&heading_line)?;
+    let after_heading = start + heading_line.len();
+    let rest = &summary[after_heading..];
+
+    let mut end = summary.len();
+    for (i, line) in rest.lines().enumerate() {
+        if line.starts_with("## ") {
+            let byte_index = rest.lines().take(i).fold(0, |acc, l| acc + l.len() + 1);
+            end = after_heading + byte_index;
+            break;
+        }
+    }
+
+    Some(summary[start..end].trim_end().to_string())
+}
+
+fn ensure_goal_section(summary: &str, previous_goal_section: Option<&str>) -> String {
+    if summary.contains("## Goal") {
+        return summary.to_string();
+    }
+    let Some(previous) = previous_goal_section else {
+        return summary.to_string();
+    };
+
+    if summary.trim().is_empty() {
+        previous.to_string()
+    } else {
+        format!("{previous}\n\n{summary}")
+    }
+}
+
+fn finalize_summary_suffix(
+    summary_suffix_raw: &str,
+    previous_goal: Option<&str>,
+    file_ops: &FileOps,
+) -> String {
+    let (without_ops, _) = strip_file_ops_from_summary(summary_suffix_raw);
+    let goal_preserved = ensure_goal_section(&without_ops, previous_goal);
+    let goal_preserved = goal_preserved.trim().to_string();
+
+    let Some(file_ops_xml) = file_ops.render_xml_block() else {
+        return goal_preserved;
+    };
+
+    if goal_preserved.is_empty() {
+        file_ops_xml
+    } else {
+        format!("{goal_preserved}\n\n{file_ops_xml}")
+    }
 }
 pub fn content_items_to_text(content: &[ContentItem]) -> Option<String> {
     let mut pieces = Vec::new();
@@ -484,7 +889,7 @@ pub(crate) fn serialize_history_to_text(items: &[ResponseItem]) -> String {
 }
 
 /// Checks if a user message is a session prefix entry (AGENTS.md, environment context, etc.)
-fn is_session_prefix_message(content: &[ContentItem]) -> bool {
+pub(crate) fn is_session_prefix_message(content: &[ContentItem]) -> bool {
     let Some(text) = content_items_to_text(content) else {
         return false;
     };
@@ -675,6 +1080,7 @@ mod tests {
     use super::*;
     use codex_protocol::models::FunctionCallOutputPayload;
     use pretty_assertions::assert_eq;
+    use serde_json::json;
 
     fn user_msg(text: &str) -> ResponseItem {
         ResponseItem::Message {
@@ -958,5 +1364,103 @@ mod tests {
 
         // Should be: initial + summary
         assert_eq!(history.len(), 2);
+    }
+
+    #[test]
+    fn extract_file_ops_from_items_collects_read_and_apply_patch_paths() {
+        let patch = "*** Begin Patch\n*** Update File: b.txt\n@@\n-old\n+new\n*** End Patch";
+        let apply_patch_args = json!({ "input": patch }).to_string();
+        let read_file_args = json!({ "file_path": "/repo/a.txt" }).to_string();
+
+        let items = vec![
+            function_call_item("read_file", &read_file_args, "call-1"),
+            function_call_item("apply_patch", &apply_patch_args, "call-2"),
+        ];
+
+        let ops = extract_file_ops_from_items(&items);
+
+        assert_eq!(
+            ops.read_file_paths.iter().cloned().collect::<Vec<_>>(),
+            vec!["/repo/a.txt".to_string()]
+        );
+        assert_eq!(
+            ops.apply_patch_paths.iter().cloned().collect::<Vec<_>>(),
+            vec!["b.txt".to_string()]
+        );
+    }
+
+    #[test]
+    fn strip_file_ops_from_summary_parses_and_removes_xml_block() {
+        let summary = "## Goal\nShip it\n\n<file_ops>\n<apply_patch>\nb.txt\na.txt\n</apply_patch>\n</file_ops>\n\n## Next Steps\n1. Done";
+        let (without_ops, ops) = strip_file_ops_from_summary(summary);
+
+        assert_eq!(
+            ops.apply_patch_paths.iter().cloned().collect::<Vec<_>>(),
+            vec!["a.txt".to_string(), "b.txt".to_string()]
+        );
+        assert_eq!(without_ops, "## Goal\nShip it\n\n## Next Steps\n1. Done");
+    }
+
+    #[test]
+    fn finalize_summary_suffix_preserves_goal_and_renders_sorted_file_ops() {
+        let raw = "## Next Steps\n1. Continue";
+        let previous_goal = Some("## Goal\nShip it");
+        let mut file_ops = FileOps::default();
+        file_ops.apply_patch_paths.insert("b.txt".to_string());
+        file_ops.apply_patch_paths.insert("a.txt".to_string());
+
+        let out = finalize_summary_suffix(raw, previous_goal, &file_ops);
+
+        assert!(out.contains("## Goal\nShip it"));
+        assert!(out.contains("<file_ops>"));
+        assert!(out.contains("<apply_patch>\na.txt\nb.txt\n</apply_patch>"));
+    }
+
+    #[test]
+    fn parse_file_ops_xml_handles_multiple_blocks_per_tag() {
+        let summary = "<file_ops>\n<read_file>\na.txt\n</read_file>\n<read_file>\nb.txt\n</read_file>\n</file_ops>";
+        let (_, ops) = strip_file_ops_from_summary(summary);
+
+        assert_eq!(
+            ops.read_file_paths.iter().cloned().collect::<Vec<_>>(),
+            vec!["a.txt".to_string(), "b.txt".to_string()]
+        );
+    }
+
+    #[test]
+    fn file_ops_xml_round_trips_escaped_paths() {
+        let mut ops = FileOps::default();
+        ops.read_file_paths.insert("a&b.txt".to_string());
+        ops.write_file_paths.insert("c<d>.txt".to_string());
+
+        let xml = ops.render_xml_block().expect("xml block");
+        assert!(xml.contains("a&amp;b.txt"));
+        assert!(xml.contains("c&lt;d&gt;.txt"));
+
+        let (_, parsed) = strip_file_ops_from_summary(&xml);
+        assert_eq!(
+            parsed.read_file_paths.iter().cloned().collect::<Vec<_>>(),
+            vec!["a&b.txt".to_string()]
+        );
+        assert_eq!(
+            parsed.write_file_paths.iter().cloned().collect::<Vec<_>>(),
+            vec!["c<d>.txt".to_string()]
+        );
+    }
+
+    #[test]
+    fn file_ops_merge_with_limit_prefers_newer_paths() {
+        let mut older = FileOps::default();
+        older.read_file_paths.insert("a.txt".to_string());
+        older.read_file_paths.insert("b.txt".to_string());
+
+        let mut newer = FileOps::default();
+        newer.read_file_paths.insert("z.txt".to_string());
+
+        let merged = FileOps::merge_with_limit(older, newer, 1);
+        assert_eq!(
+            merged.read_file_paths.iter().cloned().collect::<Vec<_>>(),
+            vec!["z.txt".to_string()]
+        );
     }
 }

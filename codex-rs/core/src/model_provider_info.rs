@@ -831,10 +831,101 @@ pub fn built_in_model_providers() -> HashMap<String, ModelProviderInfo> {
     .collect()
 }
 
+/// Error returned when a canonical model ID is invalid.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvalidCanonicalModelIdError {
+    pub model: String,
+    pub message: String,
+}
+
+impl std::fmt::Display for InvalidCanonicalModelIdError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Invalid model ID '{}': {}", self.model, self.message)
+    }
+}
+
+impl std::error::Error for InvalidCanonicalModelIdError {}
+
+/// Parses a canonical model ID in the format `{provider}/{model}`.
+///
+/// Returns `(provider_id, model_name)` on success.
+///
+/// # Examples
+/// - `"openai/gpt-5.1-codex-mini"` -> `("openai", "gpt-5.1-codex-mini")`
+/// - `"openrouter/anthropic/claude-3.5-sonnet"` -> `("openrouter", "anthropic/claude-3.5-sonnet")`
+/// - `"anthropic/claude-3-opus-20240229"` -> `("anthropic", "claude-3-opus-20240229")`
+pub fn parse_canonical_model_id(model: &str) -> Result<(&str, &str), InvalidCanonicalModelIdError> {
+    let (provider_id, model_name) = model.split_once('/').ok_or_else(|| {
+        InvalidCanonicalModelIdError {
+            model: model.to_string(),
+            message: "Model must be in canonical format '{provider}/{model}' (e.g., 'openai/gpt-5.1-codex-mini')".to_string(),
+        }
+    })?;
+
+    if provider_id.is_empty() {
+        return Err(InvalidCanonicalModelIdError {
+            model: model.to_string(),
+            message: "Provider prefix cannot be empty".to_string(),
+        });
+    }
+
+    if model_name.is_empty() {
+        return Err(InvalidCanonicalModelIdError {
+            model: model.to_string(),
+            message: "Model name cannot be empty".to_string(),
+        });
+    }
+
+    Ok((provider_id, model_name))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
+
+    #[test]
+    fn parse_canonical_model_id_simple() {
+        let (provider, model) = parse_canonical_model_id("openai/gpt-5.1-codex-mini").unwrap();
+        assert_eq!(provider, "openai");
+        assert_eq!(model, "gpt-5.1-codex-mini");
+    }
+
+    #[test]
+    fn parse_canonical_model_id_nested_model() {
+        // OpenRouter models often have nested paths
+        let (provider, model) =
+            parse_canonical_model_id("openrouter/anthropic/claude-3.5-sonnet").unwrap();
+        assert_eq!(provider, "openrouter");
+        assert_eq!(model, "anthropic/claude-3.5-sonnet");
+    }
+
+    #[test]
+    fn parse_canonical_model_id_anthropic() {
+        let (provider, model) =
+            parse_canonical_model_id("anthropic/claude-3-opus-20240229").unwrap();
+        assert_eq!(provider, "anthropic");
+        assert_eq!(model, "claude-3-opus-20240229");
+    }
+
+    #[test]
+    fn parse_canonical_model_id_missing_slash() {
+        let err = parse_canonical_model_id("gpt-4").unwrap_err();
+        assert_eq!(err.model, "gpt-4");
+        assert!(err.message.contains("canonical format"));
+    }
+
+    #[test]
+    fn parse_canonical_model_id_empty_provider() {
+        let err = parse_canonical_model_id("/gpt-4").unwrap_err();
+        assert!(err.message.contains("Provider prefix cannot be empty"));
+    }
+
+    #[test]
+    fn parse_canonical_model_id_empty_model() {
+        let err = parse_canonical_model_id("openai/").unwrap_err();
+        assert!(err.message.contains("Model name cannot be empty"));
+    }
 
     #[test]
     fn built_in_providers_includes_openrouter() {

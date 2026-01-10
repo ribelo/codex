@@ -31,6 +31,7 @@ pub fn assert_regex_match<'s>(pattern: &str, actual: &'s str) -> regex_lite::Cap
 /// avoids clobbering a developer’s real `~/.codex`.
 pub fn load_default_config_for_test(codex_home: &TempDir) -> Config {
     let mut cfg = ConfigToml::default();
+    cfg.model = Some("openai/test-gpt-5.1-codex".to_string());
     cfg.model_context_window = Some(128_000);
     Config::load_from_base_config_with_overrides(
         cfg,

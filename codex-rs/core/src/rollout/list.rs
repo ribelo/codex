@@ -21,6 +21,8 @@ use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::RolloutLine;
 use codex_protocol::protocol::SessionSource;
 
+use crate::model_provider_info::parse_canonical_model_id;
+
 /// Returned page of conversation summaries.
 #[derive(Debug, Default, PartialEq)]
 pub struct ConversationsPage {
@@ -54,6 +56,10 @@ struct HeadTailSummary {
     saw_user_event: bool,
     source: Option<SessionSource>,
     parent_id: Option<ConversationId>,
+    /// Canonical model ID (e.g., "openai/gpt-5.1-codex-mini") from SessionMeta.model,
+    /// or derived from legacy model_provider field.
+    model: Option<String>,
+    /// Provider ID extracted from model or legacy model_provider field.
     model_provider: Option<String>,
     created_at: Option<String>,
     updated_at: Option<String>,
@@ -401,7 +407,15 @@ async fn read_head_summary(path: &Path, head_limit: usize) -> io::Result<HeadTai
             RolloutItem::SessionMeta(session_meta_line) => {
                 summary.source = Some(session_meta_line.meta.source.clone());
                 summary.parent_id = session_meta_line.meta.source.parent_id();
-                summary.model_provider = session_meta_line.meta.model_provider.clone();
+                // Prefer canonical model ID, fall back to legacy model_provider
+                summary.model = session_meta_line.meta.model.clone();
+                summary.model_provider = session_meta_line
+                    .meta
+                    .model
+                    .as_deref()
+                    .and_then(|m| parse_canonical_model_id(m).ok())
+                    .map(|(provider, _)| provider.to_string())
+                    .or_else(|| session_meta_line.meta.model_provider.clone());
                 summary.created_at = summary
                     .created_at
                     .clone()

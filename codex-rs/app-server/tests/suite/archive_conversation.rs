@@ -24,7 +24,7 @@ async fn archive_conversation_moves_rollout_into_archived_directory() -> Result<
 
     let new_request_id = mcp
         .send_new_conversation_request(NewConversationParams {
-            model: Some("mock-model".to_string()),
+            model: Some("openai/mock-model".to_string()),
             ..Default::default()
         })
         .await?;
@@ -87,7 +87,7 @@ fn create_config_toml(codex_home: &Path) -> std::io::Result<()> {
 }
 
 fn config_contents() -> &'static str {
-    r#"model = "mock-model"
+    r#"model = "openai/gpt-4o"
 approval_policy = "never"
 sandbox_mode = "read-only"
 "#

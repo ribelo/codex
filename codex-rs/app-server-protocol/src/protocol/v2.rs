@@ -242,7 +242,6 @@ pub struct ToolsV2 {
 #[ts(export_to = "v2/")]
 pub struct ProfileV2 {
     pub model: Option<String>,
-    pub model_provider: Option<String>,
     pub approval_policy: Option<AskForApproval>,
     pub model_reasoning_effort: Option<ReasoningEffort>,
     pub model_reasoning_summary: Option<ReasoningSummary>,
@@ -260,7 +259,6 @@ pub struct Config {
     pub review_model: Option<String>,
     pub model_context_window: Option<i64>,
     pub model_auto_compact_token_limit: Option<i64>,
-    pub model_provider: Option<String>,
     pub approval_policy: Option<AskForApproval>,
     pub sandbox_mode: Option<SandboxMode>,
     pub sandbox_workspace_write: Option<SandboxWorkspaceWrite>,
@@ -850,7 +848,6 @@ pub struct CommandExecResponse {
 #[ts(export_to = "v2/")]
 pub struct ThreadStartParams {
     pub model: Option<String>,
-    pub model_provider: Option<String>,
     pub cwd: Option<String>,
     pub approval_policy: Option<AskForApproval>,
     pub sandbox: Option<SandboxMode>,
@@ -898,7 +895,6 @@ pub struct ThreadResumeParams {
 
     /// Configuration overrides for the resumed thread, if any.
     pub model: Option<String>,
-    pub model_provider: Option<String>,
     pub cwd: Option<String>,
     pub approval_policy: Option<AskForApproval>,
     pub sandbox: Option<SandboxMode>,
@@ -1622,6 +1618,8 @@ pub struct WindowsWorldWritableWarningNotification {
 pub struct ContextCompactedNotification {
     pub thread_id: String,
     pub turn_id: String,
+    pub tokens_before: i32,
+    pub summary: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]

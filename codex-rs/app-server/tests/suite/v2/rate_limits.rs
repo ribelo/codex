@@ -30,6 +30,10 @@ const INVALID_REQUEST_ERROR_CODE: i64 = -32600;
 #[tokio::test]
 async fn get_account_rate_limits_requires_auth() -> Result<()> {
     let codex_home = TempDir::new()?;
+    std::fs::write(
+        codex_home.path().join("config.toml"),
+        "model = \"openai/gpt-4o\"\n",
+    )?;
 
     let mut mcp = McpProcess::new_with_env(codex_home.path(), &[("OPENAI_API_KEY", None)]).await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
@@ -55,6 +59,10 @@ async fn get_account_rate_limits_requires_auth() -> Result<()> {
 #[tokio::test]
 async fn get_account_rate_limits_requires_chatgpt_auth() -> Result<()> {
     let codex_home = TempDir::new()?;
+    std::fs::write(
+        codex_home.path().join("config.toml"),
+        "model = \"openai/gpt-4o\"\n",
+    )?;
 
     let mut mcp = McpProcess::new(codex_home.path()).await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
@@ -180,5 +188,8 @@ async fn login_with_api_key(mcp: &mut McpProcess, api_key: &str) -> Result<()> {
 
 fn write_chatgpt_base_url(codex_home: &Path, base_url: &str) -> std::io::Result<()> {
     let config_toml = codex_home.join("config.toml");
-    std::fs::write(config_toml, format!("chatgpt_base_url = \"{base_url}\"\n"))
+    std::fs::write(
+        config_toml,
+        format!("model = \"openai/gpt-4o\"\nchatgpt_base_url = \"{base_url}\"\n"),
+    )
 }

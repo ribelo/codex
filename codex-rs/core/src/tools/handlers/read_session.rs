@@ -179,22 +179,21 @@ impl ToolHandler for ReadSessionHandler {
                 subagent = "session_reader",
                 profile_name = ?subagent_def.metadata.profile,
                 profile_model = ?profile.model,
-                profile_provider = ?profile.model_provider,
                 "read_session: loaded profile configuration"
             );
 
             // Apply model from profile
             if let Some(ref model) = profile.model {
                 sub_config.model = Some(model.clone());
-                info!(
-                    subagent = "session_reader",
-                    model = %model,
-                    "read_session: applied model from profile"
-                );
-            }
 
-            // Apply model_provider from profile
-            if let Some(ref provider_id) = profile.model_provider {
+                // Derive provider from canonical model ID
+                let (provider_id, _model_name) =
+                    crate::model_provider_info::parse_canonical_model_id(model).map_err(|e| {
+                        FunctionCallError::RespondToModel(format!(
+                            "Invalid model format in profile: {e}"
+                        ))
+                    })?;
+
                 // Build combined providers map
                 let mut providers = crate::model_provider_info::built_in_model_providers();
                 for (key, provider) in config.model_providers.iter() {
@@ -204,13 +203,20 @@ impl ToolHandler for ReadSessionHandler {
                 }
 
                 if let Some(provider_info) = providers.get(provider_id) {
-                    sub_config.model_provider_id = provider_id.clone();
+                    sub_config.model_provider_id = provider_id.to_string();
                     sub_config.model_provider = provider_info.clone();
                 } else {
                     return Err(FunctionCallError::Fatal(format!(
-                        "Model provider '{provider_id}' from profile not found"
+                        "Model provider '{provider_id}' from model '{model}' not found"
                     )));
                 }
+
+                info!(
+                    subagent = "session_reader",
+                    model = %model,
+                    provider_id = %provider_id,
+                    "read_session: applied model from profile"
+                );
             }
 
             // Apply reasoning settings from profile

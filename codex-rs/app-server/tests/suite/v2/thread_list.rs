@@ -108,7 +108,7 @@ fn create_minimal_config(codex_home: &std::path::Path) -> std::io::Result<()> {
     std::fs::write(
         config_toml,
         r#"
-model = "mock-model"
+model = "openai/gpt-4o"
 approval_policy = "never"
 "#,
     )

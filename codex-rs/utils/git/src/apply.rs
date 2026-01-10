@@ -522,6 +522,9 @@ mod tests {
         let _ = run(root, &["git", "init"]);
         let _ = run(root, &["git", "config", "user.email", "codex@example.com"]);
         let _ = run(root, &["git", "config", "user.name", "Codex"]);
+        // Ensure tests are not affected by user-level GPG signing configuration, which can cause
+        // interactive pinentry prompts and timeouts.
+        let _ = run(root, &["git", "config", "commit.gpgSign", "false"]);
         dir
     }
 

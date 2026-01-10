@@ -28,11 +28,9 @@ fn create_config_toml_custom_provider(
     };
     let contents = format!(
         r#"
-model = "mock-model"
+model = "mock_provider/mock-model"
 approval_policy = "never"
 sandbox_mode = "danger-full-access"
-
-model_provider = "mock_provider"
 
 [model_providers.mock_provider]
 name = "Mock provider for test"
@@ -51,7 +49,7 @@ fn create_config_toml(codex_home: &Path) -> std::io::Result<()> {
     std::fs::write(
         config_toml,
         r#"
-model = "mock-model"
+model = "openai/gpt-4o"
 approval_policy = "never"
 sandbox_mode = "danger-full-access"
 "#,
@@ -62,7 +60,7 @@ fn create_config_toml_forced_login(codex_home: &Path, forced_method: &str) -> st
     let config_toml = codex_home.join("config.toml");
     let contents = format!(
         r#"
-model = "mock-model"
+model = "openai/gpt-4o"
 approval_policy = "never"
 sandbox_mode = "danger-full-access"
 forced_login_method = "{forced_method}"
