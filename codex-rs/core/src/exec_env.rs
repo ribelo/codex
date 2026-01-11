@@ -26,7 +26,17 @@ where
         ShellEnvironmentPolicyInherit::None => HashMap::new(),
         ShellEnvironmentPolicyInherit::Core => {
             const CORE_VARS: &[&str] = &[
-                "HOME", "LOGNAME", "PATH", "SHELL", "USER", "USERNAME", "TMPDIR", "TEMP", "TMP",
+                "HOME",
+                "LOGNAME",
+                "PATH",
+                "SHELL",
+                "USER",
+                "USERNAME",
+                "TMPDIR",
+                "TEMP",
+                "TMP",
+                "LD_LIBRARY_PATH",
+                "DYLD_LIBRARY_PATH",
             ];
             let allow: HashSet<&str> = CORE_VARS.iter().copied().collect();
             vars.into_iter()
@@ -96,6 +106,29 @@ mod tests {
         let expected: HashMap<String, String> = hashmap! {
             "PATH".to_string() => "/usr/bin".to_string(),
             "HOME".to_string() => "/home/user".to_string(),
+        };
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_core_inherit_library_paths() {
+        let vars = make_vars(&[
+            ("LD_LIBRARY_PATH", "/usr/lib"),
+            ("DYLD_LIBRARY_PATH", "/usr/local/lib"),
+            ("OTHER_VAR", "foo"),
+        ]);
+
+        let policy = ShellEnvironmentPolicy {
+            inherit: ShellEnvironmentPolicyInherit::Core,
+            ignore_default_excludes: true,
+            ..Default::default()
+        };
+        let result = populate_env(vars, &policy);
+
+        let expected: HashMap<String, String> = hashmap! {
+            "LD_LIBRARY_PATH".to_string() => "/usr/lib".to_string(),
+            "DYLD_LIBRARY_PATH".to_string() => "/usr/local/lib".to_string(),
         };
 
         assert_eq!(result, expected);

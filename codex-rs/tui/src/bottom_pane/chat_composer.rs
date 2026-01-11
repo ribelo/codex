@@ -1280,15 +1280,15 @@ impl ChatComposer {
                 // literal text.
                 let first_line = self.textarea.text().lines().next().unwrap_or("");
                 if let Some((name, rest)) = parse_slash_name(first_line) {
-                    // Special case: /handoff accepts arguments
-                    if name == "handoff" && !rest.is_empty() {
-                        let goal = rest.trim().to_string();
+                    // Special cases: /handoff and /review accept arguments
+                    if (name == "handoff" || name == "review") && !rest.is_empty() {
+                        let args = rest.trim().to_string();
                         if let Some((_, cmd)) = built_in_slash_commands()
                             .into_iter()
-                            .find(|(n, _)| *n == "handoff")
+                            .find(|(n, _)| *n == name)
                         {
                             self.textarea.set_text("");
-                            return (InputResult::CommandWithArgs(cmd, goal), true);
+                            return (InputResult::CommandWithArgs(cmd, args), true);
                         }
                     }
                     // Original code: exact command match (no args)
@@ -1448,17 +1448,17 @@ impl ChatComposer {
                     && let Some(command) =
                         self.custom_commands.iter().find(|c| c.name == command_name)
                 {
-                    if command.agent.is_none() {
-                        return (InputResult::Submitted(expanded), true);
+                    if let Some(agent) = command.agent.clone() {
+                        return (
+                            InputResult::DelegateAgent {
+                                description: command.name.clone(),
+                                prompt: expanded,
+                                agent,
+                            },
+                            true,
+                        );
                     }
-                    return (
-                        InputResult::DelegateAgent {
-                            description: command.name.clone(),
-                            prompt: expanded,
-                            agent: command.agent.clone().unwrap(),
-                        },
-                        true,
-                    );
+                    return (InputResult::Submitted(expanded), true);
                 }
 
                 let expanded_prompt = match expand_custom_prompt(&text, &self.custom_prompts) {

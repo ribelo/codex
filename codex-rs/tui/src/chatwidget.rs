@@ -1785,6 +1785,24 @@ impl ChatWidget {
                 self.app_event_tx
                     .send(AppEvent::CodexOp(Op::Handoff { goal: args }));
             }
+            SlashCommand::Review => {
+                let target = ReviewTarget::Custom { instructions: args };
+                let cwd = self.config.cwd.clone();
+                match review_prompt(&target, &cwd) {
+                    Ok(prompt) => {
+                        let description = user_facing_hint(&target);
+                        self.app_event_tx
+                            .send(AppEvent::CodexOp(Op::DelegateSubagent {
+                                agent: "review".to_string(),
+                                prompt,
+                                description,
+                            }));
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to generate review prompt: {e}");
+                    }
+                }
+            }
             _ => {
                 // Fall back to regular dispatch for commands that don't use args
                 self.dispatch_command(cmd);

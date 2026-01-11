@@ -132,14 +132,15 @@ async fn list_dir_slice(
         ));
     }
 
+    entries.sort_unstable_by(|a, b| a.name.cmp(&b.name));
+
     let remaining_entries = entries.len() - start_index;
     let capped_limit = limit.min(remaining_entries);
     let end_index = start_index + capped_limit;
-    let mut selected_entries = entries[start_index..end_index].to_vec();
-    selected_entries.sort_unstable_by(|a, b| a.name.cmp(&b.name));
+    let selected_entries = &entries[start_index..end_index];
     let mut formatted = Vec::with_capacity(selected_entries.len());
 
-    for entry in &selected_entries {
+    for entry in selected_entries {
         formatted.push(format_entry_line(entry));
     }
 
@@ -211,12 +212,7 @@ async fn collect_entries(
 }
 
 fn format_entry_name(path: &Path) -> String {
-    let normalized = path.to_string_lossy().replace("\\", "/");
-    if normalized.len() > MAX_ENTRY_LENGTH {
-        take_bytes_at_char_boundary(&normalized, MAX_ENTRY_LENGTH).to_string()
-    } else {
-        normalized
-    }
+    path.to_string_lossy().replace("\\", "/")
 }
 
 fn format_entry_component(name: &OsStr) -> String {
@@ -273,6 +269,7 @@ impl From<&FileType> for DirEntryKind {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pretty_assertions::assert_eq;
     use tempfile::tempdir;
 
     #[tokio::test]
@@ -467,10 +464,35 @@ mod tests {
             vec![
                 "nested/".to_string(),
                 "  child.txt".to_string(),
-                "root.txt".to_string(),
+                "  deeper/".to_string(),
                 "More than 3 entries found".to_string()
             ]
         );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn stable_pagination() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let dir_path = temp.path();
+        tokio::fs::write(dir_path.join("a.txt"), b"a").await?;
+        tokio::fs::write(dir_path.join("b.txt"), b"b").await?;
+        tokio::fs::write(dir_path.join("c.txt"), b"c").await?;
+        tokio::fs::write(dir_path.join("d.txt"), b"d").await?;
+
+        let page1 = list_dir_slice(dir_path, 1, 2, 1).await?;
+        let page2 = list_dir_slice(dir_path, 3, 2, 1).await?;
+
+        assert_eq!(
+            page1,
+            vec![
+                "a.txt".to_string(),
+                "b.txt".to_string(),
+                "More than 2 entries found".to_string()
+            ]
+        );
+        assert_eq!(page2, vec!["c.txt".to_string(), "d.txt".to_string(),]);
 
         Ok(())
     }

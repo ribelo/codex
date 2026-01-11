@@ -3472,3 +3472,23 @@ fn chatwidget_tall() {
     .unwrap();
     assert_snapshot!(term.backend().vt100().screen().contents());
 }
+
+#[test]
+fn slash_review_with_args_delegates_to_review_agent() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None);
+
+    chat.dispatch_command_with_args(SlashCommand::Review, "be less toxic".to_string());
+
+    match rx.try_recv() {
+        Ok(AppEvent::CodexOp(Op::DelegateSubagent {
+            agent,
+            description,
+            prompt,
+        })) => {
+            assert_eq!(agent, "review");
+            assert_eq!(description, "be less toxic");
+            assert_eq!(prompt, "be less toxic");
+        }
+        other => panic!("expected AppEvent::CodexOp(Op::DelegateSubagent), got {other:?}"),
+    }
+}
