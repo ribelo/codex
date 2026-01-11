@@ -1790,7 +1790,7 @@ for _ in range(4):
     sys.stdout.buffer.write(chunk)
     sys.stdout.flush()
 
-time.sleep(0.2)
+time.sleep(0.4)
 for _ in range(5):
     sys.stdout.write("TAIL-MARKER\n")
     sys.stdout.flush()

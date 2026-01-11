@@ -30,6 +30,9 @@ You are a code search agent. Use rg, list files, and return paths.
 - `model` (optional, default `inherit`):
   - `inherit` uses the parent session’s model.
   - `{provider}/{model}` uses an explicit canonical model id (for example `openai/gpt-5.1-codex-mini`).
+- `reasoning_effort` (optional, default `inherit`):
+  - `inherit` uses the parent session's reasoning effort.
+  - `none`, `minimal`, `low`, `medium`, `high`, `xhigh`.
 - `sandbox_policy` (required): `read-only`, `workspace-write`, `danger-full-access`, or `inherit`.
 - `approval_policy` (required): `untrusted`, `on-failure`, `on-request`, `never`, or `inherit`.
 - `allowed_subagents` (optional):
@@ -40,4 +43,3 @@ You are a code search agent. Use rg, list files, and return paths.
 ### Removed: `profile`
 
 The `profile` frontmatter field is no longer supported for subagents. Use `model: inherit` or `model: {provider}/{model}` instead.
-

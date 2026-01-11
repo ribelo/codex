@@ -402,6 +402,11 @@ impl ToolHandler for TaskHandler {
                     }
                 }
 
+                // Apply reasoning_effort override if specified.
+                if let Some(effort) = subagent_def.metadata.reasoning_effort.to_reasoning_effort() {
+                    sub_config.model_reasoning_effort = Some(effort);
+                }
+
                 // Set allowed_subagents for the subagent session.
                 // Use the subagent metadata if specified, otherwise default to no access.
                 sub_config.allowed_subagents = subagent_def

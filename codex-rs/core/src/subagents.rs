@@ -12,6 +12,7 @@ use tracing::warn;
 use crate::codex::Codex;
 use crate::protocol::AskForApproval;
 use crate::protocol::SandboxPolicy;
+use codex_protocol::openai_models::ReasoningEffort;
 use tokio_util::sync::CancellationToken;
 
 /// Approval policy for subagents, with an additional `Inherit` variant.
@@ -80,6 +81,37 @@ impl SubagentModel {
     }
 }
 
+/// Reasoning effort setting for subagents, with an additional `Inherit` variant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum SubagentReasoningEffort {
+    /// Inherit the parent session's reasoning effort.
+    #[default]
+    Inherit,
+    None,
+    Minimal,
+    Low,
+    Medium,
+    High,
+    #[serde(alias = "x-high")]
+    XHigh,
+}
+
+impl SubagentReasoningEffort {
+    /// Convert to the protocol's `ReasoningEffort`, returning `None` for `Inherit`.
+    pub fn to_reasoning_effort(self) -> Option<ReasoningEffort> {
+        match self {
+            SubagentReasoningEffort::Inherit => None,
+            SubagentReasoningEffort::None => Some(ReasoningEffort::None),
+            SubagentReasoningEffort::Minimal => Some(ReasoningEffort::Minimal),
+            SubagentReasoningEffort::Low => Some(ReasoningEffort::Low),
+            SubagentReasoningEffort::Medium => Some(ReasoningEffort::Medium),
+            SubagentReasoningEffort::High => Some(ReasoningEffort::High),
+            SubagentReasoningEffort::XHigh => Some(ReasoningEffort::XHigh),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SubagentError {
     pub path: PathBuf,
@@ -98,6 +130,8 @@ pub struct SubagentMetadata {
     pub description: Option<String>,
     #[serde(default)]
     pub model: SubagentModel,
+    #[serde(default)]
+    pub reasoning_effort: SubagentReasoningEffort,
     pub sandbox_policy: SubagentSandboxPolicy,
     pub approval_policy: SubagentApprovalPolicy,
     /// Whether this agent is internal (not visible to main agent by default).
@@ -119,6 +153,14 @@ impl SubagentMetadata {
     /// Returns true if this agent is internal (not visible by default).
     pub fn is_internal(&self) -> bool {
         self.internal
+    }
+
+    pub fn is_inherit_reasoning_effort(&self) -> bool {
+        self.reasoning_effort == SubagentReasoningEffort::Inherit
+    }
+
+    pub fn reasoning_effort(&self) -> Option<ReasoningEffort> {
+        self.reasoning_effort.to_reasoning_effort()
     }
 
     pub fn validate(&self) -> Result<()> {
@@ -615,6 +657,7 @@ mod tests {
                     name: Some("Test".to_string()),
                     description: Some("A test".to_string()),
                     model: SubagentModel::Inherit,
+                    reasoning_effort: SubagentReasoningEffort::Inherit,
                     sandbox_policy: SubagentSandboxPolicy::Inherit,
                     approval_policy: SubagentApprovalPolicy::Inherit,
                     allowed_subagents: None,
@@ -696,6 +739,81 @@ mod internal_visibility_tests {
         );
     }
 
+    #[tokio::test]
+    async fn reasoning_effort_parsed_from_frontmatter() {
+        let codex_home = setup_codex_home();
+        write_agent(
+            &codex_home,
+            "reasoning-test",
+            "---\nname: Reasoning Test\nreasoning_effort: high\nsandbox_policy: read-only\napproval_policy: never\n---\n\nYou are a test agent.",
+        );
+
+        let outcome = load_subagents(codex_home.path()).await;
+        let agent = outcome
+            .agents
+            .iter()
+            .find(|a| a.slug == "reasoning-test")
+            .expect("reasoning-test agent should exist");
+
+        assert_eq!(
+            agent.metadata.reasoning_effort,
+            SubagentReasoningEffort::High
+        );
+        assert_eq!(
+            agent.metadata.reasoning_effort(),
+            Some(ReasoningEffort::High)
+        );
+    }
+
+    #[tokio::test]
+    async fn reasoning_effort_default_is_inherit() {
+        let codex_home = setup_codex_home();
+        write_agent(
+            &codex_home,
+            "inherit-test",
+            "---\nname: Inherit Test\nsandbox_policy: read-only\napproval_policy: never\n---\n\nYou are a test agent.",
+        );
+
+        let outcome = load_subagents(codex_home.path()).await;
+        let agent = outcome
+            .agents
+            .iter()
+            .find(|a| a.slug == "inherit-test")
+            .expect("inherit-test agent should exist");
+
+        assert_eq!(
+            agent.metadata.reasoning_effort,
+            SubagentReasoningEffort::Inherit
+        );
+        assert_eq!(agent.metadata.reasoning_effort(), None);
+    }
+
+    #[tokio::test]
+    async fn reasoning_effort_xhigh_parsed_from_frontmatter() {
+        let codex_home = setup_codex_home();
+        write_agent(
+            &codex_home,
+            "xhigh-test",
+            "---\nname: XHigh Test\nreasoning_effort: xhigh\nsandbox_policy: read-only\napproval_policy: never\n---\n\nYou are a test agent.",
+        );
+
+        let outcome = load_subagents(codex_home.path()).await;
+        let agent = outcome
+            .agents
+            .iter()
+            .find(|a| a.slug == "xhigh-test")
+            .expect("xhigh-test agent should exist");
+
+        assert_eq!(
+            agent.metadata.reasoning_effort,
+            SubagentReasoningEffort::XHigh
+        );
+        assert_eq!(
+            agent.metadata.reasoning_effort(),
+            Some(ReasoningEffort::XHigh)
+        );
+    }
+
     #[test]
     fn internal_agent_accessible_via_registry_get() {
         let outcome = SubagentLoadOutcome {
@@ -706,6 +824,7 @@ mod internal_visibility_tests {
                     description: Some("Internal agent".to_string()),
                     internal: true,
                     model: SubagentModel::Inherit,
+                    reasoning_effort: SubagentReasoningEffort::Inherit,
                     sandbox_policy: SubagentSandboxPolicy::ReadOnly,
                     approval_policy: SubagentApprovalPolicy::Never,
                     allowed_subagents: Some(vec![]),

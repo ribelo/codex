@@ -218,6 +218,11 @@ impl ToolHandler for ReadSessionHandler {
             sub_config.approval_policy = approval_policy;
         }
 
+        // Apply reasoning_effort from session_reader metadata
+        if let Some(effort) = subagent_def.metadata.reasoning_effort.to_reasoning_effort() {
+            sub_config.model_reasoning_effort = Some(effort);
+        }
+
         // No subagent access for session_reader
         sub_config.allowed_subagents = Some(vec![]);
 
