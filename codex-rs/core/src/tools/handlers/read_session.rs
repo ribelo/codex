@@ -164,71 +164,45 @@ impl ToolHandler for ReadSessionHandler {
         let mut sub_config = (*config).clone();
         sub_config.codex_home = codex_home.clone();
 
-        // Apply profile settings from frontmatter.
-        if let Some(profile) = subagent_def
-            .metadata
-            .load_profile(&codex_home)
-            .await
+        // Apply model override from frontmatter.
+        if let Some(canonical_model_id) = subagent_def.metadata.model.canonical_model_id() {
+            // Subagent model IDs are specified in canonical form (`{provider}/{model}`),
+            // but the rest of the system expects the provider-specific model slug.
+            let (provider_id, model_name) = crate::model_provider_info::parse_canonical_model_id(
+                canonical_model_id,
+            )
             .map_err(|e| {
                 FunctionCallError::RespondToModel(format!(
-                    "Subagent configuration error for 'session_reader': {e}"
+                    "Invalid subagent model '{canonical_model_id}': {e}"
                 ))
-            })?
-        {
+            })?;
+
+            sub_config.model = Some(model_name.to_string());
+
+            // Build combined providers map
+            let mut providers = crate::model_provider_info::built_in_model_providers();
+            for (key, provider) in config.model_providers.iter() {
+                providers
+                    .entry(key.clone())
+                    .or_insert_with(|| provider.clone());
+            }
+
+            if let Some(provider_info) = providers.get(provider_id) {
+                sub_config.model_provider_id = provider_id.to_string();
+                sub_config.model_provider = provider_info.clone();
+            } else {
+                return Err(FunctionCallError::Fatal(format!(
+                    "Model provider '{provider_id}' from subagent model '{canonical_model_id}' not found"
+                )));
+            }
+
             info!(
                 subagent = "session_reader",
-                profile_name = ?subagent_def.metadata.profile,
-                profile_model = ?profile.model,
-                "read_session: loaded profile configuration"
+                canonical_model_id = %canonical_model_id,
+                model_name = %model_name,
+                provider_id = %provider_id,
+                "read_session: applied explicit subagent model"
             );
-
-            // Apply model from profile
-            if let Some(ref model) = profile.model {
-                sub_config.model = Some(model.clone());
-
-                // Derive provider from canonical model ID
-                let (provider_id, _model_name) =
-                    crate::model_provider_info::parse_canonical_model_id(model).map_err(|e| {
-                        FunctionCallError::RespondToModel(format!(
-                            "Invalid model format in profile: {e}"
-                        ))
-                    })?;
-
-                // Build combined providers map
-                let mut providers = crate::model_provider_info::built_in_model_providers();
-                for (key, provider) in config.model_providers.iter() {
-                    providers
-                        .entry(key.clone())
-                        .or_insert_with(|| provider.clone());
-                }
-
-                if let Some(provider_info) = providers.get(provider_id) {
-                    sub_config.model_provider_id = provider_id.to_string();
-                    sub_config.model_provider = provider_info.clone();
-                } else {
-                    return Err(FunctionCallError::Fatal(format!(
-                        "Model provider '{provider_id}' from model '{model}' not found"
-                    )));
-                }
-
-                info!(
-                    subagent = "session_reader",
-                    model = %model,
-                    provider_id = %provider_id,
-                    "read_session: applied model from profile"
-                );
-            }
-
-            // Apply reasoning settings from profile
-            if profile.model_reasoning_effort.is_some() {
-                sub_config.model_reasoning_effort = profile.model_reasoning_effort;
-            }
-            if let Some(summary) = profile.model_reasoning_summary {
-                sub_config.model_reasoning_summary = summary;
-            }
-            if profile.model_verbosity.is_some() {
-                sub_config.model_verbosity = profile.model_verbosity;
-            }
         }
 
         // Use the session_reader's system prompt

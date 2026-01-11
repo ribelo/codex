@@ -86,7 +86,7 @@ impl SubagentErrorScreen {
         let mut lines: Vec<Line<'static>> = Vec::new();
         lines.push(Line::from("Subagent configuration errors detected".bold()));
         lines.push(Line::from(
-            "Fix these agent .md files / profiles and restart. Invalid subagents are ignored until resolved. Press enter or esc to continue, Ctrl+C or Ctrl+D to exit.",
+            "Fix these agent .md files (frontmatter now uses `model:`) and restart. Invalid subagents are ignored until resolved. Press enter or esc to continue, Ctrl+C or Ctrl+D to exit.",
         ));
         lines.push(Line::from(""));
 

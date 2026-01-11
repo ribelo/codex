@@ -926,17 +926,18 @@ pub(crate) fn new_session_info(
 ) -> SessionInfoCell {
     let SessionConfiguredEvent {
         model,
+        model_provider_id,
         reasoning_effort,
         ..
     } = event;
+    let model_id = crate::model_id::canonical_model_id(&model_provider_id, &model);
     // Header box rendered as history (so it appears at the very top)
     let header = SessionHeaderHistoryCell::new(
-        model.clone(),
+        model_id.clone(),
         reasoning_effort,
         config.cwd.clone(),
         CODEX_CLI_VERSION,
         config.active_profile.clone(),
-        config.model_provider.name.clone(),
     );
     let mut parts: Vec<Box<dyn HistoryCell>> = vec![Box::new(header)];
 
@@ -981,11 +982,11 @@ pub(crate) fn new_session_info(
         {
             parts.push(Box::new(tooltips));
         }
-        if requested_model != model {
+        if requested_model != model_id {
             let lines = vec![
                 "model changed:".magenta().bold().into(),
                 format!("requested: {requested_model}").into(),
-                format!("used: {model}").into(),
+                format!("used: {model_id}").into(),
             ];
             parts.push(Box::new(PlainHistoryCell { lines }));
         }
@@ -1005,7 +1006,6 @@ struct SessionHeaderHistoryCell {
     reasoning_effort: Option<ReasoningEffortConfig>,
     directory: PathBuf,
     profile: Option<String>,
-    provider: String,
 }
 
 impl SessionHeaderHistoryCell {
@@ -1015,7 +1015,6 @@ impl SessionHeaderHistoryCell {
         directory: PathBuf,
         version: &'static str,
         profile: Option<String>,
-        provider: String,
     ) -> Self {
         Self {
             version,
@@ -1023,7 +1022,6 @@ impl SessionHeaderHistoryCell {
             reasoning_effort,
             directory,
             profile,
-            provider,
         }
     }
 
@@ -1077,7 +1075,7 @@ impl HistoryCell for SessionHeaderHistoryCell {
         // Title line rendered inside the box: ">_ OpenAI Codex (vX)"
         let title_spans: Vec<Span<'static>> = vec![
             Span::from(">_ ").dim(),
-            Span::from("OpenAI Codex").bold(),
+            Span::from("Codex").bold(),
             Span::from(" ").dim(),
             Span::from(format!("(v{})", self.version)).dim(),
         ];
@@ -1086,11 +1084,7 @@ impl HistoryCell for SessionHeaderHistoryCell {
         const CHANGE_MODEL_HINT_EXPLANATION: &str = " to change";
         const DIR_LABEL: &str = "directory:";
         const PROFILE_LABEL: &str = "profile:";
-        const PROVIDER_LABEL: &str = "provider:";
-        let label_width = DIR_LABEL
-            .len()
-            .max(PROFILE_LABEL.len())
-            .max(PROVIDER_LABEL.len());
+        let label_width = DIR_LABEL.len().max(PROFILE_LABEL.len());
         let model_label = format!(
             "{model_label:<label_width$}",
             model_label = "model:",
@@ -1127,14 +1121,6 @@ impl HistoryCell for SessionHeaderHistoryCell {
             ];
             lines.push(make_row(profile_spans));
         }
-
-        // Add provider row
-        let provider_label = format!("{PROVIDER_LABEL:<label_width$}");
-        let provider_spans = vec![
-            Span::from(format!("{provider_label} ")).dim(),
-            Span::from(self.provider.clone()),
-        ];
-        lines.push(make_row(provider_spans));
 
         // Add model and directory rows
         lines.push(make_row(model_spans));
@@ -1385,6 +1371,7 @@ pub(crate) struct SubagentState {
     pub(crate) items: Vec<SubagentLogEntry>,
     pub(crate) status: SubagentTaskStatus,
     pub(crate) final_message: Option<String>,
+    pub(crate) model_id: Option<String>,
 }
 
 impl Default for SubagentState {
@@ -1393,6 +1380,7 @@ impl Default for SubagentState {
             items: Vec::new(),
             status: SubagentTaskStatus::Running,
             final_message: None,
+            model_id: None,
         }
     }
 }
@@ -1513,14 +1501,15 @@ impl HistoryCell for SubagentTaskCell {
         let activity_indent = format!("{indent}    ");
 
         // Lock state
-        let (status, items, final_message) = if let Ok(state) = self.state.lock() {
+        let (status, items, final_message, model_id) = if let Ok(state) = self.state.lock() {
             (
                 state.status,
                 state.items.clone(),
                 state.final_message.clone(),
+                state.model_id.clone(),
             )
         } else {
-            (SubagentTaskStatus::Failed, vec![], None)
+            (SubagentTaskStatus::Failed, vec![], None, None)
         };
 
         let bullet = match status {
@@ -1549,6 +1538,10 @@ impl HistoryCell for SubagentTaskCell {
                 header_spans.push(" #".dim());
                 header_spans.push(short_id.dim());
             }
+            if let Some(model_id) = model_id.clone() {
+                header_spans.push(" · ".dim());
+                header_spans.push(model_id.dim());
+            }
             Line::from(header_spans)
         } else {
             let action = match status {
@@ -1567,6 +1560,10 @@ impl HistoryCell for SubagentTaskCell {
                 let short_id = sid.clone();
                 header_spans.push(" #".dim());
                 header_spans.push(short_id.dim());
+            }
+            if let Some(model_id) = model_id {
+                header_spans.push(" · ".dim());
+                header_spans.push(model_id.dim());
             }
             Line::from(header_spans)
         };
@@ -1659,14 +1656,15 @@ impl HistoryCell for SubagentTaskCell {
         let activity_indent = format!("{indent}    ");
 
         // Lock state
-        let (status, items, final_message) = if let Ok(state) = self.state.lock() {
+        let (status, items, final_message, model_id) = if let Ok(state) = self.state.lock() {
             (
                 state.status,
                 state.items.clone(),
                 state.final_message.clone(),
+                state.model_id.clone(),
             )
         } else {
-            (SubagentTaskStatus::Failed, vec![], None)
+            (SubagentTaskStatus::Failed, vec![], None, None)
         };
 
         let bullet = match status {
@@ -1682,27 +1680,37 @@ impl HistoryCell for SubagentTaskCell {
                 SubagentTaskStatus::Running => "Running with profile:",
                 _ => "Ran with profile:",
             };
-            Line::from(vec![
+            let mut spans = vec![
                 indent.into(),
                 bullet,
                 " ".into(),
                 action.bold(),
                 " ".into(),
                 profile_name.trim().to_string().magenta(),
-            ])
+            ];
+            if let Some(model_id) = model_id.clone() {
+                spans.push(" · ".dim());
+                spans.push(model_id.dim());
+            }
+            Line::from(spans)
         } else {
             let action = match status {
                 SubagentTaskStatus::Running => "Delegating to",
                 _ => "Delegated to",
             };
-            Line::from(vec![
+            let mut spans = vec![
                 indent.into(),
                 bullet,
                 " ".into(),
                 action.bold(),
                 " @".magenta(),
                 self.subagent_name.clone().magenta(),
-            ])
+            ];
+            if let Some(model_id) = model_id {
+                spans.push(" · ".dim());
+                spans.push(model_id.dim());
+            }
+            Line::from(spans)
         };
         lines.push(header);
 
@@ -2669,12 +2677,11 @@ mod tests {
     #[test]
     fn session_header_includes_reasoning_level_when_present() {
         let cell = SessionHeaderHistoryCell::new(
-            "gpt-4o".to_string(),
+            "openai/gpt-4o".to_string(),
             Some(ReasoningEffortConfig::High),
             std::env::temp_dir(),
             "test",
             Some("test-profile".to_string()),
-            "OpenAI".to_string(),
         );
 
         let lines = render_lines(&cell.display_lines(80));
@@ -3152,6 +3159,7 @@ mod tests {
             items: vec![],
             status: SubagentTaskStatus::Completed,
             final_message: None,
+            model_id: None,
         }));
 
         let cell = new_subagent_task_cell(
@@ -3181,6 +3189,7 @@ mod tests {
             items: vec![],
             status: SubagentTaskStatus::Completed,
             final_message: None,
+            model_id: Some("openai/gpt-5.1-codex-mini".to_string()),
         }));
 
         let cell = new_subagent_task_cell(
@@ -3199,7 +3208,7 @@ mod tests {
         let rendered = render_lines(&lines);
 
         insta::assert_snapshot!(rendered.join("\n"), @r"
-        • Ran with profile: kimi
+        • Ran with profile: kimi · openai/gpt-5.1-codex-mini
           └ Find current Bitcoin (BTC) price
         ");
     }
@@ -3210,6 +3219,7 @@ mod tests {
             items: vec![],
             status: SubagentTaskStatus::Completed,
             final_message: None,
+            model_id: None,
         }));
 
         let cell = new_subagent_task_cell(
@@ -3242,6 +3252,7 @@ mod tests {
             })],
             status: SubagentTaskStatus::Completed,
             final_message: None,
+            model_id: Some("openai/gpt-5.1-codex-mini".to_string()),
         }));
 
         let cell = new_subagent_task_cell(
@@ -3260,7 +3271,7 @@ mod tests {
         let rendered = render_lines(&lines);
 
         insta::assert_snapshot!(rendered.join("\n"), @r"
-        • Delegated to @explorer
+        • Delegated to @explorer · openai/gpt-5.1-codex-mini
           └ List directory contents
             ✓ Run ls -la
         ");
@@ -3272,6 +3283,7 @@ mod tests {
             items: vec![],
             status: SubagentTaskStatus::Completed,
             final_message: None,
+            model_id: None,
         }));
 
         let long_description = "As an expert Version Control Agent, your task is to commit all pending changes in the working tree. Follow these strict guidelines for creating commits.";
@@ -3326,6 +3338,7 @@ mod tests {
             items,
             status: SubagentTaskStatus::Completed,
             final_message: None,
+            model_id: None,
         }));
 
         let cell = new_subagent_task_cell(
@@ -3374,6 +3387,7 @@ mod tests {
             })],
             status: SubagentTaskStatus::Completed,
             final_message: None,
+            model_id: None,
         }));
 
         let cell = new_subagent_task_cell(
@@ -3410,6 +3424,7 @@ mod tests {
             items: vec![],
             status: SubagentTaskStatus::Completed,
             final_message: Some("This is the final message.".to_string()),
+            model_id: None,
         }));
 
         let cell = new_subagent_task_cell(
@@ -3466,11 +3481,13 @@ mod tests {
             items: vec![],
             status: SubagentTaskStatus::Completed,
             final_message: Some("Child 1 result".to_string()),
+            model_id: None,
         }));
         let child2_state = Arc::new(Mutex::new(SubagentState {
             items: vec![],
             status: SubagentTaskStatus::Completed,
             final_message: Some("Child 2 result".to_string()),
+            model_id: None,
         }));
 
         // Create child cells
@@ -3502,6 +3519,7 @@ mod tests {
             items: vec![],
             status: SubagentTaskStatus::Completed,
             final_message: Some("Parent completed both calls.".to_string()),
+            model_id: None,
         }));
 
         let mut parent = new_subagent_task_cell(

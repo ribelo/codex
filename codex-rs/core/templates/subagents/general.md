@@ -14,7 +14,7 @@ description: |
   - Architectural decisions
   - Debugging analysis
 
-profile: inherit
+model: inherit
 sandbox_policy: workspace-write
 approval_policy: inherit
 allowed_subagents:

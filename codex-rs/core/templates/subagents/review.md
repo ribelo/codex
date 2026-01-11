@@ -10,7 +10,7 @@ description: |
   - Base branch: "Review changes against branch '{branch}'. Run `git diff $(git merge-base HEAD {branch})`. Provide findings."
   - Commit: "Review changes introduced by commit {sha}. Provide prioritized findings."
   - Custom: Any review instructions (subagent determines how to fetch code).
-profile: inherit
+model: inherit
 sandbox_policy: read-only
 approval_policy: never
 allowed_subagents:

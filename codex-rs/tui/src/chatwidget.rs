@@ -434,12 +434,11 @@ impl ChatWidget {
         self.conversation_id = Some(event.session_id);
         self.current_rollout_path = Some(event.rollout_path.clone());
         let initial_messages = event.initial_messages.clone();
-        let model_for_header = event.model.clone();
+        let model_for_header =
+            crate::model_id::canonical_model_id(&event.model_provider_id, &event.model);
         self.session_header.set_model(&model_for_header);
         // Set model/effort/policy on bottom_pane for footer display
         self.bottom_pane.set_model(Some(model_for_header.clone()));
-        self.bottom_pane
-            .set_model_provider(Some(event.model_provider_id.clone()));
         self.bottom_pane.set_reasoning_effort(
             self.config
                 .model_reasoning_effort
@@ -2372,6 +2371,7 @@ impl ChatWidget {
                     items: Vec::new(),
                     status: history_cell::SubagentTaskStatus::Running,
                     final_message: None,
+                    model_id: None,
                 }))
             })
             .clone();
@@ -2506,6 +2506,12 @@ impl ChatWidget {
 
         // Convert the inner event to an activity summary
         match inner {
+            EventMsg::SessionConfigured(ev) => {
+                guard.model_id = Some(crate::model_id::canonical_model_id(
+                    &ev.model_provider_id,
+                    &ev.model,
+                ));
+            }
             EventMsg::ExecCommandBegin(ev) => {
                 let cmd_summary = if ev.command.is_empty() {
                     "Running command".to_string()
@@ -2960,6 +2966,7 @@ impl ChatWidget {
     /// opens the full picker with every available preset.
     pub(crate) fn open_model_popup(&mut self) {
         let current_model = self.model_family.get_model_slug().to_string();
+        let provider_id = self.config.model_provider_id.clone();
         let presets: Vec<ModelPreset> =
             // todo(aibrahim): make this async function
             match self.models_manager.try_list_models(&self.config) {
@@ -2974,11 +2981,7 @@ impl ChatWidget {
                 }
             };
 
-        let current_label = presets
-            .iter()
-            .find(|preset| preset.model == current_model)
-            .map(|preset| preset.display_name.to_string())
-            .unwrap_or_else(|| current_model.clone());
+        let current_label = crate::model_id::canonical_model_id(&provider_id, &current_model);
 
         let (mut auto_presets, other_presets): (Vec<ModelPreset>, Vec<ModelPreset>) = presets
             .into_iter()
@@ -2994,17 +2997,20 @@ impl ChatWidget {
         let mut items: Vec<SelectionItem> = auto_presets
             .into_iter()
             .map(|preset| {
-                let description =
-                    (!preset.description.is_empty()).then_some(preset.description.clone());
-                let model = preset.model.clone();
+                let model_slug = preset.model.clone();
+                let model_id = crate::model_id::canonical_model_id(&provider_id, &model_slug);
+                let description = (!preset.description.is_empty())
+                    .then_some(preset.description.clone())
+                    .or_else(|| (preset.display_name != model_id).then_some(preset.display_name));
                 let actions = Self::model_selection_actions(
-                    model.clone(),
+                    model_slug.clone(),
+                    model_id.clone(),
                     Some(preset.default_reasoning_effort),
                 );
                 SelectionItem {
-                    name: preset.display_name.clone(),
+                    name: model_id,
                     description,
-                    is_current: model == current_model,
+                    is_current: model_slug == current_model,
                     is_default: preset.is_default,
                     actions,
                     dismiss_on_select: true,
@@ -3068,10 +3074,9 @@ impl ChatWidget {
         }
 
         let current_model = self.model_family.get_model_slug().to_string();
+        let provider_id = self.config.model_provider_id.clone();
         let mut items: Vec<SelectionItem> = Vec::new();
         for preset in presets.into_iter() {
-            let description =
-                (!preset.description.is_empty()).then_some(preset.description.to_string());
             let is_current = preset.model == current_model;
             let single_supported_effort = preset.supported_reasoning_efforts.len() == 1;
             let preset_for_action = preset.clone();
@@ -3081,8 +3086,12 @@ impl ChatWidget {
                     model: preset_for_event,
                 });
             })];
+            let model_id = crate::model_id::canonical_model_id(&provider_id, &preset.model);
+            let description = (!preset.description.is_empty())
+                .then_some(preset.description.to_string())
+                .or_else(|| (preset.display_name != model_id).then_some(preset.display_name));
             items.push(SelectionItem {
-                name: preset.display_name.clone(),
+                name: model_id,
                 description,
                 is_current,
                 is_default: preset.is_default,
@@ -3095,7 +3104,7 @@ impl ChatWidget {
         self.bottom_pane.show_selection_view(SelectionViewParams {
             title: Some("Select Model and Effort".to_string()),
             subtitle: Some(
-                "Access legacy models by running codex -m <model_name> or in your config.toml"
+                "Access legacy models by running codex -m <provider>/<model> or in your config.toml"
                     .to_string(),
             ),
             footer_hint: Some("Press enter to select reasoning effort, or esc to dismiss.".into()),
@@ -3145,7 +3154,8 @@ impl ChatWidget {
         });
     }
     fn model_selection_actions(
-        model_for_action: String,
+        model_slug_for_action: String,
+        model_id_for_action: String,
         effort_for_action: Option<ReasoningEffortConfig>,
     ) -> Vec<SelectionAction> {
         vec![Box::new(move |tx| {
@@ -3156,19 +3166,19 @@ impl ChatWidget {
                 cwd: None,
                 approval_policy: None,
                 sandbox_policy: None,
-                model: Some(model_for_action.clone()),
+                model: Some(model_slug_for_action.clone()),
                 effort: Some(effort_for_action),
                 summary: None,
             }));
-            tx.send(AppEvent::UpdateModel(model_for_action.clone()));
+            tx.send(AppEvent::UpdateModel(model_slug_for_action.clone()));
             tx.send(AppEvent::UpdateReasoningEffort(effort_for_action));
             tx.send(AppEvent::PersistModelSelection {
-                model: model_for_action.clone(),
+                model: model_id_for_action.clone(),
                 effort: effort_for_action,
             });
             tracing::info!(
                 "Selected model: {}, Selected effort: {}",
-                model_for_action,
+                model_id_for_action,
                 effort_label
             );
         })]
@@ -3237,6 +3247,8 @@ impl ChatWidget {
             .or(Some(default_effort));
 
         let model_slug = preset.model.to_string();
+        let model_id =
+            crate::model_id::canonical_model_id(&self.config.model_provider_id, &model_slug);
         let is_current_model = self.model_family.get_model_slug() == preset.model;
         let highlight_choice = if is_current_model {
             self.config.model_reasoning_effort
@@ -3281,8 +3293,8 @@ impl ChatWidget {
                 None
             };
 
-            let model_for_action = model_slug.clone();
-            let actions = Self::model_selection_actions(model_for_action, choice.stored);
+            let actions =
+                Self::model_selection_actions(model_slug.clone(), model_id.clone(), choice.stored);
 
             items.push(SelectionItem {
                 name: effort_label,
@@ -3297,7 +3309,7 @@ impl ChatWidget {
 
         let mut header = ColumnRenderable::new();
         header.push(Line::from(
-            format!("Select Reasoning Level for {model_slug}").bold(),
+            format!("Select Reasoning Level for {model_id}").bold(),
         ));
 
         self.bottom_pane.show_selection_view(SelectionViewParams {
@@ -3321,6 +3333,7 @@ impl ChatWidget {
     }
 
     fn apply_model_and_effort(&self, model: String, effort: Option<ReasoningEffortConfig>) {
+        let model_id = crate::model_id::canonical_model_id(&self.config.model_provider_id, &model);
         self.app_event_tx
             .send(AppEvent::CodexOp(Op::OverrideTurnContext {
                 cwd: None,
@@ -3330,16 +3343,16 @@ impl ChatWidget {
                 effort: Some(effort),
                 summary: None,
             }));
-        self.app_event_tx.send(AppEvent::UpdateModel(model.clone()));
+        self.app_event_tx.send(AppEvent::UpdateModel(model));
         self.app_event_tx
             .send(AppEvent::UpdateReasoningEffort(effort));
         self.app_event_tx.send(AppEvent::PersistModelSelection {
-            model: model.clone(),
+            model: model_id.clone(),
             effort,
         });
         tracing::info!(
             "Selected model: {}, Selected effort: {}",
-            model,
+            model_id,
             effort
                 .map(|e| e.to_string())
                 .unwrap_or_else(|| "default".to_string())
@@ -3715,10 +3728,12 @@ impl ChatWidget {
 
     /// Set the model in the widget's config copy.
     pub(crate) fn set_model(&mut self, model: &str, model_family: ModelFamily) {
-        self.session_header.set_model(model);
         let model = model.to_string();
         self.config.model = Some(model.clone());
-        self.bottom_pane.set_model(Some(model));
+        let model_for_display =
+            crate::model_id::canonical_model_id(&self.config.model_provider_id, &model);
+        self.session_header.set_model(&model_for_display);
+        self.bottom_pane.set_model(Some(model_for_display));
         self.model_family = model_family;
     }
 

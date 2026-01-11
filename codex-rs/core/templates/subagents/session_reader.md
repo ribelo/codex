@@ -2,7 +2,7 @@
 name: Session Reader
 description: Internal agent for analyzing session logs. Not directly callable by users.
 internal: true
-profile: inherit
+model: inherit
 sandbox_policy: read-only
 approval_policy: never
 allowed_subagents: []

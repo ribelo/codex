@@ -3,7 +3,7 @@ name: Oracle
 description: |
   Expert reasoning agent for complex analysis, planning, and code review. Use when you need deep technical guidance, architectural advice, debugging strategies, or implementation planning. Invoked zero-shot - provide all context in the prompt. Returns comprehensive analysis.
 
-profile: inherit
+model: inherit
 sandbox_policy: read-only
 approval_policy: never
 allowed_subagents:

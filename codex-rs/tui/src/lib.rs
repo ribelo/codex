@@ -55,6 +55,7 @@ pub mod live_wrap;
 mod markdown;
 mod markdown_render;
 mod markdown_stream;
+mod model_id;
 pub mod onboarding;
 mod pager_overlay;
 pub mod public_widgets;

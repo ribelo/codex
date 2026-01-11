@@ -10,7 +10,6 @@ use tracing::info;
 use tracing::warn;
 
 use crate::codex::Codex;
-use crate::config::profile::ConfigProfile;
 use crate::protocol::AskForApproval;
 use crate::protocol::SandboxPolicy;
 use tokio_util::sync::CancellationToken;
@@ -57,24 +56,26 @@ impl SubagentApprovalPolicy {
     }
 }
 
-/// Profile setting for subagents.
-/// Either inherits from parent session or uses a named profile from config.toml.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+/// Model setting for subagents.
+///
+/// - `inherit`: use the parent session's model/provider.
+/// - `{provider}/{model}`: canonical model ID (e.g. `openai/gpt-4o-mini`).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
-pub enum SubagentProfile {
+pub enum SubagentModel {
     /// Inherit the parent session's model/provider settings.
+    #[default]
     Inherit,
-    /// Use a named profile from config.toml.
+    /// Use an explicit canonical model ID (`{provider}/{model}`).
     #[serde(untagged)]
-    Named(String),
+    Canonical(String),
 }
 
-impl SubagentProfile {
-    /// Returns the profile name if not `Inherit`.
-    pub fn profile_name(&self) -> Option<&str> {
+impl SubagentModel {
+    pub fn canonical_model_id(&self) -> Option<&str> {
         match self {
-            SubagentProfile::Inherit => None,
-            SubagentProfile::Named(name) => Some(name),
+            SubagentModel::Inherit => None,
+            SubagentModel::Canonical(canonical_model_id) => Some(canonical_model_id),
         }
     }
 }
@@ -95,7 +96,8 @@ pub struct SubagentLoadOutcome {
 pub struct SubagentMetadata {
     pub name: Option<String>,
     pub description: Option<String>,
-    pub profile: SubagentProfile,
+    #[serde(default)]
+    pub model: SubagentModel,
     pub sandbox_policy: SubagentSandboxPolicy,
     pub approval_policy: SubagentApprovalPolicy,
     /// Whether this agent is internal (not visible to main agent by default).
@@ -119,44 +121,32 @@ impl SubagentMetadata {
         self.internal
     }
 
-    /// Load the profile configuration from the config file if a profile name is specified.
-    /// Uses async I/O to avoid blocking the executor.
-    pub async fn load_profile(&self, codex_home: &Path) -> Result<Option<ConfigProfile>> {
-        let Some(profile_name) = self.profile.profile_name() else {
-            return Ok(None);
-        };
+    pub fn validate(&self) -> Result<()> {
+        if let Some(profile) = self.extra.get("profile") {
+            let profile = match profile {
+                serde_yaml::Value::String(profile) => profile.as_str(),
+                _ => {
+                    anyhow::bail!(
+                        "Subagent frontmatter field 'profile' is no longer supported; use 'model: inherit' or 'model: {{provider}}/{{model}}'."
+                    );
+                }
+            };
 
-        let config_path = codex_home.join("config.toml");
-        let content = tokio::fs::read_to_string(&config_path)
-            .await
-            .context("Failed to read config.toml for subagent profile lookup")?;
-
-        #[derive(Deserialize)]
-        struct ProfilesOnly {
-            #[serde(default)]
-            profiles: HashMap<String, ConfigProfile>,
+            match (&self.model, profile) {
+                (SubagentModel::Inherit, "inherit") => {}
+                _ => {
+                    anyhow::bail!(
+                        "Subagent frontmatter field 'profile' is no longer supported; use 'model: inherit' or 'model: {{provider}}/{{model}}'."
+                    );
+                }
+            }
         }
 
-        let parsed: ProfilesOnly =
-            toml::from_str(&content).context("Failed to parse config.toml")?;
+        if let Some(canonical_model_id) = self.model.canonical_model_id() {
+            crate::model_provider_info::parse_canonical_model_id(canonical_model_id)?;
+        }
 
-        parsed
-            .profiles
-            .get(profile_name)
-            .cloned()
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Profile '{}' not found in config.toml. Available profiles: {}",
-                    profile_name,
-                    parsed
-                        .profiles
-                        .keys()
-                        .cloned()
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )
-            })
-            .map(Some)
+        Ok(())
     }
 }
 
@@ -304,17 +294,7 @@ pub async fn load_subagents(codex_home: &Path) -> SubagentLoadOutcome {
             && let Some(slug) = path.file_stem().and_then(|s| s.to_str())
         {
             match SubagentRegistry::load_agent(&path, slug) {
-                Ok(agent) => {
-                    // Validate the profile if specified
-                    if let Err(e) = agent.metadata.load_profile(codex_home).await {
-                        outcome.errors.push(SubagentError {
-                            path,
-                            message: e.to_string(),
-                        });
-                    } else {
-                        outcome.agents.push(agent);
-                    }
-                }
+                Ok(agent) => outcome.agents.push(agent),
                 Err(e) => {
                     outcome.errors.push(SubagentError {
                         path,
@@ -391,11 +371,12 @@ impl SubagentRegistry {
 
         anyhow::ensure!(
             !frontmatter.is_empty(),
-            "Missing YAML frontmatter. Subagent files require frontmatter with at least 'profile', 'sandbox_policy', and 'approval_policy' fields."
+            "Missing YAML frontmatter. Subagent files require frontmatter with at least 'model', 'sandbox_policy', and 'approval_policy' fields."
         );
 
         let metadata: SubagentMetadata =
             serde_yaml::from_str(frontmatter).context("Failed to parse YAML frontmatter")?;
+        metadata.validate()?;
 
         Ok(SubagentDefinition {
             slug: slug.to_string(),
@@ -446,27 +427,13 @@ mod tests {
         path
     }
 
-    fn write_config(codex_home: &TempDir, profiles: &[(&str, &str)]) {
-        let config_content = if profiles.is_empty() {
-            String::new()
-        } else {
-            let mut profiles_toml = String::from("[profiles]\n");
-            for (name, model) in profiles {
-                profiles_toml.push_str(&format!("[profiles.{name}]\n"));
-                profiles_toml.push_str(&format!("model = \"{model}\"\n"));
-            }
-            profiles_toml
-        };
-        fs::write(codex_home.path().join("config.toml"), config_content).unwrap();
-    }
-
     #[tokio::test]
-    async fn loads_valid_agent_without_profile() {
+    async fn loads_valid_agent_with_inherit_model() {
         let codex_home = setup_codex_home();
         write_agent(
             &codex_home,
             "test-agent",
-            "---\nname: Test Agent\ndescription: A test agent\nprofile: inherit\nsandbox_policy: inherit\napproval_policy: inherit\n---\n\nYou are a test agent.",
+            "---\nname: Test Agent\ndescription: A test agent\nmodel: inherit\nsandbox_policy: inherit\napproval_policy: inherit\n---\n\nYou are a test agent.",
         );
 
         let outcome = load_subagents(codex_home.path()).await;
@@ -478,13 +445,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn loads_valid_agent_with_valid_profile() {
+    async fn loads_valid_agent_with_explicit_model() {
         let codex_home = setup_codex_home();
-        write_config(&codex_home, &[("fast", "gpt-4o-mini")]);
         write_agent(
             &codex_home,
             "explorer",
-            "---\nname: Explorer\ndescription: Fast agent\nprofile: fast\nsandbox_policy: read-only\napproval_policy: never\n---\n\nYou are an explorer.",
+            "---\nname: Explorer\ndescription: Fast agent\nmodel: openai/gpt-4o-mini\nsandbox_policy: read-only\napproval_policy: never\n---\n\nYou are an explorer.",
         );
 
         let outcome = load_subagents(codex_home.path()).await;
@@ -496,13 +462,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rejects_agent_with_invalid_profile() {
+    async fn rejects_agent_with_invalid_model() {
         let codex_home = setup_codex_home();
-        write_config(&codex_home, &[("fast", "gpt-4o-mini")]);
         let path = write_agent(
             &codex_home,
             "explorer",
-            "---\nname: Explorer\ndescription: Fast agent\nprofile: x-ai/grok-4.1-fast\nsandbox_policy: inherit\napproval_policy: inherit\n---\n\nYou are an explorer.",
+            "---\nname: Explorer\ndescription: Fast agent\nmodel: grok-4.1-fast\nsandbox_policy: inherit\napproval_policy: inherit\n---\n\nYou are an explorer.",
         );
 
         let outcome = load_subagents(codex_home.path()).await;
@@ -514,15 +479,8 @@ mod tests {
         assert!(
             outcome.errors[0]
                 .message
-                .contains("Profile 'x-ai/grok-4.1-fast' not found"),
-            "Error message should mention missing profile: {}",
-            outcome.errors[0].message
-        );
-        assert!(
-            outcome.errors[0]
-                .message
-                .contains("Available profiles: fast"),
-            "Error message should list available profiles: {}",
+                .contains("Invalid model ID 'grok-4.1-fast'"),
+            "Error message should mention invalid model: {}",
             outcome.errors[0].message
         );
     }
@@ -533,7 +491,7 @@ mod tests {
         let path = write_agent(
             &codex_home,
             "broken",
-            "---\nname: Broken\ninvalid yaml here\nprofile: inherit\nsandbox_policy: inherit\napproval_policy: inherit\n---\n\nYou are broken.",
+            "---\nname: Broken\ninvalid yaml here\nmodel: inherit\nsandbox_policy: inherit\napproval_policy: inherit\n---\n\nYou are broken.",
         );
 
         let outcome = load_subagents(codex_home.path()).await;
@@ -556,7 +514,7 @@ mod tests {
         let path = write_agent(
             &codex_home,
             "incomplete",
-            "---\nname: Incomplete\ndescription: Missing required fields\nprofile: inherit\n---\n\nYou are incomplete.",
+            "---\nname: Incomplete\ndescription: Missing required fields\nmodel: inherit\n---\n\nYou are incomplete.",
         );
 
         let outcome = load_subagents(codex_home.path()).await;
@@ -604,7 +562,7 @@ mod tests {
         write_agent(
             &codex_home,
             "minimal",
-            "---\nprofile: inherit\nsandbox_policy: inherit\napproval_policy: inherit\n---\n",
+            "---\nmodel: inherit\nsandbox_policy: inherit\napproval_policy: inherit\n---\n",
         );
 
         let outcome = load_subagents(codex_home.path()).await;
@@ -656,7 +614,7 @@ mod tests {
                 metadata: SubagentMetadata {
                     name: Some("Test".to_string()),
                     description: Some("A test".to_string()),
-                    profile: SubagentProfile::Inherit,
+                    model: SubagentModel::Inherit,
                     sandbox_policy: SubagentSandboxPolicy::Inherit,
                     approval_policy: SubagentApprovalPolicy::Inherit,
                     allowed_subagents: None,
@@ -700,7 +658,7 @@ mod internal_visibility_tests {
         write_agent(
             &codex_home,
             "internal-test",
-            "---\nname: Internal Test\ndescription: An internal agent\ninternal: true\nprofile: inherit\nsandbox_policy: read-only\napproval_policy: never\n---\n\nYou are an internal test agent.",
+            "---\nname: Internal Test\ndescription: An internal agent\ninternal: true\nmodel: inherit\nsandbox_policy: read-only\napproval_policy: never\n---\n\nYou are an internal test agent.",
         );
 
         let outcome = load_subagents(codex_home.path()).await;
@@ -722,7 +680,7 @@ mod internal_visibility_tests {
         write_agent(
             &codex_home,
             "public-test",
-            "---\nname: Public Test\ndescription: A public agent\nprofile: inherit\nsandbox_policy: read-only\napproval_policy: never\n---\n\nYou are a public test agent.",
+            "---\nname: Public Test\ndescription: A public agent\nmodel: inherit\nsandbox_policy: read-only\napproval_policy: never\n---\n\nYou are a public test agent.",
         );
 
         let outcome = load_subagents(codex_home.path()).await;
@@ -747,7 +705,7 @@ mod internal_visibility_tests {
                     name: Some("Internal".to_string()),
                     description: Some("Internal agent".to_string()),
                     internal: true,
-                    profile: SubagentProfile::Inherit,
+                    model: SubagentModel::Inherit,
                     sandbox_policy: SubagentSandboxPolicy::ReadOnly,
                     approval_policy: SubagentApprovalPolicy::Never,
                     allowed_subagents: Some(vec![]),

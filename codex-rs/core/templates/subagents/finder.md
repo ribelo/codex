@@ -13,7 +13,7 @@ description: |
   - Code changes or design advice
   - Simple exact text searches (use rg directly)
 
-profile: inherit
+model: inherit
 sandbox_policy: read-only
 approval_policy: never
 allowed_subagents: []

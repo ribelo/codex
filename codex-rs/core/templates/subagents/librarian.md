@@ -3,7 +3,7 @@ name: Librarian
 description: |
   Codebase understanding agent for deep multi-repository analysis. Use when you need to understand architecture across repos, trace code flow, explain how features work end-to-end, or research library internals. Provides thorough analysis with visual diagrams.
 
-profile: inherit
+model: inherit
 sandbox_policy: read-only
 approval_policy: never
 allowed_subagents:

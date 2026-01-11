@@ -238,7 +238,7 @@ impl ToolHandler for TaskHandler {
 
         info!(
             subagent = %args.subagent_name,
-            profile = ?subagent_def.metadata.profile,
+            model = ?subagent_def.metadata.model,
             "Task handler: resolved subagent definition"
         );
 
@@ -310,85 +310,43 @@ impl ToolHandler for TaskHandler {
                 sub_config.codex_home = codex_home.clone();
                 sub_config.cwd = effective_cwd.clone();
 
-                // Apply profile settings from frontmatter.
-                // We re-read config.toml on each invocation rather than caching because:
-                // 1. The config file is small and TOML parsing is fast
-                // 2. This ensures we always use fresh config if user edits it mid-session
-                if let Some(profile) = subagent_def
-                    .metadata
-                    .load_profile(&codex_home)
-                    .await
-                    .map_err(|e| {
-                        FunctionCallError::RespondToModel(format!(
-                            "Subagent configuration error for '{}': {e}",
-                            args.subagent_name
-                        ))
-                    })?
-                {
-                    info!(
-                        subagent = %args.subagent_name,
-                        profile_name = ?subagent_def.metadata.profile,
-                        profile_model = ?profile.model,
-                        "Task handler: loaded profile configuration"
-                    );
-
-                    // Apply model from profile
-                    if let Some(ref canonical_model_id) = profile.model {
-                        // Profiles store model IDs in canonical form (`{provider}/{model}`), but the
-                        // rest of the system expects the provider-specific model slug.
-                        let (provider_id, model_name) =
-                            crate::model_provider_info::parse_canonical_model_id(
-                                canonical_model_id,
-                            )
+                // Apply model override from frontmatter.
+                if let Some(canonical_model_id) = subagent_def.metadata.model.canonical_model_id() {
+                    // Subagent model IDs are specified in canonical form (`{provider}/{model}`),
+                    // but the rest of the system expects the provider-specific model slug.
+                    let (provider_id, model_name) =
+                        crate::model_provider_info::parse_canonical_model_id(canonical_model_id)
                             .map_err(|e| {
                                 FunctionCallError::RespondToModel(format!(
-                                    "Invalid model format in profile: {e}"
+                                    "Invalid subagent model '{canonical_model_id}': {e}"
                                 ))
                             })?;
 
-                        sub_config.model = Some(model_name.to_string());
+                    sub_config.model = Some(model_name.to_string());
 
-                        // Build combined providers map
-                        let mut providers = built_in_model_providers();
-                        for (key, provider) in config.model_providers.iter() {
-                            providers
-                                .entry(key.clone())
-                                .or_insert_with(|| provider.clone());
-                        }
-
-                        if let Some(provider_info) = providers.get(provider_id) {
-                            sub_config.model_provider_id = provider_id.to_string();
-                            sub_config.model_provider = provider_info.clone();
-                        } else {
-                            return Err(FunctionCallError::Fatal(format!(
-                                "Model provider '{provider_id}' from model '{canonical_model_id}' not found"
-                            )));
-                        }
-
-                        info!(
-                            subagent = %args.subagent_name,
-                            canonical_model_id = %canonical_model_id,
-                            model_name = %model_name,
-                            provider_id = %provider_id,
-                            "Task handler: applied model from profile"
-                        );
+                    // Build combined providers map
+                    let mut providers = built_in_model_providers();
+                    for (key, provider) in config.model_providers.iter() {
+                        providers
+                            .entry(key.clone())
+                            .or_insert_with(|| provider.clone());
                     }
 
-                    // Apply reasoning settings from profile
-                    if profile.model_reasoning_effort.is_some() {
-                        sub_config.model_reasoning_effort = profile.model_reasoning_effort;
+                    if let Some(provider_info) = providers.get(provider_id) {
+                        sub_config.model_provider_id = provider_id.to_string();
+                        sub_config.model_provider = provider_info.clone();
+                    } else {
+                        return Err(FunctionCallError::Fatal(format!(
+                            "Model provider '{provider_id}' from subagent model '{canonical_model_id}' not found"
+                        )));
                     }
-                    if let Some(summary) = profile.model_reasoning_summary {
-                        sub_config.model_reasoning_summary = summary;
-                    }
-                    if profile.model_verbosity.is_some() {
-                        sub_config.model_verbosity = profile.model_verbosity;
-                    }
-                } else {
+
                     info!(
                         subagent = %args.subagent_name,
-                        profile_name = ?subagent_def.metadata.profile,
-                        "Task handler: no profile configured or profile returned None"
+                        canonical_model_id = %canonical_model_id,
+                        model_name = %model_name,
+                        provider_id = %provider_id,
+                        "Task handler: applied explicit subagent model"
                     );
                 }
 
