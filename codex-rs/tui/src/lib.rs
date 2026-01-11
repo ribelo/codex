@@ -460,7 +460,18 @@ async fn run_ratatui_app(
         resume_picker::ResumeSelection::StartFresh
     };
 
-    let Cli { prompt, images, .. } = cli;
+    let Cli {
+        prompt,
+        images,
+        no_alt_screen,
+        ..
+    } = cli;
+
+    // Disable alternate screen if requested via CLI flag or config.
+    // CLI flag takes precedence (if set, always disables).
+    if no_alt_screen || config.no_alt_screen {
+        tui.set_alt_screen_enabled(false);
+    }
 
     let app_result = App::run(
         &mut tui,

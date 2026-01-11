@@ -173,6 +173,8 @@ pub struct Tui {
     // True when terminal/tab is focused; updated internally from crossterm events
     terminal_focused: Arc<AtomicBool>,
     enhanced_keys_supported: bool,
+    // When false, enter_alt_screen() becomes a no-op (for Zellij scrollback support)
+    alt_screen_enabled: bool,
 }
 
 impl Tui {
@@ -198,11 +200,17 @@ impl Tui {
             alt_screen_active: Arc::new(AtomicBool::new(false)),
             terminal_focused: Arc::new(AtomicBool::new(true)),
             enhanced_keys_supported,
+            alt_screen_enabled: true,
         }
     }
 
     pub fn frame_requester(&self) -> FrameRequester {
         self.frame_requester.clone()
+    }
+
+    /// Set whether alternate screen is enabled. When false, enter_alt_screen() becomes a no-op.
+    pub fn set_alt_screen_enabled(&mut self, enabled: bool) {
+        self.alt_screen_enabled = enabled;
     }
 
     pub fn enhanced_keys_supported(&self) -> bool {
@@ -288,6 +296,9 @@ impl Tui {
     /// Enter alternate screen and expand the viewport to full terminal size, saving the current
     /// inline viewport for restoration when leaving.
     pub fn enter_alt_screen(&mut self) -> Result<()> {
+        if !self.alt_screen_enabled {
+            return Ok(());
+        }
         let _ = execute!(self.terminal.backend_mut(), EnterAlternateScreen);
         // Enable "alternate scroll" so terminals may translate wheel to arrows
         let _ = execute!(self.terminal.backend_mut(), EnableAlternateScroll);
@@ -307,6 +318,9 @@ impl Tui {
 
     /// Leave alternate screen and restore the previously saved inline viewport, if any.
     pub fn leave_alt_screen(&mut self) -> Result<()> {
+        if !self.alt_screen_enabled {
+            return Ok(());
+        }
         // Disable alternate scroll when leaving alt-screen
         let _ = execute!(self.terminal.backend_mut(), DisableAlternateScroll);
         let _ = execute!(self.terminal.backend_mut(), LeaveAlternateScreen);

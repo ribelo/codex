@@ -75,6 +75,12 @@ pub struct Cli {
     #[arg(long = "add-dir", value_name = "DIR", value_hint = ValueHint::DirPath)]
     pub add_dir: Vec<PathBuf>,
 
+    /// Disable alternate screen buffer. When set, the TUI avoids
+    /// EnterAlternateScreen/LeaveAlternateScreen to allow terminal scrollback
+    /// (useful for Zellij and similar multiplexers).
+    #[arg(long = "no-alt-screen", default_value_t = false)]
+    pub no_alt_screen: bool,
+
     #[clap(skip)]
     pub config_overrides: CliConfigOverrides,
 }

@@ -39,6 +39,7 @@ use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
 use dunce::canonicalize as normalize_path;
 use futures::StreamExt;
+use pretty_assertions::assert_eq;
 use serde_json::json;
 use std::io::Write;
 use std::sync::Arc;
@@ -1861,5 +1862,277 @@ async fn history_dedupes_streamed_and_final_messages_across_turns() {
         serde_json::Value::Array(actual_tail.to_vec()),
         r3_tail_expected,
         "request 3 tail mismatch",
+    );
+}
+
+// =============================================================================
+// Subagent request integration tests
+// =============================================================================
+
+use core_test_support::responses::ev_assistant_message;
+use core_test_support::responses::ev_completed;
+use core_test_support::responses::ev_function_call;
+use core_test_support::responses::ev_response_created;
+use core_test_support::responses::start_mock_server;
+use wiremock::matchers::header;
+
+/// Test that subagent request includes the system_prompt markdown from the subagent template.
+/// This verifies that finder.md's system_prompt is present in the developer_instructions.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn subagent_request_includes_template_system_prompt() {
+    skip_if_no_network!();
+
+    let server = start_mock_server().await;
+
+    // Parent request: model issues a task function call to invoke finder subagent
+    let task_args = json!({
+        "description": "Find code",
+        "prompt": "Search for the main function",
+        "subagent_name": "finder"
+    });
+    let parent_response = sse(vec![
+        ev_response_created("resp-parent-1"),
+        ev_function_call("call-task-1", "task", &task_args.to_string()),
+        ev_completed("resp-parent-1"),
+    ]);
+    let parent_mock = mount_sse_once(&server, parent_response).await;
+
+    // Subagent request: matched by x-openai-subagent header
+    let subagent_response = sse(vec![
+        ev_response_created("resp-subagent-1"),
+        ev_assistant_message("msg-subagent-1", "Found the files."),
+        ev_completed("resp-subagent-1"),
+    ]);
+    let subagent_mock = mount_sse_once_match(
+        &server,
+        header("x-openai-subagent", "finder"),
+        subagent_response,
+    )
+    .await;
+
+    // Parent completion after subagent finishes
+    let parent_completion = sse(vec![
+        ev_response_created("resp-parent-2"),
+        ev_assistant_message("msg-parent-2", "Done."),
+        ev_completed("resp-parent-2"),
+    ]);
+    let parent_completion_mock = mount_sse_once(&server, parent_completion).await;
+
+    // Build and run codex
+    let mut builder = test_codex();
+    let test = builder
+        .build(&server)
+        .await
+        .expect("create test Codex conversation");
+
+    test.submit_turn("invoke the finder agent")
+        .await
+        .expect("submit turn");
+
+    // Ensure we observed both the parent and subagent requests.
+    assert_eq!(parent_mock.requests().len(), 1);
+    assert_eq!(subagent_mock.requests().len(), 1);
+    assert_eq!(parent_completion_mock.requests().len(), 1);
+
+    // Verify the subagent request contains finder's system_prompt
+    let subagent_request = &subagent_mock.requests()[0];
+    let dev_messages = subagent_request.message_input_texts("developer");
+    let combined = dev_messages.join("\n");
+
+    let finder_template_path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("templates/subagents/finder.md");
+    let finder_template =
+        std::fs::read_to_string(&finder_template_path).expect("read templates/subagents/finder.md");
+    let finder_system_prompt = finder_template
+        .splitn(3, "---\n")
+        .nth(2)
+        .expect("finder template missing closing frontmatter delimiter")
+        .trim_start_matches('\n')
+        .trim_end_matches('\n');
+
+    // Verify the exact system prompt content appears, and that the identity prompt is appended.
+    let expected = format!("{finder_system_prompt}\n\n# Subagent Context");
+    assert!(
+        combined.contains(&expected),
+        "subagent request should include finder.md system_prompt. Got: {combined}"
+    );
+}
+
+/// Test that subagent request includes the identity prompt with a valid parent session UUID.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn subagent_request_includes_identity_prompt_with_parent_uuid() {
+    skip_if_no_network!();
+
+    let server = start_mock_server().await;
+
+    // Parent request: model issues a task function call
+    let task_args = json!({
+        "description": "Quick fix",
+        "prompt": "Fix the typo",
+        "subagent_name": "rush"
+    });
+    let parent_response = sse(vec![
+        ev_response_created("resp-parent-1"),
+        ev_function_call("call-task-1", "task", &task_args.to_string()),
+        ev_completed("resp-parent-1"),
+    ]);
+    let parent_mock = mount_sse_once(&server, parent_response).await;
+
+    // Subagent request
+    let subagent_response = sse(vec![
+        ev_response_created("resp-subagent-1"),
+        ev_assistant_message("msg-subagent-1", "Fixed."),
+        ev_completed("resp-subagent-1"),
+    ]);
+    let subagent_mock = mount_sse_once_match(
+        &server,
+        header("x-openai-subagent", "rush"),
+        subagent_response,
+    )
+    .await;
+
+    // Parent completion
+    let parent_completion = sse(vec![
+        ev_response_created("resp-parent-2"),
+        ev_assistant_message("msg-parent-2", "Done."),
+        ev_completed("resp-parent-2"),
+    ]);
+    let parent_completion_mock = mount_sse_once(&server, parent_completion).await;
+
+    // Build and run codex
+    let mut builder = test_codex();
+    let test = builder
+        .build(&server)
+        .await
+        .expect("create test Codex conversation");
+
+    test.submit_turn("invoke the rush agent")
+        .await
+        .expect("submit turn");
+
+    // Ensure we observed both the parent and subagent requests.
+    assert_eq!(parent_mock.requests().len(), 1);
+    assert_eq!(subagent_mock.requests().len(), 1);
+    assert_eq!(parent_completion_mock.requests().len(), 1);
+
+    // Verify the subagent request contains identity prompt
+    let subagent_request = &subagent_mock.requests()[0];
+    let dev_messages = subagent_request.message_input_texts("developer");
+    let combined = dev_messages.join("\n");
+
+    // Check for identity prompt header and content
+    assert!(
+        combined.contains("# Subagent Context"),
+        "subagent request should include identity prompt header. Got: {combined}"
+    );
+    assert!(
+        combined.contains("You are a specialized subagent delegated by a parent agent"),
+        "subagent request should include identity prompt text. Got: {combined}"
+    );
+
+    // Verify parent session ID is present and is a valid UUID format
+    assert!(
+        combined.contains("Parent session ID:"),
+        "identity prompt should include parent session ID. Got: {combined}"
+    );
+
+    // Extract and validate the UUID
+    let uuid_regex = regex_lite::Regex::new(
+        r"Parent session ID: ([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})",
+    )
+    .unwrap();
+    assert!(
+        uuid_regex.is_match(&combined),
+        "parent session ID should be a valid UUID. Got: {combined}"
+    );
+}
+
+/// Test that even when a subagent template has empty system_prompt (frontmatter-only),
+/// the identity prompt is still injected into developer instructions.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn subagent_with_empty_system_prompt_still_gets_identity_prompt() {
+    skip_if_no_network!();
+
+    let server = start_mock_server().await;
+
+    // Create a custom frontmatter-only subagent with an empty system_prompt.
+    let task_args = json!({
+        "description": "Review code",
+        "prompt": "Check the changes",
+        "subagent_name": "minimal"
+    });
+    let parent_response = sse(vec![
+        ev_response_created("resp-parent-1"),
+        ev_function_call("call-task-1", "task", &task_args.to_string()),
+        ev_completed("resp-parent-1"),
+    ]);
+    let parent_mock = mount_sse_once(&server, parent_response).await;
+
+    // Subagent request
+    let subagent_response = sse(vec![
+        ev_response_created("resp-subagent-1"),
+        ev_assistant_message("msg-subagent-1", "Reviewed."),
+        ev_completed("resp-subagent-1"),
+    ]);
+    let subagent_mock = mount_sse_once_match(
+        &server,
+        header("x-openai-subagent", "minimal"),
+        subagent_response,
+    )
+    .await;
+
+    // Parent completion
+    let parent_completion = sse(vec![
+        ev_response_created("resp-parent-2"),
+        ev_assistant_message("msg-parent-2", "Done."),
+        ev_completed("resp-parent-2"),
+    ]);
+    let parent_completion_mock = mount_sse_once(&server, parent_completion).await;
+
+    // Build and run codex
+    let mut builder = test_codex().with_pre_build_hook(|codex_home| {
+        let agents_dir = codex_home.join("agents");
+        std::fs::create_dir_all(&agents_dir).expect("create agents dir");
+        std::fs::write(
+            agents_dir.join("minimal.md"),
+            "---\nmodel: inherit\nsandbox_policy: inherit\napproval_policy: inherit\n---\n",
+        )
+        .expect("write minimal agent");
+    });
+    let test = builder
+        .build(&server)
+        .await
+        .expect("create test Codex conversation");
+
+    test.submit_turn("invoke the minimal agent")
+        .await
+        .expect("submit turn");
+
+    // Ensure we observed both the parent and subagent requests.
+    assert_eq!(parent_mock.requests().len(), 1);
+    assert_eq!(subagent_mock.requests().len(), 1);
+    assert_eq!(parent_completion_mock.requests().len(), 1);
+
+    // Verify the identity prompt is present (proving it's injected even with system_prompt)
+    let subagent_request = &subagent_mock.requests()[0];
+    let dev_messages = subagent_request.message_input_texts("developer");
+    let combined = dev_messages.join("\n");
+
+    // The identity prompt should be injected regardless of whether system_prompt is empty
+    assert!(
+        combined.contains("# Subagent Context"),
+        "identity prompt should be injected. Got: {combined}"
+    );
+    assert!(
+        combined.contains("You are a specialized subagent delegated by a parent agent"),
+        "identity prompt content should be present. Got: {combined}"
+    );
+    assert!(
+        combined.contains("Focus strictly on completing the requested task"),
+        "identity prompt instructions should be present. Got: {combined}"
+    );
+    assert!(
+        !combined.contains("You are a powerful code search agent"),
+        "minimal frontmatter-only agent should have an empty system_prompt. Got: {combined}"
     );
 }

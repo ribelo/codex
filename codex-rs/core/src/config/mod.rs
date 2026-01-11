@@ -191,6 +191,11 @@ pub struct Config {
     /// Show startup tooltips in the TUI welcome screen.
     pub show_tooltips: bool,
 
+    /// Use alternate screen buffer for the TUI.
+    /// When false, avoids EnterAlternateScreen/LeaveAlternateScreen to allow
+    /// terminal scrollback (useful for Zellij and similar multiplexers).
+    pub no_alt_screen: bool,
+
     /// The directory that should be treated as the current working directory
     /// for the session. All relative paths inside the business-logic layer are
     /// resolved against this path.
@@ -1356,6 +1361,7 @@ impl Config {
             handoff: cfg.handoff.clone().unwrap_or_default(),
             animations: cfg.tui.as_ref().map(|t| t.animations).unwrap_or(true),
             show_tooltips: cfg.tui.as_ref().map(|t| t.show_tooltips).unwrap_or(true),
+            no_alt_screen: cfg.tui.as_ref().is_some_and(|t| !t.alternate_screen),
             otel: {
                 let t: OtelConfigToml = cfg.otel.unwrap_or_default();
                 let log_user_prompt = t.log_user_prompt.unwrap_or(false);
@@ -3157,6 +3163,7 @@ model_verbosity = "high"
                 tui_notifications: Default::default(),
                 animations: true,
                 show_tooltips: true,
+                no_alt_screen: false,
                 shell: ShellConfig::default(),
                 otel: OtelConfig::default(),
                 ghost_snapshot: GhostSnapshotConfig::default(),
@@ -3239,6 +3246,7 @@ model_verbosity = "high"
             tui_notifications: Default::default(),
             animations: true,
             show_tooltips: true,
+            no_alt_screen: false,
             shell: ShellConfig::default(),
             otel: OtelConfig::default(),
             ghost_snapshot: GhostSnapshotConfig::default(),
@@ -3336,6 +3344,7 @@ model_verbosity = "high"
             tui_notifications: Default::default(),
             animations: true,
             show_tooltips: true,
+            no_alt_screen: false,
             shell: ShellConfig::default(),
             otel: OtelConfig::default(),
             ghost_snapshot: GhostSnapshotConfig::default(),
@@ -3419,6 +3428,7 @@ model_verbosity = "high"
             tui_notifications: Default::default(),
             animations: true,
             show_tooltips: true,
+            no_alt_screen: false,
             shell: ShellConfig::default(),
             otel: OtelConfig::default(),
             ghost_snapshot: GhostSnapshotConfig::default(),

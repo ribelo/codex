@@ -395,6 +395,13 @@ pub struct Tui {
     /// Defaults to `true`.
     #[serde(default = "default_true")]
     pub show_tooltips: bool,
+
+    /// Use alternate screen buffer for the TUI.
+    /// When false, avoids EnterAlternateScreen/LeaveAlternateScreen to allow
+    /// terminal scrollback (useful for Zellij and similar multiplexers).
+    /// Defaults to `true`.
+    #[serde(default = "default_true")]
+    pub alternate_screen: bool,
 }
 
 const fn default_true() -> bool {

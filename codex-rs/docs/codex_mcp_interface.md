@@ -13,7 +13,7 @@ Codex exposes a small set of MCP‑compatible methods to create and manage conve
 At a glance:
 
 - Conversations
-  - `newConversation` → start a Codex session
+  - `newConversation` → start a Codex session with a canonical model ID (e.g. `openai/gpt-4o`)
   - `sendUserMessage` / `sendUserTurn` → send user input into a conversation
   - `interruptConversation` → stop the current turn
   - `listConversations`, `resumeConversation`, `archiveConversation`
@@ -55,7 +55,7 @@ Start a new session with optional overrides:
 
 Request `newConversation` params (subset):
 
-- `model`: string model id (e.g. "o3", "gpt-5.1", "gpt-5.1-codex")
+- `model`: canonical model ID (e.g. "openai/o3-mini", "anthropic/claude-3-5-sonnet-latest")
 - `profile`: optional named profile
 - `cwd`: optional working directory
 - `approvalPolicy`: `untrusted` | `on-request` | `on-failure` | `never`
@@ -119,13 +119,13 @@ For the complete request/response shapes and flow examples, see the [“Auth end
 ## Example: start and send a message
 
 ```json
-{ "jsonrpc": "2.0", "id": 1, "method": "newConversation", "params": { "model": "gpt-5.1", "approvalPolicy": "on-request" } }
+{ "jsonrpc": "2.0", "id": 1, "method": "newConversation", "params": { "model": "openai/gpt-4o", "approvalPolicy": "on-request" } }
 ```
 
 Server responds:
 
 ```json
-{ "jsonrpc": "2.0", "id": 1, "result": { "conversationId": "c7b0…", "model": "gpt-5.1", "rolloutPath": "/path/to/rollout.jsonl" } }
+{ "jsonrpc": "2.0", "id": 1, "result": { "conversationId": "c7b0…", "model": "openai/gpt-4o", "rolloutPath": "/path/to/rollout.jsonl" } }
 ```
 
 Then send input:
