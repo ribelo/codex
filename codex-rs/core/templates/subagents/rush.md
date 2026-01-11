@@ -4,6 +4,7 @@ description: |
   Fast, cheap agent for small well-defined tasks. Use for simple bugs, minor UI changes, formatting fixes, or small features where file paths are known. Skips planning overhead for speed. Don't use for complex tasks requiring iteration or exploration. Have `workspace-write` sandbox policy.
 
 model: inherit
+reasoning_effort: inherit
 sandbox_policy: workspace-write
 approval_policy: never
 allowed_subagents: []

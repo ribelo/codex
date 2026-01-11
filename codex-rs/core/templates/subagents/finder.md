@@ -14,6 +14,7 @@ description: |
   - Simple exact text searches (use rg directly)
 
 model: inherit
+reasoning_effort: inherit
 sandbox_policy: read-only
 approval_policy: never
 allowed_subagents: []

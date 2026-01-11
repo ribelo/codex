@@ -11,6 +11,7 @@ description: |
   - Commit: "Review changes introduced by commit {sha}. Provide prioritized findings."
   - Custom: Any review instructions (subagent determines how to fetch code).
 model: inherit
+reasoning_effort: inherit
 sandbox_policy: read-only
 approval_policy: never
 allowed_subagents:

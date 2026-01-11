@@ -15,6 +15,7 @@ description: |
   - Debugging analysis
 
 model: inherit
+reasoning_effort: inherit
 sandbox_policy: workspace-write
 approval_policy: inherit
 allowed_subagents:
