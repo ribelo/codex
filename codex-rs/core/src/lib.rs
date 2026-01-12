@@ -25,7 +25,6 @@ mod command_safety;
 pub mod config;
 pub mod config_loader;
 mod context_manager;
-pub mod custom_commands;
 pub mod custom_prompts;
 pub mod delegation;
 mod environment_context;

@@ -1657,9 +1657,6 @@ async fn submission_loop(sess: Arc<Session>, config: Arc<Config>, rx_sub: Receiv
             Op::ListCustomPrompts => {
                 handlers::list_custom_prompts(&sess, sub.id.clone()).await;
             }
-            Op::ListCommands => {
-                handlers::list_commands(&sess, sub.id.clone()).await;
-            }
             Op::Undo => {
                 handlers::undo(&sess, sub.id.clone()).await;
             }
@@ -1743,13 +1740,11 @@ mod handlers {
     use crate::tasks::RegularTask;
     use crate::tasks::UndoTask;
     use crate::tasks::UserShellCommandTask;
-    use codex_protocol::custom_commands::CustomCommand;
     use codex_protocol::custom_prompts::CustomPrompt;
     use codex_protocol::protocol::CodexErrorInfo;
     use codex_protocol::protocol::ErrorEvent;
     use codex_protocol::protocol::Event;
     use codex_protocol::protocol::EventMsg;
-    use codex_protocol::protocol::ListCommandsResponseEvent;
     use codex_protocol::protocol::ListCustomPromptsResponseEvent;
     use codex_protocol::protocol::Op;
     use codex_protocol::protocol::ReviewDecision;
@@ -2057,60 +2052,6 @@ mod handlers {
             msg: EventMsg::ListCustomPromptsResponse(ListCustomPromptsResponseEvent {
                 custom_prompts,
             }),
-        };
-        sess.send_event_raw(event).await;
-    }
-
-    pub async fn list_commands(sess: &Session, sub_id: String) {
-        let commands: Vec<CustomCommand> =
-            if let Some(dir) = crate::custom_commands::default_commands_dir() {
-                crate::custom_commands::discover_commands_in(&dir).await
-            } else {
-                Vec::new()
-            };
-
-        use crate::custom_commands::validate_commands;
-        use crate::custom_prompts::load_profile_names;
-        use crate::subagents::SubagentRegistry;
-
-        let codex_home = {
-            let state = sess.state.lock().await;
-            state
-                .session_configuration
-                .original_config_do_not_use
-                .codex_home
-                .clone()
-        };
-        let registry = SubagentRegistry::new(&codex_home);
-        let agent_slugs: std::collections::HashSet<_> =
-            registry.list().iter().map(|a| a.slug.clone()).collect();
-        let profile_names = load_profile_names(&codex_home).await;
-        let errors = validate_commands(&commands, &agent_slugs, &profile_names);
-
-        if !errors.is_empty() {
-            for err in &errors {
-                warn!(
-                    "Command validation error in {}: {}",
-                    err.path.display(),
-                    err.message
-                );
-                let warning = Event {
-                    id: sub_id.clone(),
-                    msg: EventMsg::Warning(WarningEvent {
-                        message: format!(
-                            "Command validation error in {}: {}",
-                            err.path.file_name().unwrap_or_default().to_string_lossy(),
-                            err.message
-                        ),
-                    }),
-                };
-                sess.send_event_raw(warning).await;
-            }
-        }
-
-        let event = Event {
-            id: sub_id,
-            msg: EventMsg::ListCommandsResponse(ListCommandsResponseEvent { commands }),
         };
         sess.send_event_raw(event).await;
     }

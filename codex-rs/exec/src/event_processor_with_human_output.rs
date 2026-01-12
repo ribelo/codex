@@ -250,9 +250,6 @@ impl EventProcessor for EventProcessorWithHumanOutput {
             EventMsg::TokenCount(ev) => {
                 self.last_total_token_usage = ev.info;
             }
-            EventMsg::ListCommandsResponse(_) => {
-                // Ignore in exec mode.
-            }
 
             EventMsg::AgentReasoningSectionBreak(_) => {
                 // Always show raw reasoning

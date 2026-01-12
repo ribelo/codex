@@ -32,11 +32,8 @@ use super::paste_burst::CharDecision;
 use super::paste_burst::PasteBurst;
 use super::skill_popup::SkillPopup;
 use crate::bottom_pane::paste_burst::FlushResult;
-use crate::bottom_pane::prompt_args::command_command_with_arg_placeholders;
-use crate::bottom_pane::prompt_args::expand_custom_command;
 use crate::bottom_pane::prompt_args::expand_custom_prompt;
 use crate::bottom_pane::prompt_args::expand_if_numeric_with_positional_args;
-use crate::bottom_pane::prompt_args::expand_if_numeric_with_positional_args_command;
 use crate::bottom_pane::prompt_args::parse_agent_mention;
 use crate::bottom_pane::prompt_args::parse_slash_name;
 use crate::bottom_pane::prompt_args::prompt_argument_names;
@@ -49,8 +46,6 @@ use crate::slash_command::SlashCommand;
 use crate::slash_command::built_in_slash_commands;
 use crate::style::user_message_style;
 use codex_common::fuzzy_match::fuzzy_match;
-use codex_protocol::custom_commands::COMMANDS_CMD_PREFIX;
-use codex_protocol::custom_commands::CustomCommand;
 use codex_protocol::custom_prompts::CustomPrompt;
 use codex_protocol::custom_prompts::PROMPTS_CMD_PREFIX;
 
@@ -130,7 +125,6 @@ pub(crate) struct ChatComposer {
     // When true, disables paste-burst logic and inserts characters immediately.
     disable_paste_burst: bool,
     custom_prompts: Vec<CustomPrompt>,
-    custom_commands: Vec<CustomCommand>,
     footer_mode: FooterMode,
     footer_hint_override: Option<Vec<(String, String)>>,
     context_window_percent: Option<i64>,
@@ -184,7 +178,6 @@ impl ChatComposer {
             paste_burst: PasteBurst::default(),
             disable_paste_burst: false,
             custom_prompts: Vec::new(),
-            custom_commands: Vec::new(),
             footer_mode: FooterMode::ShortcutSummary,
             footer_hint_override: None,
             context_window_percent: None,
@@ -562,24 +555,6 @@ impl ChatComposer {
                                 }
                             }
                         }
-                        CommandItem::UserCommand(idx) => {
-                            if let Some(command) = popup.command(idx) {
-                                match command_selection_action(
-                                    command,
-                                    slash_portion,
-                                    PromptSelectionMode::Completion,
-                                ) {
-                                    PromptSelectionAction::Insert { text, cursor } => {
-                                        let full_text = format!("{agent_prefix}{text}");
-                                        let target =
-                                            agent_prefix.len() + cursor.unwrap_or(text.len());
-                                        self.textarea.set_text(&full_text);
-                                        cursor_target = Some(target);
-                                    }
-                                    PromptSelectionAction::Submit { .. } => {}
-                                }
-                            }
-                        }
                     }
                     if let Some(pos) = cursor_target {
                         self.textarea.set_cursor(pos);
@@ -629,31 +604,6 @@ impl ChatComposer {
                     };
                 }
 
-                if let Some((name, _rest)) = parse_slash_name(slash_portion)
-                    && let Some(command_name) =
-                        name.strip_prefix(&format!("{COMMANDS_CMD_PREFIX}:"))
-                    && let Some(command) =
-                        self.custom_commands.iter().find(|c| c.name == command_name)
-                    && let Some(expanded) =
-                        expand_if_numeric_with_positional_args_command(command, slash_portion)
-                {
-                    self.textarea.set_text("");
-                    // Agent from @prefix takes precedence over command's agent field.
-                    let agent = agent_from_prefix.or_else(|| command.agent.clone());
-                    return (
-                        if let Some(agent) = agent {
-                            InputResult::DelegateAgent {
-                                description: command.name.clone(),
-                                prompt: expanded,
-                                agent,
-                            }
-                        } else {
-                            InputResult::Submitted(expanded)
-                        },
-                        true,
-                    );
-                }
-
                 if let Some(sel) = popup.selected_item() {
                     match sel {
                         CommandItem::Builtin(cmd) => {
@@ -681,49 +631,6 @@ impl ChatComposer {
                                         } else {
                                             (InputResult::Submitted(text), true)
                                         };
-                                    }
-                                    PromptSelectionAction::Insert { text, cursor } => {
-                                        let full_text = if agent_from_prefix.is_some() {
-                                            let prefix_len = first_line.len() - slash_portion.len();
-                                            format!("{}{text}", &first_line[..prefix_len])
-                                        } else {
-                                            text.clone()
-                                        };
-                                        let prefix_len = full_text.len() - text.len();
-                                        let target = prefix_len + cursor.unwrap_or(text.len());
-                                        self.textarea.set_text(&full_text);
-                                        self.textarea.set_cursor(target);
-                                        return (InputResult::None, true);
-                                    }
-                                }
-                            }
-                            return (InputResult::None, true);
-                        }
-                        CommandItem::UserCommand(idx) => {
-                            if let Some(command) = popup.command(idx) {
-                                match command_selection_action(
-                                    command,
-                                    slash_portion,
-                                    PromptSelectionMode::Submit,
-                                ) {
-                                    PromptSelectionAction::Submit { text } => {
-                                        self.textarea.set_text("");
-                                        // Agent from @prefix takes precedence over command's agent field.
-                                        let agent = agent_from_prefix
-                                            .clone()
-                                            .or_else(|| command.agent.clone());
-                                        return (
-                                            if let Some(agent) = agent {
-                                                InputResult::DelegateAgent {
-                                                    description: command.name.clone(),
-                                                    prompt: text,
-                                                    agent,
-                                                }
-                                            } else {
-                                                InputResult::Submitted(text)
-                                            },
-                                            true,
-                                        );
                                     }
                                     PromptSelectionAction::Insert { text, cursor } => {
                                         let full_text = if agent_from_prefix.is_some() {
@@ -1368,13 +1275,9 @@ impl ChatComposer {
                     && !rest.is_empty()
                     && self.available_agents.contains(&agent_name.to_string())
                 {
-                    // Expand any /prompts: or /commands: in the rest of the text
+                    // Expand any /prompts: in the rest of the text
                     let prompt = if let Ok(Some(expanded)) =
                         expand_custom_prompt(rest, &self.custom_prompts)
-                    {
-                        expanded
-                    } else if let Ok(Some(expanded)) =
-                        expand_custom_command(rest, &self.custom_commands)
                     {
                         expanded
                     } else {
@@ -1407,16 +1310,7 @@ impl ChatComposer {
                                     .any(|prompt| prompt.name == prompt_name)
                             })
                             .unwrap_or(false);
-                        let command_prefix = format!("{COMMANDS_CMD_PREFIX}:");
-                        let is_known_command = name
-                            .strip_prefix(&command_prefix)
-                            .map(|command_name| {
-                                self.custom_commands
-                                    .iter()
-                                    .any(|command| command.name == command_name)
-                            })
-                            .unwrap_or(false);
-                        if !is_builtin && !is_known_prompt && !is_known_command {
+                        if !is_builtin && !is_known_prompt {
                             let message = format!(
                                 r#"Unrecognized command '/{name}'. Type "/" for a list of supported commands."#
                             );
@@ -1428,37 +1322,6 @@ impl ChatComposer {
                             return (InputResult::None, true);
                         }
                     }
-                }
-
-                let expanded_command = match expand_custom_command(&text, &self.custom_commands) {
-                    Ok(expanded) => expanded,
-                    Err(err) => {
-                        self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
-                            history_cell::new_error_event(err.user_message()),
-                        )));
-                        self.textarea.set_text(&original_input);
-                        self.textarea.set_cursor(original_input.len());
-                        return (InputResult::None, true);
-                    }
-                };
-                if let Some(expanded) = expanded_command
-                    && let Some((cmd_name, _)) = parse_slash_name(&text)
-                    && let Some(command_name) =
-                        cmd_name.strip_prefix(&format!("{COMMANDS_CMD_PREFIX}:"))
-                    && let Some(command) =
-                        self.custom_commands.iter().find(|c| c.name == command_name)
-                {
-                    if let Some(agent) = command.agent.clone() {
-                        return (
-                            InputResult::DelegateAgent {
-                                description: command.name.clone(),
-                                prompt: expanded,
-                                agent,
-                            },
-                            true,
-                        );
-                    }
-                    return (InputResult::Submitted(expanded), true);
                 }
 
                 let expanded_prompt = match expand_custom_prompt(&text, &self.custom_prompts) {
@@ -1954,10 +1817,7 @@ impl ChatComposer {
             return true;
         }
 
-        let command_prefix = format!("{COMMANDS_CMD_PREFIX}:");
-        self.custom_commands
-            .iter()
-            .any(|c| fuzzy_match(&format!("{command_prefix}{}", c.name), name).is_some())
+        false
     }
 
     /// Synchronize `self.command_popup` with the current text in the
@@ -2006,11 +1866,8 @@ impl ChatComposer {
             _ => {
                 if let Some((_, _, slash_offset)) = slash_info {
                     let skills_enabled = self.skills_enabled();
-                    let mut command_popup = CommandPopup::new(
-                        self.custom_prompts.clone(),
-                        self.custom_commands.clone(),
-                        skills_enabled,
-                    );
+                    let mut command_popup =
+                        CommandPopup::new(self.custom_prompts.clone(), skills_enabled);
                     // Pass only the slash command portion to the popup.
                     command_popup.on_composer_text_change(first_line[slash_offset..].to_string());
                     self.active_popup = ActivePopup::Command(command_popup);
@@ -2023,13 +1880,6 @@ impl ChatComposer {
         self.custom_prompts = prompts.clone();
         if let ActivePopup::Command(popup) = &mut self.active_popup {
             popup.set_prompts(prompts);
-        }
-    }
-
-    pub(crate) fn set_custom_commands(&mut self, commands: Vec<CustomCommand>) {
-        self.custom_commands = commands.clone();
-        if let ActivePopup::Command(popup) = &mut self.active_popup {
-            popup.set_commands(commands);
         }
     }
 
@@ -2262,56 +2112,6 @@ fn prompt_selection_action(
             }
             PromptSelectionAction::Submit {
                 text: prompt.content.clone(),
-            }
-        }
-    }
-}
-
-fn command_selection_action(
-    command: &CustomCommand,
-    first_line: &str,
-    mode: PromptSelectionMode,
-) -> PromptSelectionAction {
-    let named_args = prompt_argument_names(&command.content);
-    let has_numeric = prompt_has_numeric_placeholders(&command.content);
-
-    match mode {
-        PromptSelectionMode::Completion => {
-            if !named_args.is_empty() {
-                let (text, cursor) =
-                    command_command_with_arg_placeholders(&command.name, &named_args);
-                return PromptSelectionAction::Insert {
-                    text,
-                    cursor: Some(cursor),
-                };
-            }
-            if has_numeric {
-                let text = format!("/{COMMANDS_CMD_PREFIX}:{} ", command.name);
-                return PromptSelectionAction::Insert { text, cursor: None };
-            }
-            let text = format!("/{COMMANDS_CMD_PREFIX}:{}", command.name);
-            PromptSelectionAction::Insert { text, cursor: None }
-        }
-        PromptSelectionMode::Submit => {
-            if !named_args.is_empty() {
-                let (text, cursor) =
-                    command_command_with_arg_placeholders(&command.name, &named_args);
-                return PromptSelectionAction::Insert {
-                    text,
-                    cursor: Some(cursor),
-                };
-            }
-            if has_numeric {
-                if let Some(expanded) =
-                    expand_if_numeric_with_positional_args_command(command, first_line)
-                {
-                    return PromptSelectionAction::Submit { text: expanded };
-                }
-                let text = format!("/{COMMANDS_CMD_PREFIX}:{} ", command.name);
-                return PromptSelectionAction::Insert { text, cursor: None };
-            }
-            PromptSelectionAction::Submit {
-                text: command.content.clone(),
             }
         }
     }
@@ -2991,8 +2791,8 @@ mod tests {
                 Some(CommandItem::Builtin(cmd)) => {
                     assert_eq!(cmd.command(), "model")
                 }
-                Some(CommandItem::UserPrompt(_) | CommandItem::UserCommand(_)) => {
-                    panic!("unexpected custom item selected for '/mo'")
+                Some(CommandItem::UserPrompt(_)) => {
+                    panic!("unexpected user prompt selected for '/mo'")
                 }
                 None => panic!("no selected command for '/mo'"),
             },
@@ -3047,8 +2847,8 @@ mod tests {
                 Some(CommandItem::Builtin(cmd)) => {
                     assert_eq!(cmd.command(), "resume")
                 }
-                Some(CommandItem::UserPrompt(_) | CommandItem::UserCommand(_)) => {
-                    panic!("unexpected custom item selected for '/res'")
+                Some(CommandItem::UserPrompt(_)) => {
+                    panic!("unexpected user prompt selected for '/res'")
                 }
                 None => panic!("no selected command for '/res'"),
             },

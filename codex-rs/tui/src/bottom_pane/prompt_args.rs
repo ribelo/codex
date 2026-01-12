@@ -1,5 +1,3 @@
-use codex_protocol::custom_commands::COMMANDS_CMD_PREFIX;
-use codex_protocol::custom_commands::CustomCommand;
 use codex_protocol::custom_prompts::CustomPrompt;
 use codex_protocol::custom_prompts::PROMPTS_CMD_PREFIX;
 use lazy_static::lazy_static;
@@ -214,68 +212,6 @@ pub fn expand_custom_prompt(
     Ok(Some(expanded))
 }
 
-/// Expands a message of the form `/commands:name [value] [value] …` using a matching saved command.
-///
-/// If the text does not start with `/commands:`, or if no command named `name` exists,
-/// the function returns `Ok(None)`. On success it returns
-/// `Ok(Some(expanded))`; otherwise it returns a descriptive error.
-pub fn expand_custom_command(
-    text: &str,
-    custom_commands: &[CustomCommand],
-) -> Result<Option<String>, PromptExpansionError> {
-    let Some((name, rest)) = parse_slash_name(text) else {
-        return Ok(None);
-    };
-
-    let Some(command_name) = name.strip_prefix(&format!("{COMMANDS_CMD_PREFIX}:")) else {
-        return Ok(None);
-    };
-
-    let command = match custom_commands.iter().find(|c| c.name == command_name) {
-        Some(command) => command,
-        None => return Ok(None),
-    };
-
-    let required = prompt_argument_names(&command.content);
-    if !required.is_empty() {
-        let inputs = parse_prompt_inputs(rest).map_err(|error| PromptExpansionError::Args {
-            command: format!("/{name}"),
-            error,
-        })?;
-        let missing: Vec<String> = required
-            .into_iter()
-            .filter(|k| !inputs.contains_key(k))
-            .collect();
-        if !missing.is_empty() {
-            return Err(PromptExpansionError::MissingArgs {
-                command: format!("/{name}"),
-                missing,
-            });
-        }
-
-        let content = &command.content;
-        let replaced = PROMPT_ARG_REGEX.replace_all(content, |caps: &regex_lite::Captures<'_>| {
-            if let Some(matched) = caps.get(0)
-                && matched.start() > 0
-                && content.as_bytes()[matched.start() - 1] == b'$'
-            {
-                return matched.as_str().to_string();
-            }
-            let whole = &caps[0];
-            let key = &whole[1..];
-            inputs
-                .get(key)
-                .cloned()
-                .unwrap_or_else(|| whole.to_string())
-        });
-        return Ok(Some(replaced.into_owned()));
-    }
-
-    let pos_args: Vec<String> = Shlex::new(rest).collect();
-    let expanded = expand_numeric_placeholders(&command.content, &pos_args);
-    Ok(Some(expanded))
-}
-
 /// Detect whether `content` contains numeric placeholders ($1..$9) or `$ARGUMENTS`.
 pub fn prompt_has_numeric_placeholders(content: &str) -> bool {
     if content.contains("$ARGUMENTS") {
@@ -318,28 +254,6 @@ pub fn extract_positional_args_for_prompt_line(line: &str, prompt_name: &str) ->
     parse_positional_args(args_str)
 }
 
-/// Extract positional arguments from a composer first line like "/name a b" for a given command name.
-/// Returns empty when the command name does not match or when there are no args.
-pub fn extract_positional_args_for_command_line(line: &str, command_name: &str) -> Vec<String> {
-    let trimmed = line.trim_start();
-    let Some(rest) = trimmed.strip_prefix('/') else {
-        return Vec::new();
-    };
-    let Some(after_prefix) = rest.strip_prefix(&format!("{COMMANDS_CMD_PREFIX}:")) else {
-        return Vec::new();
-    };
-    let mut parts = after_prefix.splitn(2, char::is_whitespace);
-    let cmd = parts.next().unwrap_or("");
-    if cmd != command_name {
-        return Vec::new();
-    }
-    let args_str = parts.next().unwrap_or("").trim();
-    if args_str.is_empty() {
-        return Vec::new();
-    }
-    parse_positional_args(args_str)
-}
-
 /// If the prompt only uses numeric placeholders and the first line contains
 /// positional args for it, expand and return Some(expanded); otherwise None.
 pub fn expand_if_numeric_with_positional_args(
@@ -357,25 +271,6 @@ pub fn expand_if_numeric_with_positional_args(
         return None;
     }
     Some(expand_numeric_placeholders(&prompt.content, &args))
-}
-
-/// If the command only uses numeric placeholders and the first line contains
-/// positional args for it, expand and return Some(expanded); otherwise None.
-pub fn expand_if_numeric_with_positional_args_command(
-    command: &CustomCommand,
-    first_line: &str,
-) -> Option<String> {
-    if !prompt_argument_names(&command.content).is_empty() {
-        return None;
-    }
-    if !prompt_has_numeric_placeholders(&command.content) {
-        return None;
-    }
-    let args = extract_positional_args_for_command_line(first_line, &command.name);
-    if args.is_empty() {
-        return None;
-    }
-    Some(expand_numeric_placeholders(&command.content, &args))
 }
 
 /// Expand `$1..$9` and `$ARGUMENTS` in `content` with values from `args`.
@@ -430,20 +325,6 @@ pub fn prompt_command_with_arg_placeholders(name: &str, args: &[String]) -> (Str
         text.push_str(format!(" {arg}=\"\"").as_str());
         if i == 0 {
             cursor = text.len() - 1; // inside first ""
-        }
-    }
-    (text, cursor)
-}
-
-/// Constructs a command text for a custom command with arguments.
-/// Returns the text and the cursor position (inside the first double quote).
-pub fn command_command_with_arg_placeholders(name: &str, args: &[String]) -> (String, usize) {
-    let mut text = format!("/{COMMANDS_CMD_PREFIX}:{name}");
-    let mut cursor: usize = text.len();
-    for (i, arg) in args.iter().enumerate() {
-        text.push_str(format!(" {arg}=\"\"").as_str());
-        if i == 0 {
-            cursor = text.len() - 1;
         }
     }
     (text, cursor)
@@ -541,23 +422,6 @@ mod tests {
 
         let out = expand_custom_prompt("/prompts:my-prompt", &prompts).unwrap();
         assert_eq!(out, Some("literal $$USER".to_string()));
-    }
-
-    #[test]
-    fn expand_command_arguments_basic() {
-        let commands = vec![CustomCommand {
-            name: "my-cmd".to_string(),
-            path: "/tmp/my-cmd.md".to_string().into(),
-            content: "Review $USER changes on $BRANCH".to_string(),
-            description: None,
-            argument_hint: None,
-            agent: None,
-            profile: None,
-        }];
-
-        let out =
-            expand_custom_command("/commands:my-cmd USER=Alice BRANCH=main", &commands).unwrap();
-        assert_eq!(out, Some("Review Alice changes on main".to_string()));
     }
 
     #[test]

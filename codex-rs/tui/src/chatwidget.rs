@@ -33,7 +33,6 @@ use codex_core::protocol::ExecCommandBeginEvent;
 use codex_core::protocol::ExecCommandEndEvent;
 use codex_core::protocol::ExecCommandSource;
 use codex_core::protocol::ExitedReviewModeEvent;
-use codex_core::protocol::ListCommandsResponseEvent;
 use codex_core::protocol::ListCustomPromptsResponseEvent;
 use codex_core::protocol::McpListToolsResponseEvent;
 use codex_core::protocol::McpStartupCompleteEvent;
@@ -458,7 +457,6 @@ impl ChatWidget {
         }
         // Ask codex-core to enumerate custom prompts for this session.
         self.submit_op(Op::ListCustomPrompts);
-        self.submit_op(Op::ListCommands);
         if let Some(user_message) = self.initial_user_message.take() {
             self.submit_user_message(user_message);
         }
@@ -2279,7 +2277,6 @@ impl ChatWidget {
             EventMsg::GetHistoryEntryResponse(ev) => self.on_get_history_entry_response(ev),
             EventMsg::McpListToolsResponse(ev) => self.on_list_mcp_tools(ev),
             EventMsg::ListCustomPromptsResponse(ev) => self.on_list_custom_prompts(ev),
-            EventMsg::ListCommandsResponse(ev) => self.on_list_commands(ev),
             EventMsg::ShutdownComplete => self.on_shutdown_complete(),
             EventMsg::TurnDiff(TurnDiffEvent { unified_diff }) => self.on_turn_diff(unified_diff),
             EventMsg::DeprecationNotice(ev) => self.on_deprecation_notice(ev),
@@ -3855,20 +3852,6 @@ impl ChatWidget {
         }
         // Forward to bottom pane so the slash popup can show them now.
         self.bottom_pane.set_custom_prompts(ev.custom_prompts);
-    }
-
-    fn on_list_commands(&mut self, ev: ListCommandsResponseEvent) {
-        let len = ev.commands.len();
-        debug!("received {len} custom commands");
-        for c in &ev.commands {
-            tracing::info!(
-                name = %c.name,
-                agent = ?c.agent,
-                profile = ?c.profile,
-                "Custom command loaded"
-            );
-        }
-        self.bottom_pane.set_custom_commands(ev.commands);
     }
 
     pub(crate) fn open_review_popup(&mut self) {
