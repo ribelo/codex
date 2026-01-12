@@ -5,6 +5,7 @@ use crate::protocol::FileChange;
 use crate::protocol::ReviewDecision;
 use crate::safety::SafetyCheck;
 use crate::safety::assess_patch_safety;
+use crate::tools::sandboxing::ApplyPatchFileKey;
 use codex_apply_patch::ApplyPatchAction;
 use codex_apply_patch::ApplyPatchFileChange;
 use std::collections::HashMap;
@@ -39,6 +40,20 @@ pub(crate) async fn apply_patch(
     call_id: &str,
     action: ApplyPatchAction,
 ) -> InternalApplyPatchInvocation {
+    let file_keys: Vec<ApplyPatchFileKey> = action
+        .changes()
+        .keys()
+        .map(|path| ApplyPatchFileKey {
+            cwd: turn_context.cwd.clone(),
+            path: path.clone(),
+        })
+        .collect();
+
+    let all_files_approved = (!file_keys.is_empty()) && {
+        let store = sess.services.tool_approvals.lock().await;
+        store.all_approved(&file_keys)
+    };
+
     match assess_patch_safety(
         &action,
         turn_context.approval_policy,
@@ -53,6 +68,13 @@ pub(crate) async fn apply_patch(
             user_explicitly_approved_this_action: user_explicitly_approved,
         }),
         SafetyCheck::AskUser => {
+            if all_files_approved {
+                return InternalApplyPatchInvocation::DelegateToExec(ApplyPatchExec {
+                    action,
+                    user_explicitly_approved_this_action: true,
+                });
+            }
+
             // Compute a readable summary of path changes to include in the
             // approval request so the user can make an informed decision.
             //
@@ -70,9 +92,18 @@ pub(crate) async fn apply_patch(
                 )
                 .await;
             match rx_approve.await.unwrap_or_default() {
-                ReviewDecision::Approved
-                | ReviewDecision::ApprovedExecpolicyAmendment { .. }
-                | ReviewDecision::ApprovedForSession => {
+                ReviewDecision::Approved | ReviewDecision::ApprovedExecpolicyAmendment { .. } => {
+                    InternalApplyPatchInvocation::DelegateToExec(ApplyPatchExec {
+                        action,
+                        user_explicitly_approved_this_action: true,
+                    })
+                }
+                ReviewDecision::ApprovedForSession => {
+                    // Cache approval for each file in the patch
+                    {
+                        let mut store = sess.services.tool_approvals.lock().await;
+                        store.put_all(&file_keys, ReviewDecision::ApprovedForSession);
+                    }
                     InternalApplyPatchInvocation::DelegateToExec(ApplyPatchExec {
                         action,
                         user_explicitly_approved_this_action: true,

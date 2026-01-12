@@ -19,6 +19,7 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::path::Path;
+use std::path::PathBuf;
 
 use futures::Future;
 use futures::future::BoxFuture;
@@ -47,6 +48,42 @@ impl ApprovalStore {
             self.map.insert(s, value);
         }
     }
+
+    /// Checks if all keys in the provided set are approved for the session.
+    /// Returns true only if ALL keys have been previously approved.
+    pub fn all_approved<K>(&self, keys: &[K]) -> bool
+    where
+        K: Serialize,
+    {
+        if keys.is_empty() {
+            return false;
+        }
+        keys.iter().all(|key| {
+            self.get(key)
+                .is_some_and(|d| matches!(d, ReviewDecision::ApprovedForSession))
+        })
+    }
+
+    /// Records approval for all keys in the provided set.
+    pub fn put_all<K>(&mut self, keys: &[K], value: ReviewDecision)
+    where
+        K: Serialize,
+    {
+        for key in keys {
+            if let Ok(s) = serde_json::to_string(key) {
+                self.map.insert(s, value.clone());
+            }
+        }
+    }
+}
+
+/// A per-file approval key for apply_patch operations.
+/// Uses the per-session working directory and a path from the patch action to track which files
+/// have been approved for the session.
+#[derive(serde::Serialize, Clone, Debug, Eq, PartialEq, Hash)]
+pub(crate) struct ApplyPatchFileKey {
+    pub cwd: PathBuf,
+    pub path: PathBuf,
 }
 
 pub(crate) async fn with_cached_approval<K, F, Fut>(

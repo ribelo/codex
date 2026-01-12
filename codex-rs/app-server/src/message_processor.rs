@@ -22,6 +22,7 @@ use codex_core::ConversationManager;
 use codex_core::config::Config;
 use codex_core::default_client::USER_AGENT_SUFFIX;
 use codex_core::default_client::get_codex_user_agent;
+use codex_core::default_client::set_default_originator;
 use codex_feedback::CodexFeedback;
 use codex_protocol::protocol::SessionSource;
 use toml::Value as TomlValue;
@@ -122,6 +123,12 @@ impl MessageProcessor {
                     let user_agent_suffix = format!("{name}; {version}");
                     if let Ok(mut suffix) = USER_AGENT_SUFFIX.lock() {
                         *suffix = Some(user_agent_suffix);
+                    }
+
+                    if let Some(originator) = params.originator
+                        && let Err(e) = set_default_originator(originator)
+                    {
+                        tracing::warn!("Failed to set originator: {e:?}");
                     }
 
                     let user_agent = get_codex_user_agent();

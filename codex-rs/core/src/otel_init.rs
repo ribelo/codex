@@ -1,7 +1,7 @@
 use crate::config::Config;
 use crate::config::types::OtelExporterKind as Kind;
 use crate::config::types::OtelHttpProtocol as Protocol;
-use crate::default_client::originator;
+use crate::default_client::DEFAULT_ORIGINATOR;
 use codex_otel::config::OtelExporter;
 use codex_otel::config::OtelHttpProtocol;
 use codex_otel::config::OtelSettings;
@@ -12,9 +12,22 @@ use std::error::Error;
 /// Build an OpenTelemetry provider from the app Config.
 ///
 /// Returns `None` when OTEL export is disabled.
+///
+/// The `service_name` defaults to `DEFAULT_ORIGINATOR` ("codex_cli_rs") when not provided.
+/// This avoids eagerly initializing the originator `OnceLock`, allowing `set_default_originator`
+/// to be called later (e.g., from an Initialize request) before any HTTP clients are created.
 pub fn build_provider(
     config: &Config,
     service_version: &str,
+) -> Result<Option<OtelProvider>, Box<dyn Error>> {
+    build_provider_with_service_name(config, service_version, DEFAULT_ORIGINATOR)
+}
+
+/// Build an OpenTelemetry provider with a custom service name.
+pub fn build_provider_with_service_name(
+    config: &Config,
+    service_version: &str,
+    service_name: &str,
 ) -> Result<Option<OtelProvider>, Box<dyn Error>> {
     let exporter = match &config.otel.exporter {
         Kind::None => OtelExporter::None,
@@ -62,7 +75,7 @@ pub fn build_provider(
     };
 
     OtelProvider::from(&OtelSettings {
-        service_name: originator().value.to_owned(),
+        service_name: service_name.to_owned(),
         service_version: service_version.to_string(),
         codex_home: config.codex_home.clone(),
         environment: config.otel.environment.to_string(),

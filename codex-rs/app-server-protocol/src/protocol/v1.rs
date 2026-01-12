@@ -30,6 +30,11 @@ use crate::protocol::common::GitSha;
 #[serde(rename_all = "camelCase")]
 pub struct InitializeParams {
     pub client_info: ClientInfo,
+    /// Optional originator identifier that will be used for all outgoing HTTP requests.
+    /// When set, this value is included as the `originator` header on API calls.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[ts(optional)]
+    pub originator: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default, JsonSchema, TS)]

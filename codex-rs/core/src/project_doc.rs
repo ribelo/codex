@@ -7,7 +7,8 @@
 //!
 //! 1.  Determine the Git repository root by walking upwards from the current
 //!     working directory until a `.git` directory or file is found. If no Git
-//!     root is found, only the current working directory is considered.
+//!     root is found, we fall back to the highest directory containing an
+//!     `AGENTS.md` file.
 //! 2.  Collect every `AGENTS.md` found from the repository root down to the
 //!     current working directory (inclusive) and concatenate their contents in
 //!     that order.
@@ -141,6 +142,7 @@ pub fn discover_project_doc_paths(config: &Config) -> std::io::Result<Vec<PathBu
     // Build chain from cwd upwards and detect git root.
     let mut chain: Vec<PathBuf> = vec![dir.clone()];
     let mut git_root: Option<PathBuf> = None;
+    let mut agents_root: Option<PathBuf> = None;
     let mut cursor = dir;
     while let Some(parent) = cursor.parent() {
         let git_marker = cursor.join(".git");
@@ -155,11 +157,24 @@ pub fn discover_project_doc_paths(config: &Config) -> std::io::Result<Vec<PathBu
             break;
         }
 
+        let agents_marker = cursor.join(DEFAULT_PROJECT_DOC_FILENAME);
+        let agents_exists = match std::fs::metadata(&agents_marker) {
+            Ok(_) => true,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+            Err(e) => return Err(e),
+        };
+
+        if agents_exists {
+            agents_root = Some(cursor.clone());
+        }
+
         chain.push(parent.to_path_buf());
         cursor = parent.to_path_buf();
     }
 
-    let search_dirs: Vec<PathBuf> = if let Some(root) = git_root {
+    let search_root = git_root.or(agents_root);
+
+    let search_dirs: Vec<PathBuf> = if let Some(root) = search_root {
         let mut dirs: Vec<PathBuf> = Vec::new();
         let mut saw_root = false;
         for p in chain.iter().rev() {
@@ -406,6 +421,30 @@ mod tests {
             "gitdir: /path/to/actual/git/dir\n",
         )
         .unwrap();
+
+        // Repo root doc.
+        fs::write(repo.path().join("AGENTS.md"), "root doc").unwrap();
+
+        // Nested working directory with its own doc.
+        let nested = repo.path().join("workspace/crate_a");
+        std::fs::create_dir_all(&nested).unwrap();
+        fs::write(nested.join("AGENTS.md"), "crate doc").unwrap();
+
+        let mut cfg = make_config(&repo, 4096, None);
+        cfg.cwd = nested;
+
+        let res = get_user_instructions(&cfg, None)
+            .await
+            .expect("doc expected");
+        assert_eq!(res, "root doc\n\ncrate doc");
+    }
+
+    /// When the working directory is not inside a Git repository (e.g. a Bazel sandbox),
+    /// we still discover project docs by using the highest directory containing an
+    /// `AGENTS.md` file as the root marker.
+    #[tokio::test]
+    async fn agents_md_root_marker_used_when_git_missing() {
+        let repo = tempfile::tempdir().expect("tempdir");
 
         // Repo root doc.
         fs::write(repo.path().join("AGENTS.md"), "root doc").unwrap();

@@ -619,6 +619,24 @@ async fn wait_for_completion(test: &TestCodex) {
     .await;
 }
 
+async fn wait_for_completion_without_patch_approval(test: &TestCodex) {
+    let event = wait_for_event(&test.codex, |event| {
+        matches!(
+            event,
+            EventMsg::ApplyPatchApprovalRequest(_) | EventMsg::TaskComplete(_)
+        )
+    })
+    .await;
+
+    match event {
+        EventMsg::TaskComplete(_) => {}
+        EventMsg::ApplyPatchApprovalRequest(event) => {
+            panic!("unexpected patch approval request: {:?}", event.call_id)
+        }
+        other => panic!("unexpected event: {other:?}"),
+    }
+}
+
 fn scenarios() -> Vec<ScenarioSpec> {
     use AskForApproval::*;
 
@@ -1714,6 +1732,152 @@ async fn approving_execpolicy_amendment_persists_policy_and_skips_future_prompts
         fs::read_to_string(&allow_prefix_path)?,
         "",
         "unexpected file contents after second run"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn apply_patch_approved_for_session_persists_per_file_and_skips_future_prompts() -> Result<()>
+{
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+
+    let mut builder = test_codex().with_config(|config| {
+        config.features.enable(Feature::ApplyPatchFreeform);
+    });
+    let test = builder.build(&server).await?;
+    let cwd = test.cwd.clone();
+
+    let sandbox_policy = SandboxPolicy::WorkspaceWrite {
+        writable_roots: vec![],
+        network_access: false,
+        exclude_tmpdir_env_var: false,
+        exclude_slash_tmp: false,
+    };
+
+    // Turn 1: Add file A. Expect approval, approve for session.
+    let file_a = "apply_patch_session_a.txt";
+    let file_a_path = cwd.path().join(file_a);
+    let call_id_1 = "apply_patch_session_1";
+    let patch_add_a = format!("*** Begin Patch\n*** Add File: {file_a}\n+v1\n*** End Patch\n");
+    mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-1"),
+            ev_apply_patch_function_call(call_id_1, &patch_add_a),
+            ev_completed("resp-1"),
+        ]),
+    )
+    .await;
+    mount_sse_once(
+        &server,
+        sse(vec![
+            ev_assistant_message("msg-1", "done"),
+            ev_completed("resp-2"),
+        ]),
+    )
+    .await;
+
+    submit_turn(
+        &test,
+        "turn-1",
+        AskForApproval::UnlessTrusted,
+        sandbox_policy.clone(),
+    )
+    .await?;
+
+    let approval = expect_patch_approval(&test, call_id_1).await;
+    assert_eq!(approval.call_id, call_id_1);
+    let turn_id = approval.turn_id.clone();
+    test.codex
+        .submit(Op::PatchApproval {
+            id: turn_id,
+            decision: ReviewDecision::ApprovedForSession,
+        })
+        .await?;
+    wait_for_completion(&test).await;
+
+    assert!(
+        file_a_path.exists(),
+        "expected {file_a} to exist after patch"
+    );
+
+    // Turn 2: Delete file A. Should not prompt again (per-file session approval).
+    let call_id_2 = "apply_patch_session_2";
+    let patch_delete_a = format!("*** Begin Patch\n*** Delete File: {file_a}\n*** End Patch\n");
+    mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-3"),
+            ev_apply_patch_function_call(call_id_2, &patch_delete_a),
+            ev_completed("resp-3"),
+        ]),
+    )
+    .await;
+    mount_sse_once(
+        &server,
+        sse(vec![
+            ev_assistant_message("msg-2", "done"),
+            ev_completed("resp-4"),
+        ]),
+    )
+    .await;
+
+    submit_turn(
+        &test,
+        "turn-2",
+        AskForApproval::UnlessTrusted,
+        sandbox_policy.clone(),
+    )
+    .await?;
+    wait_for_completion_without_patch_approval(&test).await;
+    assert!(!file_a_path.exists(), "expected {file_a} to be deleted");
+
+    // Turn 3: Add file B. Should prompt (new file not yet approved for session).
+    let file_b = "apply_patch_session_b.txt";
+    let file_b_path = cwd.path().join(file_b);
+    let call_id_3 = "apply_patch_session_3";
+    let patch_add_b = format!("*** Begin Patch\n*** Add File: {file_b}\n+v1\n*** End Patch\n");
+    mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-5"),
+            ev_apply_patch_function_call(call_id_3, &patch_add_b),
+            ev_completed("resp-5"),
+        ]),
+    )
+    .await;
+    mount_sse_once(
+        &server,
+        sse(vec![
+            ev_assistant_message("msg-3", "done"),
+            ev_completed("resp-6"),
+        ]),
+    )
+    .await;
+
+    submit_turn(
+        &test,
+        "turn-3",
+        AskForApproval::UnlessTrusted,
+        sandbox_policy.clone(),
+    )
+    .await?;
+    let approval = expect_patch_approval(&test, call_id_3).await;
+    let turn_id = approval.turn_id.clone();
+    test.codex
+        .submit(Op::PatchApproval {
+            id: turn_id,
+            decision: ReviewDecision::Approved,
+        })
+        .await?;
+    wait_for_completion(&test).await;
+
+    assert!(
+        file_b_path.exists(),
+        "expected {file_b} to exist after patch"
     );
 
     Ok(())

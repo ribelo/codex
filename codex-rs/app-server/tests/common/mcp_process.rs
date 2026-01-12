@@ -138,13 +138,23 @@ impl McpProcess {
 
     /// Performs the initialization handshake with the MCP server.
     pub async fn initialize(&mut self) -> anyhow::Result<()> {
-        let params = Some(serde_json::to_value(InitializeParams {
+        self.initialize_with_params(InitializeParams {
             client_info: ClientInfo {
                 name: "codex-app-server-tests".to_string(),
                 title: None,
                 version: "0.1.0".to_string(),
             },
-        })?);
+            originator: None,
+        })
+        .await
+    }
+
+    /// Performs the initialization handshake with custom parameters.
+    pub async fn initialize_with_params(
+        &mut self,
+        init_params: InitializeParams,
+    ) -> anyhow::Result<()> {
+        let params = Some(serde_json::to_value(init_params)?);
         let req_id = self.send_request("initialize", params).await?;
         let initialized = self.read_jsonrpc_message().await?;
         let JSONRPCMessage::Response(response) = initialized else {

@@ -1002,11 +1002,15 @@ fn load_auth(
 
     let storage = create_auth_storage(codex_home.to_path_buf(), auth_credentials_store_mode);
 
-    let client = crate::default_client::create_client();
     let auth_dot_json = match storage.load()? {
         Some(auth) => auth,
         None => return Ok(None),
     };
+
+    // Create client lazily, only when we actually have auth to process.
+    // This avoids eagerly initializing the originator OnceLock, allowing
+    // set_default_originator to be called later (e.g., from Initialize request).
+    let client = crate::default_client::create_client();
 
     let AuthDotJson {
         openai_api_key: auth_json_api_key,

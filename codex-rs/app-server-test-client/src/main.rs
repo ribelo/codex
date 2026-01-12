@@ -345,6 +345,7 @@ impl CodexClient {
                     title: Some("Codex Toy App Server".to_string()),
                     version: env!("CARGO_PKG_VERSION").to_string(),
                 },
+                originator: None,
             },
         };
 

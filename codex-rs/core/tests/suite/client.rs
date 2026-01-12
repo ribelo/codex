@@ -2136,3 +2136,183 @@ async fn subagent_with_empty_system_prompt_still_gets_identity_prompt() {
         "minimal frontmatter-only agent should have an empty system_prompt. Got: {combined}"
     );
 }
+
+/// Test that developer instructions accumulate across nested subagent delegation
+/// (parent → child → grandchild) without losing earlier context.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn nested_delegation_accumulates_developer_instructions() {
+    skip_if_no_network!();
+
+    fn developer_input_texts(body: &serde_json::Value) -> Vec<String> {
+        body.get("input")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|item| item.get("type").and_then(serde_json::Value::as_str) == Some("message"))
+            .filter(|item| {
+                item.get("role").and_then(serde_json::Value::as_str) == Some("developer")
+            })
+            .filter_map(|item| {
+                item.get("content")
+                    .and_then(serde_json::Value::as_array)
+                    .cloned()
+            })
+            .flatten()
+            .filter(|span| {
+                span.get("type").and_then(serde_json::Value::as_str) == Some("input_text")
+            })
+            .filter_map(|span| {
+                span.get("text")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+            })
+            .collect()
+    }
+
+    fn parent_session_ids(text: &str) -> Vec<Uuid> {
+        text.lines()
+            .filter_map(|line| line.split("Parent session ID: ").nth(1))
+            .filter_map(|id| Uuid::parse_str(id.trim()).ok())
+            .collect()
+    }
+
+    let server = start_mock_server().await;
+
+    let mut builder = test_codex().with_pre_build_hook(|codex_home| {
+        let agents_dir = codex_home.join("agents");
+        std::fs::create_dir_all(&agents_dir).expect("create agents dir");
+        std::fs::write(
+            agents_dir.join("child.md"),
+            "---\nname: Child\ndescription: Nested delegation test child\nmodel: inherit\nsandbox_policy: inherit\napproval_policy: inherit\nallowed_subagents: [grandchild]\n---\n\nCHILD_SYSTEM_PROMPT_MARKER\n",
+        )
+        .expect("write child agent");
+        std::fs::write(
+            agents_dir.join("grandchild.md"),
+            "---\nname: Grandchild\ndescription: Nested delegation test grandchild\nmodel: inherit\nsandbox_policy: inherit\napproval_policy: inherit\nallowed_subagents: []\n---\n\nGRANDCHILD_SYSTEM_PROMPT_MARKER\n",
+        )
+        .expect("write grandchild agent");
+    });
+
+    // Root -> child task call.
+    let parent_task_args = json!({
+        "description": "Spawn child",
+        "prompt": "CHILD_PROMPT",
+        "subagent_name": "child"
+    });
+    let parent_response = sse(vec![
+        ev_response_created("resp-parent-1"),
+        ev_function_call("call-parent-task-1", "task", &parent_task_args.to_string()),
+        ev_completed("resp-parent-1"),
+    ]);
+    mount_sse_once(&server, parent_response).await;
+
+    // Child -> grandchild task call.
+    let child_task_args = json!({
+        "description": "Spawn grandchild",
+        "prompt": "GRANDCHILD_PROMPT",
+        "subagent_name": "grandchild"
+    });
+    let child_response = sse(vec![
+        ev_response_created("resp-child-1"),
+        ev_function_call("call-child-task-1", "task", &child_task_args.to_string()),
+        ev_completed("resp-child-1"),
+    ]);
+    mount_sse_once(&server, child_response).await;
+
+    // Grandchild completion.
+    let grandchild_response = sse(vec![
+        ev_response_created("resp-grandchild-1"),
+        ev_assistant_message("msg-grandchild-1", "grandchild done"),
+        ev_completed("resp-grandchild-1"),
+    ]);
+    mount_sse_once(&server, grandchild_response).await;
+
+    // Child completion after receiving grandchild output.
+    let child_completion = sse(vec![
+        ev_response_created("resp-child-2"),
+        ev_assistant_message("msg-child-2", "child done"),
+        ev_completed("resp-child-2"),
+    ]);
+    mount_sse_once(&server, child_completion).await;
+
+    // Parent completion after receiving child output.
+    let parent_completion = sse(vec![
+        ev_response_created("resp-parent-2"),
+        ev_assistant_message("msg-parent-2", "parent done"),
+        ev_completed("resp-parent-2"),
+    ]);
+    mount_sse_once(&server, parent_completion).await;
+
+    let test = builder
+        .build(&server)
+        .await
+        .expect("create test Codex conversation");
+
+    test.submit_turn("invoke nested delegation chain")
+        .await
+        .expect("submit turn");
+
+    let requests = core_test_support::responses::get_responses_requests(&server).await;
+    let child_request = requests
+        .iter()
+        .find(|req| {
+            req.headers
+                .get("x-openai-subagent")
+                .and_then(|h| h.to_str().ok())
+                == Some("child")
+        })
+        .expect("child request");
+    let grandchild_request = requests
+        .iter()
+        .find(|req| {
+            req.headers
+                .get("x-openai-subagent")
+                .and_then(|h| h.to_str().ok())
+                == Some("grandchild")
+        })
+        .expect("grandchild request");
+
+    let child_combined =
+        developer_input_texts(&child_request.body_json::<serde_json::Value>().unwrap()).join("\n");
+    let grandchild_combined =
+        developer_input_texts(&grandchild_request.body_json::<serde_json::Value>().unwrap())
+            .join("\n");
+
+    assert_eq!(
+        i64::try_from(child_combined.matches("# Subagent Context").count()).unwrap(),
+        1,
+        "expected exactly 1 identity prompt in child developer instructions. Got: {child_combined}"
+    );
+    assert_eq!(
+        i64::try_from(grandchild_combined.matches("# Subagent Context").count()).unwrap(),
+        2,
+        "expected exactly 2 identity prompts in grandchild developer instructions. Got: {grandchild_combined}"
+    );
+
+    let child_ids = parent_session_ids(&child_combined);
+    assert_eq!(
+        i64::try_from(child_ids.len()).unwrap(),
+        1,
+        "expected exactly 1 parent session id in child developer instructions. Got: {child_combined}"
+    );
+    let root_parent_id = child_ids[0];
+
+    let grandchild_ids = parent_session_ids(&grandchild_combined);
+    assert_eq!(
+        i64::try_from(grandchild_ids.len()).unwrap(),
+        2,
+        "expected exactly 2 parent session ids in grandchild developer instructions. Got: {grandchild_combined}"
+    );
+    assert!(
+        grandchild_ids.contains(&root_parent_id),
+        "grandchild developer instructions should include root parent session id. Got: {grandchild_combined}"
+    );
+    assert!(
+        grandchild_ids[0] != grandchild_ids[1],
+        "expected distinct parent session ids in grandchild developer instructions. Got: {grandchild_combined}"
+    );
+    assert!(
+        grandchild_combined.contains("CHILD_SYSTEM_PROMPT_MARKER"),
+        "grandchild developer instructions should preserve child system prompt content. Got: {grandchild_combined}"
+    );
+}
