@@ -1,8 +1,12 @@
 use crate::client_common::tools::ToolSpec;
 use crate::error::Result;
+use crate::openai_models::model_family::ANTIGRAVITY_PREAMBLE;
+use crate::openai_models::model_family::InstructionMode;
 use crate::openai_models::model_family::ModelFamily;
+use crate::openai_models::model_family::PRAXIS_REST;
 pub use codex_api::common::ResponseEvent;
 use codex_apply_patch::APPLY_PATCH_TOOL_INSTRUCTIONS;
+use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use futures::Stream;
 use serde::Deserialize;
@@ -47,59 +51,45 @@ pub struct Prompt {
 
 impl Prompt {
     pub(crate) fn get_full_instructions<'a>(&'a self, model: &'a ModelFamily) -> Cow<'a, str> {
-        // Determine effective base instructions based on override and model requirements.
-        // When base_instructions_required is true, we prepend the model's base instructions
-        // to any override (e.g., subagent prompts) to preserve critical protocol definitions.
-        let base: Cow<'a, str> = match self.base_instructions_override.as_deref() {
-            Some(override_text) if model.base_instructions_required => {
-                // Model requires base instructions - prepend them to the override
-                Cow::Owned(format!("{}\n\n{}", model.base_instructions, override_text))
-            }
-            Some(override_text) => {
-                // Override completely replaces base instructions
-                Cow::Borrowed(override_text)
-            }
-            None => {
-                // No override - use model's base instructions
+        match model.instruction_mode {
+            InstructionMode::Strict => {
+                // OpenAI GPT-5.x: use exact base_instructions unchanged.
+                // Sandbox info and other context goes in user message.
                 Cow::Borrowed(model.base_instructions.deref())
             }
-        };
+            InstructionMode::Prefix => {
+                // Antigravity: prepend Antigravity preamble to PRAXIS_REST or subagent prompt.
+                let content = self
+                    .base_instructions_override
+                    .as_deref()
+                    .unwrap_or(PRAXIS_REST);
+                let mut result = format!("{ANTIGRAVITY_PREAMBLE}\n\n{content}");
+                self.append_apply_patch_instructions_if_needed(model, &mut result);
+                Cow::Owned(result)
+            }
+            InstructionMode::Flexible => {
+                // Claude/Gemini/OpenRouter: full control over instructions.
+                let base: Cow<'a, str> = match self.base_instructions_override.as_deref() {
+                    Some(override_text) => Cow::Borrowed(override_text),
+                    None => Cow::Borrowed(model.base_instructions.deref()),
+                };
+                let mut result = base.into_owned();
+                self.append_apply_patch_instructions_if_needed(model, &mut result);
+                Cow::Owned(result)
+            }
+        }
+    }
 
-        // When there are no custom instructions, add apply_patch_tool_instructions if:
-        // - the model needs special instructions (4.1)
-        // AND
-        // - there is no apply_patch tool present
+    fn append_apply_patch_instructions_if_needed(&self, model: &ModelFamily, result: &mut String) {
         let is_apply_patch_tool_present = self.tools.iter().any(|tool| match tool {
             ToolSpec::Function(f) => f.name == "apply_patch",
             ToolSpec::Freeform(f) => f.name == "apply_patch",
             _ => false,
         });
-
-        // Build the full instructions by conditionally appending apply_patch instructions.
-        // Don't append extra instructions when:
-        // - base_instructions_override is set AND base_instructions_required is false
-        //   (when required is true, the base is already included so we may need apply_patch)
-        let needs_apply_patch_instructions = (self.base_instructions_override.is_none()
-            || model.base_instructions_required)
-            && model.needs_special_apply_patch_instructions
-            && !is_apply_patch_tool_present;
-
-        let mut result = base.into_owned();
-        if needs_apply_patch_instructions {
+        if model.needs_special_apply_patch_instructions && !is_apply_patch_tool_present {
             result.push('\n');
             result.push_str(APPLY_PATCH_TOOL_INSTRUCTIONS);
         }
-
-        // Some model-specific base instructions (e.g. GPT-5.x prompts) already include the
-        // sandbox/approvals guidance. Avoid duplicating it, as certain providers validate the
-        // instructions field strictly.
-        let base_instructions_already_include_sandbox =
-            result.contains("Filesystem sandboxing defines which files can be read or written.");
-        if !base_instructions_already_include_sandbox {
-            result.push_str("\n\n");
-            result.push_str(SANDBOX_AND_APPROVALS_PROMPT);
-        }
-        Cow::Owned(result)
     }
 
     pub(crate) fn get_formatted_input(&self) -> Vec<ResponseItem> {
@@ -118,6 +108,50 @@ impl Prompt {
         }
 
         input
+    }
+
+    pub(crate) fn get_formatted_input_for_model(&self, model: &ModelFamily) -> Vec<ResponseItem> {
+        let mut input = self.get_formatted_input();
+
+        let strict_instructions_include_sandbox = model
+            .base_instructions
+            .contains("Filesystem sandboxing defines which files can be read or written.");
+        if model.instruction_mode != InstructionMode::Strict || !strict_instructions_include_sandbox
+        {
+            prepend_sandbox_and_approvals_to_first_user_message(&mut input);
+        }
+
+        input
+    }
+}
+
+fn prepend_sandbox_and_approvals_to_first_user_message(items: &mut Vec<ResponseItem>) {
+    let sandbox_marker = "## Filesystem sandboxing";
+
+    for item in items {
+        let ResponseItem::Message { role, content, .. } = item else {
+            continue;
+        };
+        if role != "user" {
+            continue;
+        }
+
+        let already_present = content.iter().any(|item| match item {
+            ContentItem::InputText { text } | ContentItem::OutputText { text, .. } => {
+                text.contains(sandbox_marker)
+            }
+            ContentItem::InputImage { .. } => false,
+        });
+        if !already_present {
+            content.insert(
+                0,
+                ContentItem::InputText {
+                    text: SANDBOX_AND_APPROVALS_PROMPT.to_string(),
+                },
+            );
+        }
+
+        break;
     }
 }
 
@@ -285,6 +319,8 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     use crate::config::test_config;
+    use crate::model_provider_info::ProviderKind;
+    use crate::openai_models::model_family::InstructionMode;
     use crate::openai_models::models_manager::ModelsManager;
 
     use super::*;
@@ -292,6 +328,7 @@ mod tests {
     struct InstructionsTestCase {
         pub slug: &'static str,
         pub expects_apply_patch_instructions: bool,
+        pub expected_instruction_mode: InstructionMode,
     }
     #[test]
     fn get_full_instructions_no_user_content() {
@@ -302,51 +339,233 @@ mod tests {
             InstructionsTestCase {
                 slug: "gpt-3.5",
                 expects_apply_patch_instructions: true,
+                expected_instruction_mode: InstructionMode::Flexible,
             },
             InstructionsTestCase {
                 slug: "gpt-4.1",
                 expects_apply_patch_instructions: true,
+                expected_instruction_mode: InstructionMode::Flexible,
             },
             InstructionsTestCase {
                 slug: "gpt-4o",
                 expects_apply_patch_instructions: true,
+                expected_instruction_mode: InstructionMode::Flexible,
             },
             InstructionsTestCase {
                 slug: "gpt-5.1",
                 expects_apply_patch_instructions: false,
+                expected_instruction_mode: InstructionMode::Strict,
             },
             InstructionsTestCase {
                 slug: "gpt-oss:120b",
                 expects_apply_patch_instructions: false,
+                expected_instruction_mode: InstructionMode::Flexible,
             },
             InstructionsTestCase {
                 slug: "gpt-5.1-codex",
                 expects_apply_patch_instructions: false,
+                expected_instruction_mode: InstructionMode::Strict,
             },
             InstructionsTestCase {
                 slug: "gpt-5.1-codex-max",
                 expects_apply_patch_instructions: false,
+                expected_instruction_mode: InstructionMode::Strict,
             },
         ];
         for test_case in test_cases {
             let config = test_config();
             let model_family =
                 ModelsManager::construct_model_family_offline(test_case.slug, &config);
-            let mut expected = model_family.base_instructions.to_string();
-            if test_case.expects_apply_patch_instructions {
-                expected.push('\n');
-                expected.push_str(APPLY_PATCH_TOOL_INSTRUCTIONS);
-            }
-            let base_instructions_already_include_sandbox = expected
-                .contains("Filesystem sandboxing defines which files can be read or written.");
-            if !base_instructions_already_include_sandbox {
-                expected.push_str("\n\n");
-                expected.push_str(SANDBOX_AND_APPROVALS_PROMPT);
-            }
+
+            assert_eq!(
+                model_family.instruction_mode, test_case.expected_instruction_mode,
+                "model {} should have {:?} instruction mode",
+                test_case.slug, test_case.expected_instruction_mode
+            );
+
+            let expected = match model_family.instruction_mode {
+                InstructionMode::Strict => {
+                    // Strict mode returns base_instructions unchanged
+                    model_family.base_instructions.to_string()
+                }
+                InstructionMode::Prefix | InstructionMode::Flexible => {
+                    let mut result = model_family.base_instructions.to_string();
+                    if test_case.expects_apply_patch_instructions {
+                        result.push('\n');
+                        result.push_str(APPLY_PATCH_TOOL_INSTRUCTIONS);
+                    }
+                    result
+                }
+            };
 
             let full = prompt.get_full_instructions(&model_family);
-            assert_eq!(full, expected);
+            assert_eq!(
+                full.as_ref(),
+                expected.as_str(),
+                "instructions mismatch for model {}",
+                test_case.slug
+            );
         }
+    }
+
+    #[test]
+    fn formatted_input_prepends_sandbox_for_non_strict_modes() {
+        let config = test_config();
+        let model_family = ModelsManager::construct_model_family_offline("claude-sonnet", &config);
+
+        assert_eq!(model_family.instruction_mode, InstructionMode::Flexible);
+
+        let prompt = Prompt {
+            input: vec![ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: "hello".to_string(),
+                }],
+            }],
+            ..Default::default()
+        };
+        let formatted = prompt.get_formatted_input_for_model(&model_family);
+
+        let first_user = formatted
+            .iter()
+            .find_map(|item| match item {
+                ResponseItem::Message { role, content, .. } if role == "user" => Some(content),
+                _ => None,
+            })
+            .expect("should have user message");
+
+        let combined = first_user
+            .iter()
+            .filter_map(|item| match item {
+                ContentItem::InputText { text } | ContentItem::OutputText { text, .. } => {
+                    (!text.is_empty()).then_some(text.as_str())
+                }
+                ContentItem::InputImage { .. } => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(combined.contains("## Filesystem sandboxing"));
+
+        let mut prefix_config = test_config();
+        prefix_config.model_provider.provider_kind = ProviderKind::Antigravity;
+        let prefix_family = ModelsManager::construct_model_family_offline("gpt-4o", &prefix_config);
+        assert_eq!(prefix_family.instruction_mode, InstructionMode::Prefix);
+
+        let formatted_prefix = prompt.get_formatted_input_for_model(&prefix_family);
+        let first_user_prefix = formatted_prefix
+            .iter()
+            .find_map(|item| match item {
+                ResponseItem::Message { role, content, .. } if role == "user" => Some(content),
+                _ => None,
+            })
+            .expect("should have user message");
+        let combined_prefix = first_user_prefix
+            .iter()
+            .filter_map(|item| match item {
+                ContentItem::InputText { text } | ContentItem::OutputText { text, .. } => {
+                    (!text.is_empty()).then_some(text.as_str())
+                }
+                ContentItem::InputImage { .. } => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(combined_prefix.contains("## Filesystem sandboxing"));
+    }
+
+    #[test]
+    fn instruction_mode_strict_uses_base_only() {
+        let config = test_config();
+        let model_family = ModelsManager::construct_model_family_offline("gpt-5.1-codex", &config);
+
+        assert_eq!(model_family.instruction_mode, InstructionMode::Strict);
+
+        let prompt = Prompt::default();
+        let instructions = prompt.get_full_instructions(&model_family);
+
+        assert_eq!(
+            instructions.as_ref(),
+            model_family.base_instructions.as_str(),
+            "Strict mode should return base_instructions unchanged"
+        );
+    }
+
+    #[test]
+    fn instruction_mode_prefix_prepends_antigravity_preamble() {
+        let mut config = test_config();
+        config.model_provider.provider_kind = ProviderKind::Antigravity;
+        let model_family = ModelsManager::construct_model_family_offline("gpt-4o", &config);
+
+        assert_eq!(model_family.instruction_mode, InstructionMode::Prefix);
+
+        let prompt = Prompt::default();
+        let instructions = prompt.get_full_instructions(&model_family);
+
+        assert!(
+            instructions.starts_with(ANTIGRAVITY_PREAMBLE),
+            "Prefix mode should start with Antigravity preamble"
+        );
+    }
+
+    #[test]
+    fn subagent_override_with_flexible_mode() {
+        let config = test_config();
+        let model_family = ModelsManager::construct_model_family_offline("claude-sonnet", &config);
+
+        let prompt = Prompt {
+            base_instructions_override: Some("Custom subagent prompt".to_string()),
+            ..Default::default()
+        };
+        let instructions = prompt.get_full_instructions(&model_family);
+
+        assert!(
+            instructions.starts_with("Custom subagent prompt"),
+            "Flexible mode should use override as base"
+        );
+        assert!(!instructions.contains("## Filesystem sandboxing"));
+    }
+
+    #[test]
+    fn subagent_override_with_strict_mode_ignored() {
+        let config = test_config();
+        let model_family = ModelsManager::construct_model_family_offline("gpt-5.1", &config);
+
+        let prompt = Prompt {
+            base_instructions_override: Some("Custom subagent prompt".to_string()),
+            ..Default::default()
+        };
+        let instructions = prompt.get_full_instructions(&model_family);
+
+        // Strict mode ignores override - always uses base_instructions
+        assert_eq!(
+            instructions.as_ref(),
+            model_family.base_instructions.as_str(),
+            "Strict mode should ignore override"
+        );
+    }
+
+    #[test]
+    fn subagent_override_with_prefix_mode() {
+        let mut config = test_config();
+        config.model_provider.provider_kind = ProviderKind::Antigravity;
+        let model_family = ModelsManager::construct_model_family_offline("gpt-4o", &config);
+
+        assert_eq!(model_family.instruction_mode, InstructionMode::Prefix);
+
+        let prompt = Prompt {
+            base_instructions_override: Some("Custom subagent prompt".to_string()),
+            ..Default::default()
+        };
+        let instructions = prompt.get_full_instructions(&model_family);
+
+        assert!(
+            instructions.starts_with(ANTIGRAVITY_PREAMBLE),
+            "Prefix mode should prepend Antigravity preamble"
+        );
+        assert!(
+            instructions.contains("Custom subagent prompt"),
+            "Prefix mode should include the override content"
+        );
     }
 
     #[test]

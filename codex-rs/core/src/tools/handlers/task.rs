@@ -5,9 +5,16 @@ fn subagent_identity_prompt(parent_session_id: &str) -> String {
 
 You are a specialized subagent delegated by a parent agent to perform a specific task.
 - Parent session ID: {parent_session_id}
-- Focus strictly on completing the requested task.
-- Provide a clear, concise summary of what you accomplished.
-- You have your own conversation context separate from the parent agent.
+
+## Parallel Execution Constraints
+
+You are running in PARALLEL with other subagents. Critical rules:
+
+1. **Do NOT own the codebase** - Only the orchestrator owns the codebase and coordinates all changes.
+2. **Focus ONLY on your assigned task** - Do not fix unrelated bugs or make unrelated improvements.
+3. **Do NOT assume exclusive file access** - Other subagents may be modifying files concurrently.
+4. **Report, don't fix** - If you discover issues outside your task scope, mention them in your summary but do NOT fix them.
+5. **Provide a clear summary** - State exactly what you accomplished within your assigned scope.
 "#
     )
 }
@@ -29,6 +36,9 @@ use crate::codex_delegate::run_codex_conversation_interactive;
 use crate::function_tool::FunctionCallError;
 use crate::model_provider_info::ProviderKind;
 use crate::model_provider_info::built_in_model_providers;
+use crate::openai_models::model_family::ANTIGRAVITY_PREAMBLE;
+use crate::openai_models::model_family::InstructionMode;
+use crate::openai_models::model_family::PRAXIS_REST;
 use crate::subagent_result::SubagentExecutionOutcome;
 use crate::subagent_result::SubagentTaskResult;
 use crate::subagents::SubagentRegistry;
@@ -48,6 +58,54 @@ use codex_protocol::protocol::SubagentEventPayload;
 use codex_protocol::protocol::TaskStartedEvent;
 use codex_protocol::protocol::WarningEvent;
 use codex_protocol::user_input::UserInput;
+
+fn build_subagent_prompt_plan(
+    instruction_mode: InstructionMode,
+    subagent_system_prompt: &str,
+    identity_prompt: &str,
+    task_prompt: &str,
+    model_family_base_instructions: &str,
+) -> (Option<String>, String) {
+    match instruction_mode {
+        InstructionMode::Strict => {
+            let subagent_context = if subagent_system_prompt.is_empty() {
+                identity_prompt.to_string()
+            } else {
+                format!("{subagent_system_prompt}\n\n{identity_prompt}")
+            };
+
+            (
+                None,
+                format!("<agent_context>\n{subagent_context}\n</agent_context>\n\n{task_prompt}"),
+            )
+        }
+        InstructionMode::Prefix => {
+            let body = if subagent_system_prompt.is_empty() {
+                PRAXIS_REST
+            } else {
+                subagent_system_prompt
+            };
+            (
+                Some(format!(
+                    "{ANTIGRAVITY_PREAMBLE}\n\n{body}\n\n{identity_prompt}"
+                )),
+                task_prompt.to_string(),
+            )
+        }
+        InstructionMode::Flexible => {
+            let base = if subagent_system_prompt.is_empty() {
+                model_family_base_instructions
+            } else {
+                subagent_system_prompt
+            };
+
+            (
+                Some(format!("{base}\n\n{identity_prompt}")),
+                task_prompt.to_string(),
+            )
+        }
+    }
+}
 
 pub fn create_task_tool(codex_home: &Path, allowed_subagents: Option<&[String]>) -> ToolSpec {
     let registry = SubagentRegistry::new(codex_home);
@@ -163,6 +221,7 @@ fn wrap_subagent_event(
     parent_call_id: &str,
     subagent_name: &str,
     task_description: &str,
+    task_prompt: Option<&str>,
     delegation_id: Option<String>,
     parent_delegation_id: Option<String>,
     depth: Option<i32>,
@@ -173,6 +232,7 @@ fn wrap_subagent_event(
         parent_call_id: parent_call_id.to_string(),
         subagent_name: subagent_name.to_string(),
         task_description: task_description.to_string(),
+        task_prompt: task_prompt.map(ToString::to_string),
         delegation_id,
         parent_delegation_id,
         depth,
@@ -290,7 +350,10 @@ impl ToolHandler for TaskHandler {
         let effective_cwd = turn.client.config().cwd.clone();
         let _ = is_new_session; // suppress unused warning
 
-        let (subagent_session_ref, is_reused): (Arc<crate::codex::Codex>, bool) = {
+        let parent_session_id = invocation.session.conversation_id().to_string();
+        let identity_prompt = subagent_identity_prompt(&parent_session_id);
+
+        let (subagent_session_ref, instruction_mode): (Arc<crate::codex::Codex>, InstructionMode) = {
             let services = &invocation.session.services;
             let mut sessions = services.subagent_sessions.lock().await;
 
@@ -301,8 +364,9 @@ impl ToolHandler for TaskHandler {
                     "Reusing existing subagent session"
                 );
                 let codex = session.codex.clone();
+                let instruction_mode = session.instruction_mode;
                 drop(sessions);
-                (codex, true)
+                (codex, instruction_mode)
             } else {
                 let spawn_started = Instant::now();
                 let config = turn.client.config();
@@ -350,22 +414,24 @@ impl ToolHandler for TaskHandler {
                     );
                 }
 
-                let parent_session_id = invocation.session.conversation_id().to_string();
-                let identity_prompt = subagent_identity_prompt(&parent_session_id);
+                let subagent_model = services
+                    .models_manager
+                    .get_model(&sub_config.model, &sub_config)
+                    .await;
+                let subagent_model_family = services
+                    .models_manager
+                    .construct_model_family(&subagent_model, &sub_config)
+                    .await;
+                let instruction_mode = subagent_model_family.instruction_mode;
 
-                // Do not override `instructions` for the subagent session. Some model families
-                // (e.g. GPT-5.x) reject custom `instructions` entirely. Put subagent context in
-                // a developer message instead so it consistently reaches the model.
-                let developer_prefix = if subagent_def.system_prompt.is_empty() {
-                    identity_prompt
-                } else {
-                    format!("{}\n\n{}", subagent_def.system_prompt, identity_prompt)
-                };
-                sub_config.developer_instructions = Some(match sub_config.developer_instructions {
-                    Some(existing) => format!("{existing}\n\n{developer_prefix}"),
-                    None => developer_prefix,
-                });
-                sub_config.base_instructions = None;
+                let (base_instructions, _) = build_subagent_prompt_plan(
+                    instruction_mode,
+                    &subagent_def.system_prompt,
+                    &identity_prompt,
+                    &args.prompt,
+                    &subagent_model_family.base_instructions,
+                );
+                sub_config.base_instructions = base_instructions;
 
                 // Apply sandbox_policy override (only if more restrictive than parent)
                 // If subagent specifies `Inherit`, we keep the parent's policy.
@@ -450,6 +516,7 @@ impl ToolHandler for TaskHandler {
                     codex: codex_arc.clone(),
                     cancellation_token: session_token,
                     session_id: session_id.clone(),
+                    instruction_mode,
                 };
 
                 sessions.insert(session_id.clone(), session);
@@ -459,15 +526,18 @@ impl ToolHandler for TaskHandler {
                     elapsed_ms = spawn_started.elapsed().as_millis(),
                     "Spawned subagent session"
                 );
-                (codex_arc, false)
+                (codex_arc, instruction_mode)
             }
         };
 
-        let _ = is_reused; // suppress unused warning
-
-        let input = vec![UserInput::Text {
-            text: args.prompt.clone(),
-        }];
+        let (_, input_text) = build_subagent_prompt_plan(
+            instruction_mode,
+            &subagent_def.system_prompt,
+            &identity_prompt,
+            &args.prompt,
+            "",
+        );
+        let input = vec![UserInput::Text { text: input_text }];
 
         // Send initial TaskStarted event so the TUI can create the cell immediately.
         // This ensures the parent cell exists before any nested subagent events arrive.
@@ -475,6 +545,7 @@ impl ToolHandler for TaskHandler {
             &invocation.call_id,
             &args.subagent_name,
             &args.description,
+            Some(args.prompt.as_str()),
             delegation_id.clone(),
             parent_delegation_id.clone(),
             depth,
@@ -526,6 +597,7 @@ impl ToolHandler for TaskHandler {
                             &invocation.call_id,
                             &args.subagent_name,
                             &args.description,
+                            None,
                             delegation_id.clone(),
                             parent_delegation_id.clone(),
                             depth,
@@ -559,6 +631,7 @@ impl ToolHandler for TaskHandler {
                             &invocation.call_id,
                             &args.subagent_name,
                             &args.description,
+                            None,
                             delegation_id.clone(),
                             parent_delegation_id.clone(),
                             depth,
@@ -580,6 +653,7 @@ impl ToolHandler for TaskHandler {
                             &invocation.call_id,
                             &args.subagent_name,
                             &args.description,
+                            None,
                             delegation_id.clone(),
                             parent_delegation_id.clone(),
                             depth,
@@ -617,6 +691,7 @@ impl ToolHandler for TaskHandler {
                             &invocation.call_id,
                             &args.subagent_name,
                             &args.description,
+                            None,
                             delegation_id.clone(),
                             parent_delegation_id.clone(),
                             depth,
@@ -695,5 +770,82 @@ async fn check_gemini_api_key_warning(
         session
             .send_event(turn.as_ref(), EventMsg::Warning(WarningEvent { message }))
             .await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn build_subagent_prompt_plan_strict_puts_context_in_user_message() {
+        let (base_instructions, user_prompt) = build_subagent_prompt_plan(
+            InstructionMode::Strict,
+            "SYSTEM",
+            "IDENTITY",
+            "TASK",
+            "BASE",
+        );
+
+        assert_eq!(base_instructions, None);
+        assert_eq!(
+            user_prompt,
+            "<agent_context>\nSYSTEM\n\nIDENTITY\n</agent_context>\n\nTASK"
+        );
+    }
+
+    #[test]
+    fn build_subagent_prompt_plan_prefix_sets_base_instructions() {
+        let (base_instructions, user_prompt) = build_subagent_prompt_plan(
+            InstructionMode::Prefix,
+            "SYSTEM",
+            "IDENTITY",
+            "TASK",
+            "BASE",
+        );
+
+        assert_eq!(
+            base_instructions,
+            Some(format!("{ANTIGRAVITY_PREAMBLE}\n\nSYSTEM\n\nIDENTITY"))
+        );
+        assert_eq!(user_prompt, "TASK");
+    }
+
+    #[test]
+    fn build_subagent_prompt_plan_prefix_uses_praxis_rest_when_empty() {
+        let (base_instructions, user_prompt) =
+            build_subagent_prompt_plan(InstructionMode::Prefix, "", "IDENTITY", "TASK", "BASE");
+
+        assert_eq!(
+            base_instructions,
+            Some(format!(
+                "{ANTIGRAVITY_PREAMBLE}\n\n{PRAXIS_REST}\n\nIDENTITY"
+            ))
+        );
+        assert_eq!(user_prompt, "TASK");
+    }
+
+    #[test]
+    fn build_subagent_prompt_plan_flexible_uses_system_prompt_when_set() {
+        let (base_instructions, user_prompt) = build_subagent_prompt_plan(
+            InstructionMode::Flexible,
+            "SYSTEM",
+            "IDENTITY",
+            "TASK",
+            "BASE",
+        );
+
+        assert_eq!(base_instructions, Some("SYSTEM\n\nIDENTITY".to_string()));
+        assert_eq!(user_prompt, "TASK");
+    }
+
+    #[test]
+    fn build_subagent_prompt_plan_flexible_uses_model_base_when_empty() {
+        let (base_instructions, user_prompt) =
+            build_subagent_prompt_plan(InstructionMode::Flexible, "", "IDENTITY", "TASK", "BASE");
+
+        assert_eq!(base_instructions, Some("BASE\n\nIDENTITY".to_string()));
+        assert_eq!(user_prompt, "TASK");
     }
 }

@@ -397,6 +397,9 @@ async fn includes_base_instructions_override_in_request() {
     let server = MockServer::start().await;
     let resp_mock = mount_sse_once(&server, sse_completed("resp1")).await;
 
+    // Use OpenAI provider with a Flexible mode model (gpt-4o) so that
+    // base_instructions_override is respected. Strict mode models (GPT-5.x)
+    // ignore the override entirely per InstructionMode::Strict.
     let model_provider = ModelProviderInfo {
         base_url: Some(format!("{}/v1", server.uri())),
         ..built_in_model_providers()["openai"].clone()
@@ -404,6 +407,7 @@ async fn includes_base_instructions_override_in_request() {
     let codex_home = TempDir::new().unwrap();
     let mut config = load_default_config_for_test(&codex_home);
 
+    config.model = Some("gpt-4o".to_string());
     config.base_instructions = Some("test instructions".to_string());
     config.model_provider = model_provider;
 
@@ -1877,7 +1881,8 @@ use core_test_support::responses::start_mock_server;
 use wiremock::matchers::header;
 
 /// Test that subagent request includes the system_prompt markdown from the subagent template.
-/// This verifies that finder.md's system_prompt is present in the developer_instructions.
+/// This verifies that finder.md's system_prompt is present in the first user message
+/// (wrapped in <agent_context>) for Strict instruction mode models.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn subagent_request_includes_template_system_prompt() {
     skip_if_no_network!();
@@ -1936,8 +1941,8 @@ async fn subagent_request_includes_template_system_prompt() {
 
     // Verify the subagent request contains finder's system_prompt
     let subagent_request = &subagent_mock.requests()[0];
-    let dev_messages = subagent_request.message_input_texts("developer");
-    let combined = dev_messages.join("\n");
+    let user_messages = subagent_request.message_input_texts("user");
+    let combined = user_messages.join("\n");
 
     let finder_template_path =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("templates/subagents/finder.md");
@@ -1951,7 +1956,7 @@ async fn subagent_request_includes_template_system_prompt() {
         .trim_end_matches('\n');
 
     // Verify the exact system prompt content appears, and that the identity prompt is appended.
-    let expected = format!("{finder_system_prompt}\n\n# Subagent Context");
+    let expected = format!("<agent_context>\n{finder_system_prompt}\n\n# Subagent Context");
     assert!(
         combined.contains(&expected),
         "subagent request should include finder.md system_prompt. Got: {combined}"
@@ -2017,8 +2022,8 @@ async fn subagent_request_includes_identity_prompt_with_parent_uuid() {
 
     // Verify the subagent request contains identity prompt
     let subagent_request = &subagent_mock.requests()[0];
-    let dev_messages = subagent_request.message_input_texts("developer");
-    let combined = dev_messages.join("\n");
+    let user_messages = subagent_request.message_input_texts("user");
+    let combined = user_messages.join("\n");
 
     // Check for identity prompt header and content
     assert!(
@@ -2048,7 +2053,7 @@ async fn subagent_request_includes_identity_prompt_with_parent_uuid() {
 }
 
 /// Test that even when a subagent template has empty system_prompt (frontmatter-only),
-/// the identity prompt is still injected into developer instructions.
+/// the identity prompt is still injected into the first user message (wrapped in <agent_context>).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn subagent_with_empty_system_prompt_still_gets_identity_prompt() {
     skip_if_no_network!();
@@ -2115,8 +2120,8 @@ async fn subagent_with_empty_system_prompt_still_gets_identity_prompt() {
 
     // Verify the identity prompt is present (proving it's injected even with system_prompt)
     let subagent_request = &subagent_mock.requests()[0];
-    let dev_messages = subagent_request.message_input_texts("developer");
-    let combined = dev_messages.join("\n");
+    let user_messages = subagent_request.message_input_texts("user");
+    let combined = user_messages.join("\n");
 
     // The identity prompt should be injected regardless of whether system_prompt is empty
     assert!(
@@ -2128,7 +2133,7 @@ async fn subagent_with_empty_system_prompt_still_gets_identity_prompt() {
         "identity prompt content should be present. Got: {combined}"
     );
     assert!(
-        combined.contains("Focus strictly on completing the requested task"),
+        combined.contains("Focus ONLY on your assigned task"),
         "identity prompt instructions should be present. Got: {combined}"
     );
     assert!(
@@ -2137,21 +2142,19 @@ async fn subagent_with_empty_system_prompt_still_gets_identity_prompt() {
     );
 }
 
-/// Test that developer instructions accumulate across nested subagent delegation
-/// (parent → child → grandchild) without losing earlier context.
+/// Test nested subagent delegation (parent → child → grandchild) includes an identity prompt
+/// in each subagent's first user message.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn nested_delegation_accumulates_developer_instructions() {
+async fn nested_delegation_includes_identity_prompt_in_user_input() {
     skip_if_no_network!();
 
-    fn developer_input_texts(body: &serde_json::Value) -> Vec<String> {
+    fn role_input_texts(body: &serde_json::Value, role: &str) -> Vec<String> {
         body.get("input")
             .and_then(serde_json::Value::as_array)
             .into_iter()
             .flatten()
             .filter(|item| item.get("type").and_then(serde_json::Value::as_str) == Some("message"))
-            .filter(|item| {
-                item.get("role").and_then(serde_json::Value::as_str) == Some("developer")
-            })
+            .filter(|item| item.get("role").and_then(serde_json::Value::as_str) == Some(role))
             .filter_map(|item| {
                 item.get("content")
                     .and_then(serde_json::Value::as_array)
@@ -2272,47 +2275,48 @@ async fn nested_delegation_accumulates_developer_instructions() {
         })
         .expect("grandchild request");
 
-    let child_combined =
-        developer_input_texts(&child_request.body_json::<serde_json::Value>().unwrap()).join("\n");
-    let grandchild_combined =
-        developer_input_texts(&grandchild_request.body_json::<serde_json::Value>().unwrap())
-            .join("\n");
+    let child_combined = role_input_texts(
+        &child_request.body_json::<serde_json::Value>().unwrap(),
+        "user",
+    )
+    .join("\n");
+    let grandchild_combined = role_input_texts(
+        &grandchild_request.body_json::<serde_json::Value>().unwrap(),
+        "user",
+    )
+    .join("\n");
 
     assert_eq!(
         i64::try_from(child_combined.matches("# Subagent Context").count()).unwrap(),
         1,
-        "expected exactly 1 identity prompt in child developer instructions. Got: {child_combined}"
+        "expected exactly 1 identity prompt in child user input. Got: {child_combined}"
     );
     assert_eq!(
         i64::try_from(grandchild_combined.matches("# Subagent Context").count()).unwrap(),
-        2,
-        "expected exactly 2 identity prompts in grandchild developer instructions. Got: {grandchild_combined}"
+        1,
+        "expected exactly 1 identity prompt in grandchild user input. Got: {grandchild_combined}"
     );
 
     let child_ids = parent_session_ids(&child_combined);
     assert_eq!(
         i64::try_from(child_ids.len()).unwrap(),
         1,
-        "expected exactly 1 parent session id in child developer instructions. Got: {child_combined}"
+        "expected exactly 1 parent session id in child user input. Got: {child_combined}"
     );
-    let root_parent_id = child_ids[0];
+    let _root_parent_id = child_ids[0];
 
     let grandchild_ids = parent_session_ids(&grandchild_combined);
     assert_eq!(
         i64::try_from(grandchild_ids.len()).unwrap(),
-        2,
-        "expected exactly 2 parent session ids in grandchild developer instructions. Got: {grandchild_combined}"
+        1,
+        "expected exactly 1 parent session id in grandchild user input. Got: {grandchild_combined}"
     );
     assert!(
-        grandchild_ids.contains(&root_parent_id),
-        "grandchild developer instructions should include root parent session id. Got: {grandchild_combined}"
+        child_combined.contains("CHILD_SYSTEM_PROMPT_MARKER"),
+        "child user input should include child system prompt content. Got: {child_combined}"
     );
     assert!(
-        grandchild_ids[0] != grandchild_ids[1],
-        "expected distinct parent session ids in grandchild developer instructions. Got: {grandchild_combined}"
-    );
-    assert!(
-        grandchild_combined.contains("CHILD_SYSTEM_PROMPT_MARKER"),
-        "grandchild developer instructions should preserve child system prompt content. Got: {grandchild_combined}"
+        grandchild_combined.contains("GRANDCHILD_SYSTEM_PROMPT_MARKER"),
+        "grandchild user input should include grandchild system prompt content. Got: {grandchild_combined}"
     );
 }

@@ -160,6 +160,7 @@ impl ModelsManager {
         Self::find_family_for_model(model)
             .with_config_overrides(config)
             .with_remote_overrides(self.remote_models.read().await.clone())
+            .with_provider_instruction_mode(config.model_provider.provider_kind)
     }
 
     pub async fn get_model(&self, model: &Option<String>, config: &Config) -> String {
@@ -200,7 +201,9 @@ impl ModelsManager {
     #[cfg(any(test, feature = "test-support"))]
     /// Offline helper that builds a `ModelFamily` without consulting remote state.
     pub fn construct_model_family_offline(model: &str, config: &Config) -> ModelFamily {
-        Self::find_family_for_model(model).with_config_overrides(config)
+        Self::find_family_for_model(model)
+            .with_config_overrides(config)
+            .with_provider_instruction_mode(config.model_provider.provider_kind)
     }
 
     /// Replace the cached remote models and rebuild the derived presets list.

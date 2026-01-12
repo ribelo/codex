@@ -7,6 +7,8 @@ use codex_protocol::models::FunctionCallOutputContentItem;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
+use std::time::Duration;
+use std::time::SystemTime;
 
 const APPROX_BYTES_PER_TOKEN: usize = 4;
 
@@ -49,25 +51,30 @@ pub fn truncate_with_file_fallback(
     content: &str,
     policy: TruncationPolicy,
     bias: TruncationBias,
-    temp_dir: &Path,
+    cwd: &Path,
     call_id: &str,
 ) -> std::io::Result<TruncationResult> {
     let original_size = content.len();
     let truncated_raw = truncate_text(content, policy, bias);
 
     if truncated_raw.len() < original_size {
-        if !temp_dir.exists() {
-            fs::create_dir_all(temp_dir)?;
+        let truncated_outputs_dir = cwd.join(".codex").join("truncated_outputs");
+        if !truncated_outputs_dir.exists() {
+            fs::create_dir_all(&truncated_outputs_dir)?;
         }
-        let file_path = temp_dir.join(format!("{call_id}.output"));
+        let file_path = truncated_outputs_dir.join(format!("{call_id}.output"));
         // Atomic write via temp file could be better but simple write is okay for now as per constraints
         fs::write(&file_path, content)?;
+
+        let absolute_path = file_path
+            .canonicalize()
+            .unwrap_or_else(|_| file_path.clone());
 
         let hint = format!(
             "\n\nOutput was truncated ({} bytes -> {} bytes).\nFull output saved to: {}\nTo read full output, use read_file tool with offset and limit parameters.",
             original_size,
             truncated_raw.len(),
-            file_path.display()
+            absolute_path.display()
         );
 
         let content = format!("{truncated_raw}{hint}");
@@ -83,6 +90,28 @@ pub fn truncate_with_file_fallback(
             saved_file: None,
             original_size,
         })
+    }
+}
+
+pub fn cleanup_old_truncated_outputs(cwd: &Path) {
+    let truncated_outputs_dir = cwd.join(".codex").join("truncated_outputs");
+    if !truncated_outputs_dir.exists() {
+        return;
+    }
+
+    let now = SystemTime::now();
+    let max_age = Duration::from_secs(7 * 24 * 60 * 60); // 7 days
+
+    if let Ok(entries) = fs::read_dir(truncated_outputs_dir) {
+        for entry in entries.flatten() {
+            if let Ok(metadata) = entry.metadata()
+                && let Ok(modified) = metadata.modified()
+                && let Ok(age) = now.duration_since(modified)
+                && age > max_age
+            {
+                let _ = fs::remove_file(entry.path());
+            }
+        }
     }
 }
 

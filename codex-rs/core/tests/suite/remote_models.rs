@@ -93,7 +93,9 @@ async fn remote_models_remote_model_uses_unified_exec() -> Result<()> {
 
     let harness = build_remote_models_harness(&server, |config| {
         config.features.enable(Feature::RemoteModels);
-        config.model = Some("gpt-5.1".to_string());
+        // Use gpt-4o (Flexible mode) so that sandbox instructions are appended.
+        // Strict mode models (gpt-5.x) return base_instructions unchanged.
+        config.model = Some("gpt-4o".to_string());
     })
     .await?;
 
@@ -279,8 +281,9 @@ async fn remote_models_apply_remote_base_instructions() -> Result<()> {
 
     let body = response_mock.single_request().body_json();
     let instructions = body["instructions"].as_str().unwrap();
-    // Sandbox instructions are always appended to base instructions.
-    let expected_instructions = format!("{remote_base}\n\n{SANDBOX_AND_APPROVALS}");
+    // test-gpt-5-remote uses Strict mode (starts with "test-gpt-5"), which returns
+    // base_instructions unchanged. No sandbox is appended for Strict mode.
+    let expected_instructions = remote_base;
     assert_eq!(instructions, expected_instructions);
 
     Ok(())

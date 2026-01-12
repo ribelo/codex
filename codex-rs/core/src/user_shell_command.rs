@@ -39,7 +39,7 @@ fn format_user_shell_command_body(
         exec_output,
         turn_context.truncation_policy,
         turn_context.truncation_bias,
-        &turn_context.tools_config.codex_home,
+        &turn_context.cwd,
         call_id,
     ));
     sections.push("</result>".to_string());

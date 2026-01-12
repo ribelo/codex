@@ -658,6 +658,9 @@ pub struct SubagentEventPayload {
     pub subagent_name: String,
     /// Description of the delegated task.
     pub task_description: String,
+    /// Full prompt sent to the subagent (for transcript view).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_prompt: Option<String>,
     /// Unique identifier for this delegation.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub delegation_id: Option<String>,

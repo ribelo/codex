@@ -209,7 +209,7 @@ impl ModelClient {
         let model_family = self.get_model_family();
         let instructions = prompt.get_full_instructions(&model_family).into_owned();
         let tools_json = create_tools_json_for_chat_completions_api(&prompt.tools)?;
-        let api_prompt = build_api_prompt(prompt, instructions, tools_json);
+        let api_prompt = build_api_prompt(prompt, &model_family, instructions, tools_json);
         let conversation_id = self.conversation_id.to_string();
         let session_source = self.session_source.clone();
 
@@ -298,7 +298,8 @@ impl ModelClient {
         };
 
         let text = create_text_param_for_request(verbosity, &prompt.output_schema);
-        let mut api_prompt = build_api_prompt(prompt, instructions.clone(), tools_json);
+        let mut api_prompt =
+            build_api_prompt(prompt, &model_family, instructions.clone(), tools_json);
 
         // OpenRouter models (e.g. xiaomi/mimo-v2-flash:free) return 400 if an assistant
         // message has empty content (which happens when we serialize a tool-use turn
@@ -472,10 +473,15 @@ impl ModelClient {
 }
 
 /// Adapts the core `Prompt` type into the `codex-api` payload shape.
-fn build_api_prompt(prompt: &Prompt, instructions: String, tools_json: Vec<Value>) -> ApiPrompt {
+fn build_api_prompt(
+    prompt: &Prompt,
+    model_family: &ModelFamily,
+    instructions: String,
+    tools_json: Vec<Value>,
+) -> ApiPrompt {
     ApiPrompt {
         instructions,
-        input: prompt.get_formatted_input(),
+        input: prompt.get_formatted_input_for_model(model_family),
         tools: tools_json,
         parallel_tool_calls: true,
         output_schema: prompt.output_schema.clone(),

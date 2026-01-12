@@ -84,7 +84,7 @@ pub fn format_exec_output_for_model_freeform(
     truncation_policy: TruncationPolicy,
     truncation_bias: TruncationBias,
     hint: Option<&str>,
-    temp_dir: &Path,
+    cwd: &Path,
     call_id: &str,
 ) -> String {
     // round to 1 decimal place
@@ -96,7 +96,7 @@ pub fn format_exec_output_for_model_freeform(
         &exec_output.aggregated_output.text,
         truncation_policy,
         truncation_bias,
-        temp_dir,
+        cwd,
         call_id,
     )
     .map(|r| (r.content, r.saved_file.is_some()))
@@ -133,7 +133,7 @@ pub fn format_exec_output_str(
     exec_output: &ExecToolCallOutput,
     truncation_policy: TruncationPolicy,
     truncation_bias: TruncationBias,
-    temp_dir: &Path,
+    cwd: &Path,
     call_id: &str,
 ) -> String {
     let ExecToolCallOutput {
@@ -152,7 +152,7 @@ pub fn format_exec_output_str(
     };
 
     // Truncate for model consumption before serialization.
-    truncate_with_file_fallback(&body, truncation_policy, truncation_bias, temp_dir, call_id)
+    truncate_with_file_fallback(&body, truncation_policy, truncation_bias, cwd, call_id)
         .map(|r| {
             if r.saved_file.is_some() {
                 let total_lines = body.lines().count();

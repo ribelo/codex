@@ -10,6 +10,7 @@ use tracing::info;
 use tracing::warn;
 
 use crate::codex::Codex;
+use crate::openai_models::model_family::InstructionMode;
 use crate::protocol::AskForApproval;
 use crate::protocol::SandboxPolicy;
 use codex_protocol::openai_models::ReasoningEffort;
@@ -250,6 +251,7 @@ pub struct SubagentSession {
     pub codex: Arc<Codex>,
     pub cancellation_token: CancellationToken,
     pub session_id: String,
+    pub instruction_mode: InstructionMode,
 }
 
 pub struct SubagentRegistry {

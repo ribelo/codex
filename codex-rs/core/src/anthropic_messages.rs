@@ -137,7 +137,7 @@ pub(crate) async fn stream_anthropic_messages(
     otel_event_manager: &OtelEventManager,
 ) -> Result<ResponseStream> {
     let full_instructions = prompt.get_full_instructions(model_family).to_string();
-    let (messages, extra_system) = build_anthropic_messages(prompt)?;
+    let (messages, extra_system) = build_anthropic_messages(prompt, model_family)?;
     let mut system_prompt = full_instructions;
     if let Some(extra) = extra_system
         && !extra.trim().is_empty()
@@ -291,11 +291,14 @@ pub(crate) async fn stream_anthropic_messages(
     }
 }
 
-fn build_anthropic_messages(prompt: &Prompt) -> Result<(Vec<AnthropicMessage>, Option<String>)> {
+fn build_anthropic_messages(
+    prompt: &Prompt,
+    model_family: &ModelFamily,
+) -> Result<(Vec<AnthropicMessage>, Option<String>)> {
     let mut messages = Vec::new();
     let mut pending_assistant: Option<AnthropicMessage> = None;
     let mut system_segments = Vec::new();
-    let input = prompt.get_formatted_input();
+    let input = prompt.get_formatted_input_for_model(model_family);
 
     for item in input {
         match item {
@@ -1122,6 +1125,8 @@ fn resolve_thinking_budget(effort: Option<ReasoningEffort>, max_tokens: i64) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model_provider_info::ProviderKind;
+    use crate::openai_models::models_manager::ModelsManager;
     use codex_protocol::models::ContentItem;
     use codex_protocol::models::ReasoningItemReasoningSummary;
     use codex_protocol::models::ResponseItem;
@@ -1157,6 +1162,12 @@ mod tests {
             false,
             "test-agent".to_string(),
         )
+    }
+
+    fn test_model_family() -> ModelFamily {
+        let mut config = crate::config::test_config();
+        config.model_provider.provider_kind = ProviderKind::Anthropic;
+        ModelsManager::construct_model_family_offline("claude-sonnet", &config)
     }
 
     #[tokio::test]
@@ -1305,7 +1316,8 @@ data: {\"type\":\"message_stop\"}
             ..Default::default()
         };
 
-        let (messages, extra) = build_anthropic_messages(&prompt).unwrap();
+        let model_family = test_model_family();
+        let (messages, extra) = build_anthropic_messages(&prompt, &model_family).unwrap();
         assert!(extra.is_none());
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0].role, "user");
@@ -1337,7 +1349,8 @@ data: {\"type\":\"message_stop\"}
             ..Default::default()
         };
 
-        let (messages, _) = build_anthropic_messages(&prompt).unwrap();
+        let model_family = test_model_family();
+        let (messages, _) = build_anthropic_messages(&prompt, &model_family).unwrap();
         assert_eq!(messages.len(), 1);
         let assistant = &messages[0];
         assert_eq!(assistant.role, "assistant");

@@ -2373,6 +2373,7 @@ impl ChatWidget {
             depth,
             inner,
             session_id,
+            task_prompt,
         } = payload;
 
         // Get or create the shared state for this subagent task
@@ -2405,6 +2406,7 @@ impl ChatWidget {
                 session_id,
                 subagent_name.clone(),
                 task_description,
+                task_prompt,
                 delegation_id.clone(),
                 parent_delegation_id.clone(),
                 depth.unwrap_or(0),

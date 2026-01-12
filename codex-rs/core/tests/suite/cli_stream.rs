@@ -144,7 +144,9 @@ async fn exec_cli_applies_experimental_instructions_file() {
     cmd.arg("exec")
         .arg("--skip-git-repo-check")
         .arg("-c")
-        .arg("model=\"mock/test-gpt-5.1-codex\"")
+        // Use gpt-4o (Flexible mode) so that experimental_instructions_file is respected.
+        // Strict mode models (like test-gpt-5.1-codex) ignore base_instructions_override.
+        .arg("model=\"mock/gpt-4o\"")
         .arg("-c")
         .arg("model_context_window=128000")
         .arg("-c")

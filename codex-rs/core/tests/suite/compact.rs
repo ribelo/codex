@@ -7,6 +7,7 @@ use codex_core::built_in_model_providers;
 use codex_core::compact::SUMMARIZATION_PROMPT;
 use codex_core::compact::SUMMARIZATION_SYSTEM_PROMPT;
 use codex_core::compact::SUMMARY_PREFIX;
+use codex_core::compact::UPDATE_PROMPT;
 use codex_core::config::Config;
 use codex_core::features::Feature;
 use codex_core::protocol::EventMsg;
@@ -1639,9 +1640,10 @@ async fn manual_compact_twice_preserves_latest_user_messages() {
         second_compact_body.contains("<conversation>"),
         "second compact request should have XML conversation tags"
     );
+    // Second compaction has a previous summary, so it should use UPDATE_PROMPT
     assert!(
-        second_compact_body.contains(&json_fragment(SUMMARIZATION_PROMPT)),
-        "second compact request should include the summarization prompt"
+        second_compact_body.contains(&json_fragment(UPDATE_PROMPT)),
+        "second compact request should include the update prompt (has previous summary)"
     );
 
     let mut final_output = requests
@@ -1827,9 +1829,10 @@ async fn auto_compact_allows_multiple_attempts_when_interleaved_with_other_turn_
         request_bodies[3].contains(&format!("unsupported call: {DUMMY_FUNCTION_NAME}")),
         "function call output should be sent before the second auto compact"
     );
+    // Second auto compact has a previous summary, so it should use UPDATE_PROMPT
     assert!(
-        body_contains_text(&request_bodies[4], SUMMARIZATION_PROMPT),
-        "second auto compact request should include the summarization prompt"
+        body_contains_text(&request_bodies[4], UPDATE_PROMPT),
+        "second auto compact request should include the update prompt (has previous summary)"
     );
 }
 

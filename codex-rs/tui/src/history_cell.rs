@@ -1398,6 +1398,8 @@ pub(crate) struct SubagentTaskCell {
     subagent_name: String,
     /// Description of the task being delegated.
     pub(crate) task_description: String,
+    /// Full prompt of the task if available.
+    pub(crate) task_prompt: Option<String>,
     /// Unique identifier for this delegation.
     delegation_id: Option<String>,
     /// Parent delegation ID if this is a nested delegation.
@@ -1421,6 +1423,7 @@ impl SubagentTaskCell {
         session_id: Option<String>,
         subagent_name: String,
         task_description: String,
+        task_prompt: Option<String>,
         delegation_id: Option<String>,
         parent_delegation_id: Option<String>,
         depth: i32,
@@ -1432,6 +1435,7 @@ impl SubagentTaskCell {
             session_id,
             subagent_name,
             task_description,
+            task_prompt,
             delegation_id,
             parent_delegation_id,
             depth,
@@ -1719,8 +1723,12 @@ impl HistoryCell for SubagentTaskCell {
             .max(1);
 
         // Task description with └ prefix (wrapped)
+        let description = self
+            .task_prompt
+            .as_deref()
+            .unwrap_or(&self.task_description);
         let desc_wrap_width = wrap_width.saturating_sub(2);
-        for (idx, segment) in textwrap::wrap(&self.task_description, desc_wrap_width)
+        for (idx, segment) in textwrap::wrap(description, desc_wrap_width)
             .iter()
             .enumerate()
         {
@@ -1814,6 +1822,7 @@ pub(crate) fn new_subagent_task_cell(
     session_id: Option<String>,
     subagent_name: String,
     task_description: String,
+    task_prompt: Option<String>,
     delegation_id: Option<String>,
     parent_delegation_id: Option<String>,
     depth: i32,
@@ -1825,6 +1834,7 @@ pub(crate) fn new_subagent_task_cell(
         session_id,
         subagent_name,
         task_description,
+        task_prompt,
         delegation_id,
         parent_delegation_id,
         depth,
@@ -3167,6 +3177,7 @@ mod tests {
             None,
             "explorer".to_string(),
             "Find all test files".to_string(),
+            None,
             Some("delegation-1".to_string()),
             None,
             0,
@@ -3197,6 +3208,7 @@ mod tests {
             None,
             "profile:kimi".to_string(),
             "Find current Bitcoin (BTC) price".to_string(),
+            None,
             Some("delegation-1".to_string()),
             None,
             0,
@@ -3227,6 +3239,7 @@ mod tests {
             None,
             "explorer".to_string(),
             "Search for API endpoints".to_string(),
+            None,
             Some("delegation-2".to_string()),
             Some("delegation-1".to_string()),
             1,
@@ -3260,6 +3273,7 @@ mod tests {
             None,
             "explorer".to_string(),
             "List directory contents".to_string(),
+            None,
             Some("delegation-3".to_string()),
             Some("delegation-2".to_string()),
             2,
@@ -3278,6 +3292,43 @@ mod tests {
     }
 
     #[test]
+    fn subagent_task_cell_transcript_uses_task_prompt() {
+        let state = Arc::new(Mutex::new(SubagentState {
+            items: vec![],
+            status: SubagentTaskStatus::Completed,
+            final_message: None,
+            model_id: None,
+        }));
+
+        let task_prompt = "Full detailed task prompt that should be shown in transcript view.";
+        let task_description = "Short description";
+
+        let cell = new_subagent_task_cell(
+            "call-1".to_string(),
+            None,
+            "explorer".to_string(),
+            task_description.to_string(),
+            Some(task_prompt.to_string()),
+            Some("delegation-1".to_string()),
+            None,
+            0,
+            state,
+            false,
+        );
+
+        // Normal view should show short description
+        let display = cell.display_lines(80);
+        let display_text = render_lines(&display).join("\n");
+        assert!(display_text.contains(task_description));
+        assert!(!display_text.contains(task_prompt));
+
+        // Transcript view should show full prompt
+        let transcript = cell.transcript_lines(80);
+        let transcript_text = render_lines(&transcript).join("\n");
+        assert!(transcript_text.contains(task_prompt));
+    }
+
+    #[test]
     fn subagent_task_cell_transcript_expands_long_description() {
         let state = Arc::new(Mutex::new(SubagentState {
             items: vec![],
@@ -3293,6 +3344,7 @@ mod tests {
             None,
             "profile:kimi".to_string(),
             long_description.to_string(),
+            None,
             Some("delegation-1".to_string()),
             None,
             0,
@@ -3346,6 +3398,7 @@ mod tests {
             None,
             "explorer".to_string(),
             "Test task".to_string(),
+            None,
             Some("delegation-1".to_string()),
             None,
             0,
@@ -3395,6 +3448,7 @@ mod tests {
             None,
             "explorer".to_string(),
             "Test".to_string(),
+            None,
             Some("delegation-1".to_string()),
             None,
             0,
@@ -3432,6 +3486,7 @@ mod tests {
             None,
             "explorer".to_string(),
             "Test task".to_string(),
+            None,
             None,
             None,
             0,
@@ -3496,6 +3551,7 @@ mod tests {
             None,
             "finder".to_string(),
             "First finder call".to_string(),
+            None,
             Some("child-del-1".to_string()),
             Some("parent-del".to_string()),
             1,
@@ -3507,6 +3563,7 @@ mod tests {
             None,
             "finder".to_string(),
             "Second finder call".to_string(),
+            None,
             Some("child-del-2".to_string()),
             Some("parent-del".to_string()),
             1,
@@ -3527,6 +3584,7 @@ mod tests {
             None,
             "general".to_string(),
             "Run two finder calls".to_string(),
+            None,
             Some("parent-del".to_string()),
             None,
             0,

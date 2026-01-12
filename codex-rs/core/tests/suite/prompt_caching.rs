@@ -89,12 +89,9 @@ async fn codex_mini_latest_tools() -> anyhow::Result<()> {
         .await?;
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TaskComplete(_))).await;
 
-    let expected_instructions = format!(
-        "{}\n{}\n\n{}",
-        include_str!("../../prompt.md"),
-        include_str!("../../../apply-patch/apply_patch_tool_instructions.md"),
-        include_str!("../../sandbox_and_approvals.md"),
-    );
+    // codex-mini-latest uses Strict instruction mode, which returns base_instructions unchanged.
+    // No apply_patch or sandbox instructions are appended for Strict mode.
+    let expected_instructions = include_str!("../../prompt.md").to_string();
 
     let body0 = req1.single_request().body_json();
     assert_eq!(

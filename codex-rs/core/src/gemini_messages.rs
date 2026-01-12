@@ -385,8 +385,12 @@ pub(crate) fn build_gemini_payload(
 ) -> Result<(GeminiRequest, String)> {
     let normalized_model = normalize_model_name(model_family.get_model_slug());
     let full_instructions = prompt.get_full_instructions(model_family);
-    let (contents, system_instruction) =
-        build_gemini_messages(prompt, full_instructions.as_ref(), &normalized_model)?;
+    let (contents, system_instruction) = build_gemini_messages(
+        prompt,
+        model_family,
+        full_instructions.as_ref(),
+        &normalized_model,
+    )?;
     let tools = build_gemini_tools(&prompt.tools)?;
 
     let tool_config = if tools.is_some() {
@@ -774,12 +778,13 @@ fn is_gemini3(model: &str) -> bool {
 
 fn build_gemini_messages(
     prompt: &Prompt,
+    model_family: &ModelFamily,
     full_instructions: &str,
     model_name: &str,
 ) -> Result<(Vec<GeminiContent>, Option<GeminiContent>)> {
     let mut messages: Vec<GeminiContent> = Vec::new();
     let mut system_segments = Vec::new();
-    let input = prompt.get_formatted_input();
+    let input = prompt.get_formatted_input_for_model(model_family);
 
     if !full_instructions.trim().is_empty() {
         system_segments.push(full_instructions.trim_end_matches('\n').to_string());
@@ -1925,6 +1930,9 @@ mod tests {
     #[tokio::test]
     async fn test_reasoning_preserved_in_tool_loop() {
         use crate::client_common::Prompt;
+        use crate::config;
+        use crate::model_provider_info::ProviderKind;
+        use crate::openai_models::models_manager::ModelsManager;
         use codex_protocol::models::ReasoningItemReasoningSummary;
 
         let prompt = Prompt {
@@ -1949,7 +1957,11 @@ mod tests {
             ..Default::default()
         };
 
-        let (messages, _) = build_gemini_messages(&prompt, "", "gemini-1.5-pro")
+        let mut config = config::test_config();
+        config.model_provider.provider_kind = ProviderKind::Gemini;
+        let model_family = ModelsManager::construct_model_family_offline("gemini-1.5-pro", &config);
+
+        let (messages, _) = build_gemini_messages(&prompt, &model_family, "", "gemini-1.5-pro")
             .expect("build_gemini_messages should succeed");
 
         // The reasoning should be in the model's message as a part with thought: true

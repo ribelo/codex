@@ -172,7 +172,7 @@ impl UnifiedExecSessionManager {
             &text,
             TruncationPolicy::Tokens(max_tokens),
             context.turn.truncation_bias,
-            &context.turn.tools_config.codex_home,
+            &context.turn.cwd,
             &context.call_id,
         )
         .map(|r| r.content)
@@ -291,7 +291,7 @@ impl UnifiedExecSessionManager {
             &text,
             TruncationPolicy::Tokens(max_tokens),
             turn_ref.truncation_bias,
-            &turn_ref.tools_config.codex_home,
+            &turn_ref.cwd,
             request.call_id,
         )
         .map(|r| r.content)

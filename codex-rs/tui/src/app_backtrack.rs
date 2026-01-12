@@ -544,6 +544,7 @@ mod tests {
                 None,
                 "finder".to_string(),
                 "Find files".to_string(),
+                None,
                 Some("del-1".to_string()),
                 None,
                 0,

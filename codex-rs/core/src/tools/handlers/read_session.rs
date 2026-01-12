@@ -69,6 +69,7 @@ fn wrap_subagent_event(
     parent_call_id: &str,
     subagent_name: &str,
     task_description: &str,
+    task_prompt: Option<&str>,
     delegation_id: Option<String>,
     parent_delegation_id: Option<String>,
     depth: Option<i32>,
@@ -79,6 +80,7 @@ fn wrap_subagent_event(
         parent_call_id: parent_call_id.to_string(),
         subagent_name: subagent_name.to_string(),
         task_description: task_description.to_string(),
+        task_prompt: task_prompt.map(ToString::to_string),
         delegation_id,
         parent_delegation_id,
         depth,
@@ -253,13 +255,20 @@ impl ToolHandler for ReadSessionHandler {
             "Spawned session_reader subagent"
         );
 
-        let task_description = format!("Reading session {}", args.session_id);
+        let task_description = format!("Reading session {}: {}", args.session_id, args.question);
+
+        // Build the prompt for session_reader
+        let prompt = format!(
+            "Analyze the session log using your available tools (search_session_log, read_session_log).\n\nQuestion: {}",
+            args.question
+        );
 
         // Send TaskStarted event
         let task_started = wrap_subagent_event(
             &invocation.call_id,
             "session_reader",
             &task_description,
+            Some(prompt.as_str()),
             delegation_id.clone(),
             parent_delegation_id.clone(),
             depth,
@@ -272,12 +281,6 @@ impl ToolHandler for ReadSessionHandler {
             .session
             .send_event(invocation.turn.as_ref(), task_started)
             .await;
-
-        // Build the prompt for session_reader
-        let prompt = format!(
-            "Analyze the session log using your available tools (search_session_log, read_session_log).\n\nQuestion: {}",
-            args.question
-        );
 
         // Submit the prompt
         let input = vec![UserInput::Text { text: prompt }];
@@ -317,6 +320,7 @@ impl ToolHandler for ReadSessionHandler {
                         &invocation.call_id,
                         "session_reader",
                         &task_description,
+                        None,
                         delegation_id.clone(),
                         parent_delegation_id.clone(),
                         depth,
@@ -333,6 +337,7 @@ impl ToolHandler for ReadSessionHandler {
                         &invocation.call_id,
                         "session_reader",
                         &task_description,
+                        None,
                         delegation_id.clone(),
                         parent_delegation_id.clone(),
                         depth,
@@ -351,6 +356,7 @@ impl ToolHandler for ReadSessionHandler {
                         &invocation.call_id,
                         "session_reader",
                         &task_description,
+                        None,
                         delegation_id.clone(),
                         parent_delegation_id.clone(),
                         depth,

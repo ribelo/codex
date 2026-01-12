@@ -742,6 +742,10 @@ impl Session {
         for event in events {
             sess.send_event_raw(event).await;
         }
+
+        // Cleanup old truncated outputs
+        crate::truncate::cleanup_old_truncated_outputs(&session_configuration.cwd);
+
         // Initialize MCP connections.
         //
         // For main sessions we block on initialization so MCP tools are ready
@@ -3104,7 +3108,7 @@ mod tests {
             &exec,
             turn_context.truncation_policy,
             turn_context.truncation_bias,
-            &turn_context.tools_config.codex_home,
+            &turn_context.cwd,
             "test-call",
         );
 

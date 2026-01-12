@@ -376,7 +376,7 @@ async fn process_bedrock_stream(
 fn build_bedrock_messages(
     prompt: &Prompt,
     system_prompt: &str,
-    _model_family: &ModelFamily,
+    model_family: &ModelFamily,
 ) -> Result<(Vec<SystemContentBlock>, Vec<Message>)> {
     let mut system_blocks = Vec::new();
     let mut messages: Vec<Message> = Vec::new();
@@ -386,7 +386,7 @@ fn build_bedrock_messages(
         system_blocks.push(SystemContentBlock::Text(system_prompt.to_string()));
     }
 
-    let input = prompt.get_formatted_input();
+    let input = prompt.get_formatted_input_for_model(model_family);
 
     for item in input {
         match item {

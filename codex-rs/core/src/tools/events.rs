@@ -270,7 +270,7 @@ impl ToolEmitter {
                 ctx.turn.truncation_policy,
                 ctx.turn.truncation_bias,
                 hint,
-                &ctx.turn.tools_config.codex_home,
+                &ctx.turn.cwd,
                 ctx.call_id,
             ),
             _ => super::format_exec_output_for_model_structured(
@@ -415,7 +415,7 @@ async fn emit_exec_stage(
                     &output,
                     ctx.turn.truncation_policy,
                     ctx.turn.truncation_bias,
-                    &ctx.turn.tools_config.codex_home,
+                    &ctx.turn.cwd,
                     ctx.call_id,
                 ),
             };

@@ -11,6 +11,7 @@ use crate::error::Result as CodexResult;
 use crate::features::Feature;
 use crate::model_provider_info::ModelProviderInfo;
 use crate::model_provider_info::WireApi;
+use crate::openai_models::model_family::InstructionMode;
 use crate::protocol::CompactedItem;
 use crate::protocol::ContextCompactedEvent;
 use crate::protocol::EventMsg;
@@ -31,6 +32,7 @@ use serde::Deserialize;
 use tracing::error;
 
 pub const SUMMARIZATION_PROMPT: &str = include_str!("../templates/compact/prompt.md");
+pub const UPDATE_PROMPT: &str = include_str!("../templates/compact/update_prompt.md");
 pub const SUMMARY_PREFIX: &str = include_str!("../templates/compact/summary_prefix.md");
 
 /// System prompt for the summarization model.
@@ -308,14 +310,41 @@ async fn run_compact_task_inner(
         );
 
         // Create history with just our compaction request
-        let compaction_input = vec![ResponseItem::Message {
-            id: None,
-            role: "user".to_string(),
-            content: vec![ContentItem::InputText { text: prompt_text }],
-        }];
+        // For Strict mode, the SUMMARIZATION_SYSTEM_PROMPT needs to be in the input
+        // as a developer message since base_instructions_override is ignored.
+        let model_family = turn_context.client.get_model_family();
+        let (base_instructions_override, compaction_input) = match model_family.instruction_mode {
+            InstructionMode::Strict => {
+                // Inject as developer message for Strict mode
+                let input = vec![
+                    ResponseItem::Message {
+                        id: None,
+                        role: "developer".to_string(),
+                        content: vec![ContentItem::InputText {
+                            text: SUMMARIZATION_SYSTEM_PROMPT.to_string(),
+                        }],
+                    },
+                    ResponseItem::Message {
+                        id: None,
+                        role: "user".to_string(),
+                        content: vec![ContentItem::InputText { text: prompt_text }],
+                    },
+                ];
+                (None, input)
+            }
+            InstructionMode::Prefix | InstructionMode::Flexible => {
+                // Use base_instructions_override for non-Strict modes
+                let input = vec![ResponseItem::Message {
+                    id: None,
+                    role: "user".to_string(),
+                    content: vec![ContentItem::InputText { text: prompt_text }],
+                }];
+                (Some(SUMMARIZATION_SYSTEM_PROMPT.to_string()), input)
+            }
+        };
 
         let prompt = Prompt {
-            base_instructions_override: Some(SUMMARIZATION_SYSTEM_PROMPT.to_string()),
+            base_instructions_override,
             input: compaction_input,
             ..Default::default()
         };
@@ -464,10 +493,11 @@ fn extract_previous_summary(history: &[ResponseItem]) -> Option<PreviousSummary>
 }
 
 /// Builds the compaction prompt text with XML-wrapped sections.
+/// Uses UPDATE_PROMPT when a previous summary exists for proper iterative updates.
 fn build_compaction_prompt_text(
     previous_summary: &Option<&str>,
     serialized_conversation: &str,
-    compaction_instructions: &str,
+    initial_instructions: &str,
 ) -> String {
     let mut prompt = String::new();
 
@@ -483,8 +513,12 @@ fn build_compaction_prompt_text(
     prompt.push_str(serialized_conversation);
     prompt.push_str("\n</conversation>\n\n");
 
-    // Add compaction instructions
-    prompt.push_str(compaction_instructions);
+    // Use UPDATE_PROMPT when there's a previous summary, otherwise use initial instructions
+    if previous_summary.is_some() {
+        prompt.push_str(UPDATE_PROMPT);
+    } else {
+        prompt.push_str(initial_instructions);
+    }
 
     prompt
 }
@@ -1462,5 +1496,85 @@ mod tests {
             merged.read_file_paths.iter().cloned().collect::<Vec<_>>(),
             vec!["z.txt".to_string()]
         );
+    }
+
+    #[test]
+    fn extract_previous_summary_returns_none_when_no_summary() {
+        let history = vec![user_msg("hello"), assistant_msg("hi there")];
+
+        let result = extract_previous_summary(&history);
+
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn extract_previous_summary_extracts_summary_from_history() {
+        let summary_content = format!(
+            "{}\n## Goal\nTest goal\n\n## Progress\n- Done",
+            SUMMARY_PREFIX
+        );
+        let history = vec![
+            user_msg(&summary_content),
+            user_msg("new question"),
+            assistant_msg("new answer"),
+        ];
+
+        let result = extract_previous_summary(&history);
+
+        assert!(result.is_some());
+        let summary = result.unwrap();
+        assert!(summary.summary_for_prompt.contains("## Goal"));
+        assert!(summary.goal_section.is_some());
+        assert!(summary.goal_section.unwrap().contains("Test goal"));
+    }
+
+    #[test]
+    fn extract_previous_summary_parses_file_ops_from_summary() {
+        let summary_content = format!(
+            "{}\n## Goal\nTest\n\n<file_ops>\n<read_file>\na.txt\n</read_file>\n</file_ops>",
+            SUMMARY_PREFIX
+        );
+        let history = vec![user_msg(&summary_content)];
+
+        let result = extract_previous_summary(&history);
+
+        assert!(result.is_some());
+        let summary = result.unwrap();
+        assert!(summary.file_ops.read_file_paths.contains("a.txt"));
+        // File ops should be stripped from summary_for_prompt
+        assert!(!summary.summary_for_prompt.contains("<file_ops>"));
+    }
+
+    #[test]
+    fn build_compaction_prompt_uses_initial_instructions_without_previous_summary() {
+        let conversation = "[User]: hello";
+        let initial = "Initial instructions here";
+
+        let prompt = build_compaction_prompt_text(&None, conversation, initial);
+
+        assert!(prompt.contains("<conversation>"));
+        assert!(prompt.contains(conversation));
+        assert!(prompt.contains(initial));
+        assert!(!prompt.contains("<previous_summary>"));
+        // Should NOT contain UPDATE_PROMPT content
+        assert!(!prompt.contains("UPDATING an existing summary"));
+    }
+
+    #[test]
+    fn build_compaction_prompt_uses_update_prompt_with_previous_summary() {
+        let prev = Some("## Goal\nOld goal");
+        let conversation = "[User]: hello";
+        let initial = "Initial instructions here";
+
+        let prompt = build_compaction_prompt_text(&prev, conversation, initial);
+
+        assert!(prompt.contains("<previous_summary>"));
+        assert!(prompt.contains("Old goal"));
+        assert!(prompt.contains("<conversation>"));
+        assert!(prompt.contains(conversation));
+        // Should NOT contain initial instructions when previous summary exists
+        assert!(!prompt.contains(initial));
+        // Should contain UPDATE_PROMPT content
+        assert!(prompt.contains("UPDATING an existing summary"));
     }
 }

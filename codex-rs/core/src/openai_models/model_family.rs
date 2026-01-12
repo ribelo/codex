@@ -1,8 +1,10 @@
 use codex_protocol::config_types::Verbosity;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ReasoningEffort;
+use serde::Serialize;
 
 use crate::config::Config;
+use crate::model_provider_info::ProviderKind;
 use crate::tools::handlers::apply_patch::ApplyPatchToolType;
 use crate::truncate::DEFAULT_MCP_TOOL_OUTPUT_BYTES;
 use crate::truncate::DEFAULT_TOOL_OUTPUT_BYTES;
@@ -19,6 +21,40 @@ const GPT_5_2_INSTRUCTIONS: &str = include_str!("../../gpt_5_2_prompt.md");
 const GPT_5_1_CODEX_MAX_INSTRUCTIONS: &str = include_str!("../../gpt-5.1-codex-max_prompt.md");
 const PRAXIS_INSTRUCTIONS: &str = include_str!("../../praxis.md");
 pub(crate) const CONTEXT_WINDOW_272K: i64 = 272_000;
+
+/// The preamble portion of PRAXIS (identity and capabilities).
+/// This is the first section up to and including the capabilities list.
+pub(crate) const PRAXIS_PREAMBLE: &str = r#"You are Codex, a powerful AI coding agent running in a terminal-based coding assistant. You help the user with software engineering tasks. Use the instructions below and the tools available to you to help the user.
+
+Your capabilities:
+
+- Receive user prompts and other context provided by the harness, such as files in the workspace.
+- Communicate with the user by streaming thinking & responses, and by making & updating plans.
+- Emit function calls to run terminal commands and apply patches. Depending on how this specific run is configured, you can request that these function calls be escalated to the user for approval before running. Sandbox and approval settings will be provided in your context.
+"#;
+
+/// The rest of PRAXIS after the preamble (behavior guidelines).
+/// Everything from "# Role & Agency" onwards.
+pub(crate) const PRAXIS_REST: &str = include_str!("../../praxis_rest.md");
+
+/// Preamble for Antigravity provider.
+pub(crate) const ANTIGRAVITY_PREAMBLE: &str = r#"You are Antigravity, a powerful agentic AI coding assistant designed by the Google Deepmind team working on Advanced Agentic Coding."#;
+
+/// Determines how instructions are handled for different model providers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum InstructionMode {
+    /// OpenAI GPT-5.x models: must use exact base_instructions, extras go in user message.
+    /// These models reject custom instructions that deviate from their expected format.
+    Strict,
+
+    /// Antigravity provider: prepend Antigravity preamble to PRAXIS_REST or subagent prompt.
+    Prefix,
+
+    /// Claude/Gemini/OpenRouter: full control over instructions, can use custom prompts.
+    #[default]
+    Flexible,
+}
 
 /// Returns a sensible default context window for a model based on its slug.
 /// This is used when `model_context_window` is not explicitly set in config.
@@ -112,11 +148,8 @@ pub struct ModelFamily {
     /// Truncation bias for MCP tool output.
     pub mcp_truncation_bias: TruncationBias,
 
-    /// Whether the model requires its base instructions even when overridden.
-    /// When true, base_instructions are prepended to any override (e.g., subagent prompts).
-    /// This is needed for advanced OpenAI models (GPT-5.x, O3, Codex) that have
-    /// critical protocol definitions in their base instructions.
-    pub base_instructions_required: bool,
+    /// How this model family handles instruction injection.
+    pub instruction_mode: InstructionMode,
 }
 
 impl ModelFamily {
@@ -148,6 +181,27 @@ impl ModelFamily {
     pub fn get_model_slug(&self) -> &str {
         &self.slug
     }
+
+    /// Override instruction mode based on provider kind.
+    /// Called after model-based defaults are applied.
+    pub fn with_provider_instruction_mode(mut self, provider_kind: ProviderKind) -> Self {
+        match provider_kind {
+            ProviderKind::Antigravity => {
+                self.instruction_mode = InstructionMode::Prefix;
+            }
+            ProviderKind::OpenAi => {
+                // Keep whatever was set by model slug (typically Strict for GPT-5.x)
+            }
+            ProviderKind::Anthropic
+            | ProviderKind::Gemini
+            | ProviderKind::OpenRouter
+            | ProviderKind::Bedrock => {
+                // Flexible mode for these providers
+                self.instruction_mode = InstructionMode::Flexible;
+            }
+        }
+        self
+    }
 }
 
 macro_rules! model_family {
@@ -176,7 +230,7 @@ macro_rules! model_family {
             truncation_bias: TruncationBias::Balanced,
             mcp_truncation_policy: TruncationPolicy::Bytes(DEFAULT_MCP_TOOL_OUTPUT_BYTES),
             mcp_truncation_bias: TruncationBias::Balanced,
-            base_instructions_required: false,
+            instruction_mode: InstructionMode::Flexible,
         };
 
         // apply overrides
@@ -196,7 +250,7 @@ pub(in crate::openai_models) fn find_family_for_model(slug: &str) -> ModelFamily
             supports_reasoning_summaries: true,
             needs_special_apply_patch_instructions: true,
             context_window: 200_000,
-            base_instructions_required: true,
+            instruction_mode: InstructionMode::Strict,
         )
     } else if slug.starts_with("o4-mini") {
         model_family!(
@@ -204,7 +258,7 @@ pub(in crate::openai_models) fn find_family_for_model(slug: &str) -> ModelFamily
             supports_reasoning_summaries: true,
             needs_special_apply_patch_instructions: true,
             context_window: 200_000,
-            base_instructions_required: true,
+            instruction_mode: InstructionMode::Strict,
         )
     } else if slug.starts_with("codex-mini-latest") {
         model_family!(
@@ -213,7 +267,7 @@ pub(in crate::openai_models) fn find_family_for_model(slug: &str) -> ModelFamily
             needs_special_apply_patch_instructions: true,
             shell_type: ConfigShellToolType::ShellCommand,
             context_window: 200_000,
-            base_instructions_required: true,
+            instruction_mode: InstructionMode::Strict,
         )
     } else if slug.starts_with("gpt-4.1") {
         model_family!(
@@ -258,7 +312,7 @@ pub(in crate::openai_models) fn find_family_for_model(slug: &str) -> ModelFamily
             support_verbosity: true,
             truncation_policy: TruncationPolicy::Tokens(10_000),
             mcp_truncation_policy: TruncationPolicy::Tokens(10_000),
-            base_instructions_required: true,
+            instruction_mode: InstructionMode::Strict,
         )
 
     // Experimental models.
@@ -275,7 +329,7 @@ pub(in crate::openai_models) fn find_family_for_model(slug: &str) -> ModelFamily
             truncation_policy: TruncationPolicy::Tokens(10_000),
             mcp_truncation_policy: TruncationPolicy::Tokens(10_000),
             context_window: CONTEXT_WINDOW_272K,
-            base_instructions_required: true,
+            instruction_mode: InstructionMode::Strict,
         )
     } else if slug.starts_with("exp-") {
         model_family!(
@@ -303,7 +357,7 @@ pub(in crate::openai_models) fn find_family_for_model(slug: &str) -> ModelFamily
             support_verbosity: false,
             truncation_policy: TruncationPolicy::Tokens(10_000),
             context_window: CONTEXT_WINDOW_272K,
-            base_instructions_required: true,
+            instruction_mode: InstructionMode::Strict,
         )
     } else if slug.starts_with("gpt-5.1-codex-max") {
         model_family!(
@@ -317,7 +371,7 @@ pub(in crate::openai_models) fn find_family_for_model(slug: &str) -> ModelFamily
             truncation_policy: TruncationPolicy::Tokens(10_000),
             mcp_truncation_policy: TruncationPolicy::Tokens(10_000),
             context_window: CONTEXT_WINDOW_272K,
-            base_instructions_required: true,
+            instruction_mode: InstructionMode::Strict,
         )
     } else if slug.starts_with("gpt-5.1-codex") || slug.starts_with("codex-") {
         model_family!(
@@ -330,7 +384,7 @@ pub(in crate::openai_models) fn find_family_for_model(slug: &str) -> ModelFamily
             support_verbosity: false,
             truncation_policy: TruncationPolicy::Tokens(10_000),
             mcp_truncation_policy: TruncationPolicy::Tokens(10_000),
-            base_instructions_required: true,
+            instruction_mode: InstructionMode::Strict,
         )
     } else if slug.starts_with("gpt-5.2") {
         model_family!(
@@ -344,7 +398,7 @@ pub(in crate::openai_models) fn find_family_for_model(slug: &str) -> ModelFamily
             truncation_policy: TruncationPolicy::Bytes(10_000),
             shell_type: ConfigShellToolType::ShellCommand,
             context_window: CONTEXT_WINDOW_272K,
-            base_instructions_required: true,
+            instruction_mode: InstructionMode::Strict,
         )
     } else if slug.starts_with("gpt-5.1") {
         model_family!(
@@ -358,7 +412,7 @@ pub(in crate::openai_models) fn find_family_for_model(slug: &str) -> ModelFamily
             truncation_policy: TruncationPolicy::Bytes(DEFAULT_TOOL_OUTPUT_BYTES),
             shell_type: ConfigShellToolType::ShellCommand,
             context_window: CONTEXT_WINDOW_272K,
-            base_instructions_required: true,
+            instruction_mode: InstructionMode::Strict,
         )
     } else if slug.starts_with("claude") {
         model_family!(
@@ -430,7 +484,7 @@ fn derive_default_model_family(model: &str) -> ModelFamily {
         truncation_bias: TruncationBias::Balanced,
         mcp_truncation_policy: TruncationPolicy::Bytes(DEFAULT_MCP_TOOL_OUTPUT_BYTES),
         mcp_truncation_bias: TruncationBias::Balanced,
-        base_instructions_required: false,
+        instruction_mode: InstructionMode::Flexible,
     }
 }
 
