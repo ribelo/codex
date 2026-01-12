@@ -25,6 +25,8 @@ When a reviewer reports a bug, **fix it**. No exceptions.
 - Fix all reported issues, from P0 to P99
 - If you believe a reviewer finding is factually incorrect, verify with documentation/testing, then fix or explain with evidence
 - The goal is zero reported issues, not zero issues you personally introduced
+- When debugging, check user config (`~/.codex/`, `$CODEX_HOME/agents/*.md`, env vars) before writing code
+- If user says "stop" or "you're wrong" - stop immediately, don't defend, ask what to do instead
 
 Run `just fmt` (in `codex-rs` directory) automatically after making Rust code changes; do not ask for approval to run it. **Before declaring any task complete**, run `cargo check --bin codex` to verify the entire binary compiles. Before finalizing a change to `codex-rs`, run `just fix -p <project>` (in `codex-rs` directory) to fix any linter issues in the code. Prefer scoping with `-p` to avoid slow workspace‑wide Clippy builds; only run `just fix` without `-p` if you changed shared crates. Additionally, run the tests:
 
@@ -461,3 +463,4 @@ When upstream shows changes to files like these, **skip them**:
 - Breaking changes are FINE - just document what changed in the commit message
 - This includes config formats and on-disk session/rollout storage; prefer the simplest design even if old files become unreadable
 - Optimize for simplicity + UX/DX over compatibility; we are the only user
+- Config/env fix > code fix. Never build "normalization layers" when fixing the source data takes 10 seconds
