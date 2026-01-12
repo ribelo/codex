@@ -274,12 +274,11 @@ pub const FEATURES: &[FeatureSpec] = &[
         stage: Stage::Stable,
         default_enabled: true,
     },
-    // Unstable features.
     FeatureSpec {
         id: Feature::UnifiedExec,
         key: "unified_exec",
-        stage: Stage::Stable,
-        default_enabled: true,
+        stage: Stage::Beta,
+        default_enabled: false,
     },
     FeatureSpec {
         id: Feature::ApplyPatchFreeform,

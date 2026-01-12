@@ -71,20 +71,30 @@ shared_library!(ConPtyFuncs,
     pub fn ClosePseudoConsole(hpc: HPCON),
 );
 
-fn load_conpty() -> ConPtyFuncs {
-    let kernel = ConPtyFuncs::open(Path::new("kernel32.dll")).expect(
-        "this system does not support conpty.  Windows 10 October 2018 or newer is required",
-    );
-
+fn load_conpty_opt() -> Option<ConPtyFuncs> {
     if let Ok(sideloaded) = ConPtyFuncs::open(Path::new("conpty.dll")) {
-        sideloaded
-    } else {
-        kernel
+        return Some(sideloaded);
     }
+
+    if let Ok(kernel) = ConPtyFuncs::open(Path::new("kernel32.dll")) {
+        return Some(kernel);
+    }
+
+    None
+}
+
+fn load_conpty() -> ConPtyFuncs {
+    load_conpty_opt().expect(
+        "this system does not support conpty.  Windows 10 October 2018 or newer is required",
+    )
 }
 
 lazy_static! {
     static ref CONPTY: ConPtyFuncs = load_conpty();
+}
+
+pub fn conpty_supported() -> bool {
+    load_conpty_opt().is_some()
 }
 
 pub struct PsuedoCon {

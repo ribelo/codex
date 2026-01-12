@@ -201,12 +201,16 @@ async fn prompt_tools_are_consistent_across_requests() -> anyhow::Result<()> {
 
     let tool_names = tool_names0;
     assert!(
-        tool_names.contains(&"exec_command"),
-        "should include exec_command"
+        tool_names.contains(&"shell_command"),
+        "should include shell_command"
     );
     assert!(
-        tool_names.contains(&"write_stdin"),
-        "should include write_stdin"
+        !tool_names.contains(&"exec_command"),
+        "should not include exec_command"
+    );
+    assert!(
+        !tool_names.contains(&"write_stdin"),
+        "should not include write_stdin"
     );
 
     Ok(())

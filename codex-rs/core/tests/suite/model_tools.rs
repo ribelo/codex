@@ -53,8 +53,7 @@ async fn model_selects_expected_tools() {
     assert_eq!(
         codex_tools,
         vec![
-            "exec_command".to_string(),
-            "write_stdin".to_string(),
+            "shell_command".to_string(),
             "list_mcp_resources".to_string(),
             "list_mcp_resource_templates".to_string(),
             "read_mcp_resource".to_string(),
@@ -71,8 +70,7 @@ async fn model_selects_expected_tools() {
     assert_eq!(
         gpt51_codex_tools,
         vec![
-            "exec_command".to_string(),
-            "write_stdin".to_string(),
+            "shell_command".to_string(),
             "list_mcp_resources".to_string(),
             "list_mcp_resource_templates".to_string(),
             "read_mcp_resource".to_string(),
@@ -82,15 +80,14 @@ async fn model_selects_expected_tools() {
             "task".to_string(),
             "view_image".to_string()
         ],
-        "gpt-5.1-codex should expose the apply_patch tool",
+        "gpt-5.1-codex should expose the shell_command tool",
     );
 
     let gpt51_tools = collect_tool_identifiers_for_model("gpt-5.1").await;
     assert_eq!(
         gpt51_tools,
         vec![
-            "exec_command".to_string(),
-            "write_stdin".to_string(),
+            "shell_command".to_string(),
             "list_mcp_resources".to_string(),
             "list_mcp_resource_templates".to_string(),
             "read_mcp_resource".to_string(),
@@ -100,7 +97,7 @@ async fn model_selects_expected_tools() {
             "task".to_string(),
             "view_image".to_string()
         ],
-        "gpt-5.1 should expose the apply_patch tool",
+        "gpt-5.1 should expose the shell_command tool",
     );
     let exp_tools = collect_tool_identifiers_for_model("exp-5.1").await;
     assert_eq!(

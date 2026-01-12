@@ -71,7 +71,11 @@ impl ToolsConfig {
         let shell_type = if !features.enabled(Feature::ShellTool) {
             ConfigShellToolType::Disabled
         } else if features.enabled(Feature::UnifiedExec) {
-            ConfigShellToolType::UnifiedExec
+            if codex_utils_pty::conpty_supported() {
+                ConfigShellToolType::UnifiedExec
+            } else {
+                ConfigShellToolType::ShellCommand
+            }
         } else {
             model_family.shell_type
         };
@@ -1190,8 +1194,14 @@ mod tests {
     use crate::tools::registry::ConfiguredToolSpec;
     use mcp_types::ToolInputSchema;
     use pretty_assertions::assert_eq;
+    use tempfile::TempDir;
 
     use super::*;
+
+    #[allow(clippy::expect_used)]
+    fn temp_codex_home() -> TempDir {
+        TempDir::new().expect("temp codex home")
+    }
 
     fn tool_name(tool: &ToolSpec) -> &str {
         match tool {
@@ -1285,6 +1295,7 @@ mod tests {
     #[test]
     fn test_full_toolset_specs_for_gpt5_codex_unified_exec_web_search() {
         let config = test_config();
+        let codex_home = temp_codex_home();
         let model_family = ModelsManager::construct_model_family_offline("gpt-5.1-codex", &config);
         let mut features = Features::with_defaults();
         features.enable(Feature::UnifiedExec);
@@ -1293,7 +1304,7 @@ mod tests {
         let config = ToolsConfig::new(&ToolsConfigParams {
             model_family: &model_family,
             features: &features,
-            codex_home: std::path::Path::new("."),
+            codex_home: codex_home.path(),
             experimental_tools_enable: &[],
             allowed_subagents: None,
             is_read_only: false,
@@ -1352,11 +1363,12 @@ mod tests {
 
     fn assert_model_tools(model_slug: &str, features: &Features, expected_tools: &[&str]) {
         let config = test_config();
+        let codex_home = temp_codex_home();
         let model_family = ModelsManager::construct_model_family_offline(model_slug, &config);
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_family: &model_family,
             features,
-            codex_home: std::path::Path::new("."),
+            codex_home: codex_home.path(),
             experimental_tools_enable: &[],
             allowed_subagents: None,
             is_read_only: false,
@@ -1373,8 +1385,7 @@ mod tests {
             "gpt-5.1-codex",
             &Features::with_defaults(),
             &[
-                "exec_command",
-                "write_stdin",
+                "shell_command",
                 "list_mcp_resources",
                 "list_mcp_resource_templates",
                 "read_mcp_resource",
@@ -1416,8 +1427,7 @@ mod tests {
             "gpt-5.1-codex-mini",
             &Features::with_defaults(),
             &[
-                "exec_command",
-                "write_stdin",
+                "shell_command",
                 "list_mcp_resources",
                 "list_mcp_resource_templates",
                 "read_mcp_resource",
@@ -1436,8 +1446,7 @@ mod tests {
             "gpt-5.1",
             &Features::with_defaults(),
             &[
-                "exec_command",
-                "write_stdin",
+                "shell_command",
                 "list_mcp_resources",
                 "list_mcp_resource_templates",
                 "read_mcp_resource",
@@ -1473,6 +1482,7 @@ mod tests {
     #[test]
     fn test_build_specs_default_shell_present() {
         let config = test_config();
+        let codex_home = temp_codex_home();
         let model_family = ModelsManager::construct_model_family_offline("o3", &config);
         let mut features = Features::with_defaults();
         features.enable(Feature::WebSearchRequest);
@@ -1480,7 +1490,7 @@ mod tests {
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_family: &model_family,
             features: &features,
-            codex_home: std::path::Path::new("."),
+            codex_home: codex_home.path(),
             experimental_tools_enable: &[],
             allowed_subagents: None,
             is_read_only: false,
@@ -1500,6 +1510,7 @@ mod tests {
     #[ignore]
     fn test_parallel_support_flags() {
         let config = test_config();
+        let codex_home = temp_codex_home();
         let model_family = ModelsManager::construct_model_family_offline("gpt-5.1-codex", &config);
         let mut features = Features::with_defaults();
         features.disable(Feature::ViewImageTool);
@@ -1507,7 +1518,7 @@ mod tests {
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_family: &model_family,
             features: &features,
-            codex_home: std::path::Path::new("."),
+            codex_home: codex_home.path(),
             experimental_tools_enable: &[],
             allowed_subagents: None,
             is_read_only: false,
@@ -1526,6 +1537,7 @@ mod tests {
     #[test]
     fn test_test_model_family_includes_sync_tool() {
         let config = test_config();
+        let codex_home = temp_codex_home();
         let model_family =
             ModelsManager::construct_model_family_offline("test-gpt-5.1-codex", &config);
         let mut features = Features::with_defaults();
@@ -1533,7 +1545,7 @@ mod tests {
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_family: &model_family,
             features: &features,
-            codex_home: std::path::Path::new("."),
+            codex_home: codex_home.path(),
             experimental_tools_enable: &[],
             allowed_subagents: None,
             is_read_only: false,
@@ -1562,6 +1574,7 @@ mod tests {
     #[test]
     fn test_build_specs_mcp_tools_converted() {
         let config = test_config();
+        let codex_home = temp_codex_home();
         let model_family = ModelsManager::construct_model_family_offline("o3", &config);
         let mut features = Features::with_defaults();
         features.enable(Feature::UnifiedExec);
@@ -1569,7 +1582,7 @@ mod tests {
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_family: &model_family,
             features: &features,
-            codex_home: std::path::Path::new("."),
+            codex_home: codex_home.path(),
             experimental_tools_enable: &[],
             allowed_subagents: None,
             is_read_only: false,
@@ -1662,13 +1675,14 @@ mod tests {
     #[test]
     fn test_build_specs_mcp_tools_sorted_by_name() {
         let config = test_config();
+        let codex_home = temp_codex_home();
         let model_family = ModelsManager::construct_model_family_offline("o3", &config);
         let mut features = Features::with_defaults();
         features.enable(Feature::UnifiedExec);
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_family: &model_family,
             features: &features,
-            codex_home: std::path::Path::new("."),
+            codex_home: codex_home.path(),
             experimental_tools_enable: &[],
             allowed_subagents: None,
             is_read_only: false,
@@ -1743,6 +1757,7 @@ mod tests {
     #[test]
     fn test_mcp_tool_property_missing_type_defaults_to_string() {
         let config = test_config();
+        let codex_home = temp_codex_home();
         let model_family = ModelsManager::construct_model_family_offline("gpt-5.1-codex", &config);
         let mut features = Features::with_defaults();
         features.enable(Feature::UnifiedExec);
@@ -1750,7 +1765,7 @@ mod tests {
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_family: &model_family,
             features: &features,
-            codex_home: std::path::Path::new("."),
+            codex_home: codex_home.path(),
             experimental_tools_enable: &[],
             allowed_subagents: None,
             is_read_only: false,
@@ -1805,6 +1820,7 @@ mod tests {
     #[test]
     fn test_mcp_tool_integer_normalized_to_number() {
         let config = test_config();
+        let codex_home = temp_codex_home();
         let model_family = ModelsManager::construct_model_family_offline("gpt-5.1-codex", &config);
         let mut features = Features::with_defaults();
         features.enable(Feature::UnifiedExec);
@@ -1812,7 +1828,7 @@ mod tests {
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_family: &model_family,
             features: &features,
-            codex_home: std::path::Path::new("."),
+            codex_home: codex_home.path(),
             experimental_tools_enable: &[],
             allowed_subagents: None,
             is_read_only: false,
@@ -1863,6 +1879,7 @@ mod tests {
     #[test]
     fn test_mcp_tool_array_without_items_gets_default_string_items() {
         let config = test_config();
+        let codex_home = temp_codex_home();
         let model_family = ModelsManager::construct_model_family_offline("gpt-5.1-codex", &config);
         let mut features = Features::with_defaults();
         features.enable(Feature::UnifiedExec);
@@ -1871,7 +1888,7 @@ mod tests {
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_family: &model_family,
             features: &features,
-            codex_home: std::path::Path::new("."),
+            codex_home: codex_home.path(),
             experimental_tools_enable: &[],
             allowed_subagents: None,
             is_read_only: false,
@@ -1925,6 +1942,7 @@ mod tests {
     #[test]
     fn test_mcp_tool_anyof_defaults_to_string() {
         let config = test_config();
+        let codex_home = temp_codex_home();
         let model_family = ModelsManager::construct_model_family_offline("gpt-5.1-codex", &config);
         let mut features = Features::with_defaults();
         features.enable(Feature::UnifiedExec);
@@ -1932,7 +1950,7 @@ mod tests {
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_family: &model_family,
             features: &features,
-            codex_home: std::path::Path::new("."),
+            codex_home: codex_home.path(),
             experimental_tools_enable: &[],
             allowed_subagents: None,
             is_read_only: false,
@@ -2012,6 +2030,7 @@ Examples of valid command strings:
     #[test]
     fn test_get_openai_tools_mcp_tools_with_additional_properties_schema() {
         let config = test_config();
+        let codex_home = temp_codex_home();
         let model_family = ModelsManager::construct_model_family_offline("gpt-5.1-codex", &config);
         let mut features = Features::with_defaults();
         features.enable(Feature::UnifiedExec);
@@ -2019,7 +2038,7 @@ Examples of valid command strings:
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_family: &model_family,
             features: &features,
-            codex_home: std::path::Path::new("."),
+            codex_home: codex_home.path(),
             experimental_tools_enable: &[],
             allowed_subagents: None,
             is_read_only: false,
@@ -2186,6 +2205,7 @@ Examples of valid command strings:
     fn test_experimental_tools_enable_from_config() {
         // Test that tools can be added via config's experimental_enable
         let config = test_config();
+        let codex_home = temp_codex_home();
         let model_family = ModelsManager::construct_model_family_offline("gpt-5.1-codex", &config);
         let features = Features::with_defaults();
 
@@ -2193,7 +2213,7 @@ Examples of valid command strings:
         let config_without_enable = ToolsConfig::new(&ToolsConfigParams {
             model_family: &model_family,
             features: &features,
-            codex_home: std::path::Path::new("."),
+            codex_home: codex_home.path(),
             experimental_tools_enable: &[],
             allowed_subagents: None,
             is_read_only: false,
@@ -2211,7 +2231,7 @@ Examples of valid command strings:
         let config_with_enable = ToolsConfig::new(&ToolsConfigParams {
             model_family: &model_family,
             features: &features,
-            codex_home: std::path::Path::new("."),
+            codex_home: codex_home.path(),
             experimental_tools_enable: &["read_file".to_string()],
             allowed_subagents: None,
             is_read_only: false,
@@ -2230,6 +2250,7 @@ Examples of valid command strings:
     fn test_experimental_tools_enable_deduplicates() {
         // Test that duplicate entries are deduplicated
         let base_config = test_config();
+        let codex_home = temp_codex_home();
         let model_family =
             ModelsManager::construct_model_family_offline("gpt-5.1-codex", &base_config);
         let features = Features::with_defaults();
@@ -2237,7 +2258,7 @@ Examples of valid command strings:
         let config = ToolsConfig::new(&ToolsConfigParams {
             model_family: &model_family,
             features: &features,
-            codex_home: std::path::Path::new("."),
+            codex_home: codex_home.path(),
             experimental_tools_enable: &[
                 "read_file".to_string(),
                 "read_file".to_string(),
@@ -2262,6 +2283,7 @@ Examples of valid command strings:
         use std::path::PathBuf;
 
         let base_config = test_config();
+        let codex_home = temp_codex_home();
         let model_family =
             ModelsManager::construct_model_family_offline("gpt-5.1-codex", &base_config);
         let mut features = Features::with_defaults();
@@ -2272,7 +2294,7 @@ Examples of valid command strings:
         let config = ToolsConfig::new(&ToolsConfigParams {
             model_family: &model_family,
             features: &features,
-            codex_home: std::path::Path::new("."),
+            codex_home: codex_home.path(),
             experimental_tools_enable: &[],
             allowed_subagents: None,
             is_read_only: false,
