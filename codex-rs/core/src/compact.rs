@@ -1509,10 +1509,8 @@ mod tests {
 
     #[test]
     fn extract_previous_summary_extracts_summary_from_history() {
-        let summary_content = format!(
-            "{}\n## Goal\nTest goal\n\n## Progress\n- Done",
-            SUMMARY_PREFIX
-        );
+        let summary_content =
+            format!("{SUMMARY_PREFIX}\n## Goal\nTest goal\n\n## Progress\n- Done");
         let history = vec![
             user_msg(&summary_content),
             user_msg("new question"),
@@ -1531,8 +1529,7 @@ mod tests {
     #[test]
     fn extract_previous_summary_parses_file_ops_from_summary() {
         let summary_content = format!(
-            "{}\n## Goal\nTest\n\n<file_ops>\n<read_file>\na.txt\n</read_file>\n</file_ops>",
-            SUMMARY_PREFIX
+            "{SUMMARY_PREFIX}\n## Goal\nTest\n\n<file_ops>\n<read_file>\na.txt\n</read_file>\n</file_ops>"
         );
         let history = vec![user_msg(&summary_content)];
 

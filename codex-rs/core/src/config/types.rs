@@ -17,6 +17,31 @@ use serde::de::Error as SerdeError;
 
 pub const DEFAULT_OTEL_ENVIRONMENT: &str = "dev";
 
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct AgentConfigToml {
+    pub name: String,
+    pub model: Option<String>,
+    pub reasoning_effort: Option<SubagentReasoningEffort>,
+    pub enabled: Option<bool>,
+}
+
+/// Reasoning effort setting for subagents, with an additional `Inherit` variant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum SubagentReasoningEffort {
+    /// Inherit the parent session's reasoning effort.
+    #[default]
+    Inherit,
+    None,
+    Minimal,
+    Low,
+    Medium,
+    High,
+    #[serde(alias = "x-high")]
+    XHigh,
+}
+
 #[derive(Serialize, Debug, Clone, PartialEq)]
 pub struct McpServerConfig {
     #[serde(flatten)]

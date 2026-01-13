@@ -1945,9 +1945,9 @@ async fn subagent_request_includes_template_system_prompt() {
     let combined = user_messages.join("\n");
 
     let finder_template_path =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("templates/subagents/finder.md");
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/subagents/finder.md");
     let finder_template =
-        std::fs::read_to_string(&finder_template_path).expect("read templates/subagents/finder.md");
+        std::fs::read_to_string(&finder_template_path).expect("read src/subagents/finder.md");
     let finder_system_prompt = finder_template
         .splitn(3, "---\n")
         .nth(2)

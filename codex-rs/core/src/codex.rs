@@ -520,6 +520,7 @@ impl Session {
             experimental_tools_enable: &session_configuration
                 .original_config_do_not_use
                 .experimental_tools_enable,
+            agent: &session_configuration.original_config_do_not_use.agent,
             // Pass through allowed_subagents from config (None for root, restricted for subagents)
             allowed_subagents: session_configuration
                 .original_config_do_not_use

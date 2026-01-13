@@ -143,10 +143,21 @@ impl ToolHandler for ReadSessionHandler {
         );
 
         // Look up the session_reader agent
-        let registry = SubagentRegistry::new(&codex_home);
+        let config = config.clone();
+        let registry_config = config.clone();
+        let registry = tokio::task::spawn_blocking({
+            let codex_home = codex_home.clone();
+            move || SubagentRegistry::new(&codex_home, registry_config.as_ref())
+        })
+        .await
+        .map_err(|e| {
+            FunctionCallError::Fatal(format!(
+                "Failed to load subagent registry (read_session): {e}"
+            ))
+        })?;
         let subagent_def = registry.get("session_reader").ok_or_else(|| {
             FunctionCallError::Fatal(
-                "Internal agent 'session_reader' not found. Ensure built-in agents are installed."
+                "Internal agent 'session_reader' not found. Ensure built-in agents are enabled."
                     .to_string(),
             )
         })?;

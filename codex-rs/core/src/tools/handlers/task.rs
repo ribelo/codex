@@ -33,6 +33,7 @@ use uuid::Uuid;
 use crate::client_common::tools::ResponsesApiTool;
 use crate::client_common::tools::ToolSpec;
 use crate::codex_delegate::run_codex_conversation_interactive;
+use crate::config::types::AgentConfigToml;
 use crate::function_tool::FunctionCallError;
 use crate::model_provider_info::ProviderKind;
 use crate::model_provider_info::built_in_model_providers;
@@ -107,8 +108,12 @@ fn build_subagent_prompt_plan(
     }
 }
 
-pub fn create_task_tool(codex_home: &Path, allowed_subagents: Option<&[String]>) -> ToolSpec {
-    let registry = SubagentRegistry::new(codex_home);
+pub fn create_task_tool(
+    codex_home: &Path,
+    agent_overrides: &[AgentConfigToml],
+    allowed_subagents: Option<&[String]>,
+) -> ToolSpec {
+    let registry = SubagentRegistry::new_with_agent_overrides(codex_home, agent_overrides);
     let agents_list: Vec<_> = registry
         .list()
         .into_iter()
@@ -282,7 +287,17 @@ impl ToolHandler for TaskHandler {
 
         let codex_home = turn.client.config().codex_home.clone();
 
-        let registry = SubagentRegistry::new(&codex_home);
+        let config = turn.client.config();
+        let registry = tokio::task::spawn_blocking({
+            let codex_home = codex_home.clone();
+            move || SubagentRegistry::new(&codex_home, config.as_ref())
+        })
+        .await
+        .map_err(|e| {
+            FunctionCallError::Fatal(format!(
+                "Failed to load subagent registry (task handler): {e}"
+            ))
+        })?;
         let subagent_def = registry.get(&args.subagent_name).ok_or_else(|| {
             let available: Vec<String> = registry.list().iter().map(|a| a.slug.clone()).collect();
             let available_str = if available.is_empty() {
@@ -291,7 +306,7 @@ impl ToolHandler for TaskHandler {
                 available.join(", ")
             };
             FunctionCallError::RespondToModel(format!(
-                "Unknown subagent_name '{}'. Available subagents: {}. Ensure a matching .md exists in ~/.codex/agents",
+                "Unknown subagent_name '{}'. Available subagents: {}.",
                 args.subagent_name, available_str
             ))
         })?;

@@ -1,4 +1,5 @@
 use crate::auth::AuthCredentialsStoreMode;
+use crate::config::types::AgentConfigToml;
 use crate::config::types::DEFAULT_OTEL_ENVIRONMENT;
 use crate::config::types::GhostSnapshotToml;
 use crate::config::types::HandoffConfig;
@@ -289,6 +290,9 @@ pub struct Config {
     /// - `Some(vec![])`: no access to any subagents
     /// - `Some(vec!["agent1", ...])`: access only to listed subagents
     pub allowed_subagents: Option<Vec<String>>,
+
+    /// Overrides for built-in subagents loaded from config.toml (`[[agent]]` entries).
+    pub agent: Vec<AgentConfigToml>,
     /// If set to `true`, used only the experimental unified exec tool.
     pub use_experimental_unified_exec_tool: bool,
 
@@ -691,6 +695,9 @@ pub struct ConfigToml {
     pub chatgpt_base_url: Option<String>,
 
     pub projects: Option<HashMap<String, ProjectConfig>>,
+
+    #[serde(default)]
+    pub agent: Vec<AgentConfigToml>,
 
     /// Nested tools section for feature toggles
     pub tools: Option<ToolsToml>,
@@ -1345,6 +1352,7 @@ impl Config {
             experimental_tools_enable,
             // Root sessions have full access to all subagents (None)
             allowed_subagents: None,
+            agent: cfg.agent,
             use_experimental_unified_exec_tool,
             features,
             active_profile: active_profile_name,
@@ -3152,6 +3160,7 @@ model_verbosity = "high"
                 tools_web_search_request: false,
                 experimental_tools_enable: vec![],
                 allowed_subagents: None,
+                agent: vec![],
                 use_experimental_unified_exec_tool: false,
                 features: Features::with_defaults(),
                 active_profile: Some("o3".to_string()),
@@ -3235,6 +3244,7 @@ model_verbosity = "high"
             tools_web_search_request: false,
             experimental_tools_enable: vec![],
             allowed_subagents: None,
+            agent: vec![],
             use_experimental_unified_exec_tool: false,
             features: Features::with_defaults(),
             active_profile: Some("gpt3".to_string()),
@@ -3333,6 +3343,7 @@ model_verbosity = "high"
             tools_web_search_request: false,
             experimental_tools_enable: vec![],
             allowed_subagents: None,
+            agent: vec![],
             use_experimental_unified_exec_tool: false,
             features: Features::with_defaults(),
             active_profile: Some("zdr".to_string()),
@@ -3417,6 +3428,7 @@ model_verbosity = "high"
             tools_web_search_request: false,
             experimental_tools_enable: vec![],
             allowed_subagents: None,
+            agent: vec![],
             use_experimental_unified_exec_tool: false,
             features: Features::with_defaults(),
             active_profile: Some("gpt5".to_string()),

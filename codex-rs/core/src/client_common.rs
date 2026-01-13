@@ -6,7 +6,6 @@ use crate::openai_models::model_family::ModelFamily;
 use crate::openai_models::model_family::PRAXIS_REST;
 pub use codex_api::common::ResponseEvent;
 use codex_apply_patch::APPLY_PATCH_TOOL_INSTRUCTIONS;
-use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use futures::Stream;
 use serde::Deserialize;
@@ -64,6 +63,7 @@ impl Prompt {
                     .as_deref()
                     .unwrap_or(PRAXIS_REST);
                 let mut result = format!("{ANTIGRAVITY_PREAMBLE}\n\n{content}");
+                self.append_sandbox_and_approvals_if_needed(&mut result);
                 self.append_apply_patch_instructions_if_needed(model, &mut result);
                 Cow::Owned(result)
             }
@@ -74,10 +74,21 @@ impl Prompt {
                     None => Cow::Borrowed(model.base_instructions.deref()),
                 };
                 let mut result = base.into_owned();
+                self.append_sandbox_and_approvals_if_needed(&mut result);
                 self.append_apply_patch_instructions_if_needed(model, &mut result);
                 Cow::Owned(result)
             }
         }
+    }
+
+    fn append_sandbox_and_approvals_if_needed(&self, result: &mut String) {
+        let sandbox_marker = "Filesystem sandboxing defines which files can be read or written.";
+        if result.contains(sandbox_marker) {
+            return;
+        }
+
+        result.push_str("\n\n");
+        result.push_str(SANDBOX_AND_APPROVALS_PROMPT);
     }
 
     fn append_apply_patch_instructions_if_needed(&self, model: &ModelFamily, result: &mut String) {
@@ -110,48 +121,8 @@ impl Prompt {
         input
     }
 
-    pub(crate) fn get_formatted_input_for_model(&self, model: &ModelFamily) -> Vec<ResponseItem> {
-        let mut input = self.get_formatted_input();
-
-        let strict_instructions_include_sandbox = model
-            .base_instructions
-            .contains("Filesystem sandboxing defines which files can be read or written.");
-        if model.instruction_mode != InstructionMode::Strict || !strict_instructions_include_sandbox
-        {
-            prepend_sandbox_and_approvals_to_first_user_message(&mut input);
-        }
-
-        input
-    }
-}
-
-fn prepend_sandbox_and_approvals_to_first_user_message(items: &mut Vec<ResponseItem>) {
-    let sandbox_marker = "## Filesystem sandboxing";
-
-    for item in items {
-        let ResponseItem::Message { role, content, .. } = item else {
-            continue;
-        };
-        if role != "user" {
-            continue;
-        }
-
-        let already_present = content.iter().any(|item| match item {
-            ContentItem::InputText { text } | ContentItem::OutputText { text, .. } => {
-                text.contains(sandbox_marker)
-            }
-            ContentItem::InputImage { .. } => false,
-        });
-        if !already_present {
-            content.insert(
-                0,
-                ContentItem::InputText {
-                    text: SANDBOX_AND_APPROVALS_PROMPT.to_string(),
-                },
-            );
-        }
-
-        break;
+    pub(crate) fn get_formatted_input_for_model(&self, _model: &ModelFamily) -> Vec<ResponseItem> {
+        self.get_formatted_input()
     }
 }
 
@@ -316,6 +287,7 @@ mod tests {
     use codex_api::common::OpenAiVerbosity;
     use codex_api::common::TextControls;
     use codex_api::create_text_param_for_request;
+    use codex_protocol::models::ContentItem;
     use pretty_assertions::assert_eq;
 
     use crate::config::test_config;
@@ -390,6 +362,12 @@ mod tests {
                 }
                 InstructionMode::Prefix | InstructionMode::Flexible => {
                     let mut result = model_family.base_instructions.to_string();
+                    if !result.contains(
+                        "Filesystem sandboxing defines which files can be read or written.",
+                    ) {
+                        result.push_str("\n\n");
+                        result.push_str(SANDBOX_AND_APPROVALS_PROMPT);
+                    }
                     if test_case.expects_apply_patch_instructions {
                         result.push('\n');
                         result.push_str(APPLY_PATCH_TOOL_INSTRUCTIONS);
@@ -409,7 +387,7 @@ mod tests {
     }
 
     #[test]
-    fn formatted_input_prepends_sandbox_for_non_strict_modes() {
+    fn non_strict_modes_append_sandbox_to_instructions() {
         let config = test_config();
         let model_family = ModelsManager::construct_model_family_offline("claude-sonnet", &config);
 
@@ -425,52 +403,16 @@ mod tests {
             }],
             ..Default::default()
         };
-        let formatted = prompt.get_formatted_input_for_model(&model_family);
-
-        let first_user = formatted
-            .iter()
-            .find_map(|item| match item {
-                ResponseItem::Message { role, content, .. } if role == "user" => Some(content),
-                _ => None,
-            })
-            .expect("should have user message");
-
-        let combined = first_user
-            .iter()
-            .filter_map(|item| match item {
-                ContentItem::InputText { text } | ContentItem::OutputText { text, .. } => {
-                    (!text.is_empty()).then_some(text.as_str())
-                }
-                ContentItem::InputImage { .. } => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(combined.contains("## Filesystem sandboxing"));
+        let instructions = prompt.get_full_instructions(&model_family);
+        assert!(instructions.contains("## Filesystem sandboxing"));
 
         let mut prefix_config = test_config();
         prefix_config.model_provider.provider_kind = ProviderKind::Antigravity;
         let prefix_family = ModelsManager::construct_model_family_offline("gpt-4o", &prefix_config);
         assert_eq!(prefix_family.instruction_mode, InstructionMode::Prefix);
 
-        let formatted_prefix = prompt.get_formatted_input_for_model(&prefix_family);
-        let first_user_prefix = formatted_prefix
-            .iter()
-            .find_map(|item| match item {
-                ResponseItem::Message { role, content, .. } if role == "user" => Some(content),
-                _ => None,
-            })
-            .expect("should have user message");
-        let combined_prefix = first_user_prefix
-            .iter()
-            .filter_map(|item| match item {
-                ContentItem::InputText { text } | ContentItem::OutputText { text, .. } => {
-                    (!text.is_empty()).then_some(text.as_str())
-                }
-                ContentItem::InputImage { .. } => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(combined_prefix.contains("## Filesystem sandboxing"));
+        let prefix_instructions = prompt.get_full_instructions(&prefix_family);
+        assert!(prefix_instructions.contains("## Filesystem sandboxing"));
     }
 
     #[test]
@@ -522,7 +464,7 @@ mod tests {
             instructions.starts_with("Custom subagent prompt"),
             "Flexible mode should use override as base"
         );
-        assert!(!instructions.contains("## Filesystem sandboxing"));
+        assert!(instructions.contains("## Filesystem sandboxing"));
     }
 
     #[test]

@@ -161,11 +161,14 @@ pub async fn run_main(
     let available_profiles: Vec<String> = config_toml.profiles.keys().cloned().collect();
 
     // Load available subagents for @ mentions
-    let subagent_outcome = codex_core::subagents::load_subagents(&codex_home).await;
-    let available_agents: Vec<String> = subagent_outcome
-        .agents
+    let subagent_registry = codex_core::subagents::SubagentRegistry::new_with_agent_overrides(
+        &codex_home,
+        &config_toml.agent,
+    );
+    let available_agents: Vec<String> = subagent_registry
+        .list()
         .into_iter()
-        .map(|a| a.slug)
+        .map(|a| a.slug.clone())
         .collect();
 
     // Use model from CLI if provided.

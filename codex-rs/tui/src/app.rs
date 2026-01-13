@@ -193,7 +193,7 @@ impl App {
             model = updated_model;
         }
 
-        let subagent_outcome = load_subagents(&config.codex_home).await;
+        let subagent_outcome = load_subagents(&config.codex_home, &config).await;
         if !subagent_outcome.errors.is_empty() {
             match run_subagent_error_prompt(tui, &subagent_outcome.errors).await {
                 SubagentErrorPromptOutcome::Exit => {

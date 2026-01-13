@@ -6,10 +6,14 @@ use std::sync::Arc;
 use anyhow::Context;
 use anyhow::Result;
 use serde::Deserialize;
+use tracing::debug;
 use tracing::info;
 use tracing::warn;
 
 use crate::codex::Codex;
+use crate::config::Config;
+use crate::config::types::AgentConfigToml;
+use crate::config::types::SubagentReasoningEffort;
 use crate::openai_models::model_family::InstructionMode;
 use crate::protocol::AskForApproval;
 use crate::protocol::SandboxPolicy;
@@ -80,22 +84,6 @@ impl SubagentModel {
             SubagentModel::Canonical(canonical_model_id) => Some(canonical_model_id),
         }
     }
-}
-
-/// Reasoning effort setting for subagents, with an additional `Inherit` variant.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum SubagentReasoningEffort {
-    /// Inherit the parent session's reasoning effort.
-    #[default]
-    Inherit,
-    None,
-    Minimal,
-    Low,
-    Medium,
-    High,
-    #[serde(alias = "x-high")]
-    XHigh,
 }
 
 impl SubagentReasoningEffort {
@@ -258,96 +246,68 @@ pub struct SubagentRegistry {
     agents: HashMap<String, SubagentDefinition>,
 }
 
-/// Built-in review agent template (frontmatter + system prompt).
-const BUILTIN_REVIEW_AGENT: &str = include_str!("../templates/subagents/review.md");
-
-/// Built-in finder agent template.
-const BUILTIN_FINDER_AGENT: &str = include_str!("../templates/subagents/finder.md");
-
-/// Built-in rush agent template.
-const BUILTIN_RUSH_AGENT: &str = include_str!("../templates/subagents/rush.md");
-
-/// Built-in oracle agent template.
-const BUILTIN_ORACLE_AGENT: &str = include_str!("../templates/subagents/oracle.md");
-
-/// Built-in general agent template.
-const BUILTIN_GENERAL_AGENT: &str = include_str!("../templates/subagents/general.md");
-
-/// Built-in librarian agent template.
-const BUILTIN_LIBRARIAN_AGENT: &str = include_str!("../templates/subagents/librarian.md");
-
-/// Built-in painter agent template.
-const BUILTIN_PAINTER_AGENT: &str = include_str!("../templates/subagents/painter.md");
-
-/// Built-in session_reader agent template (internal).
-const BUILTIN_SESSION_READER_AGENT: &str = include_str!("../templates/subagents/session_reader.md");
-
-/// Ensure built-in agents exist in the agents directory.
-/// Creates the agents directory and any missing built-in agent files.
-pub fn ensure_builtin_agents(codex_home: &Path) {
-    let agents_dir = codex_home.join("agents");
-
-    // Create agents directory if it doesn't exist
-    if let Err(e) = std::fs::create_dir_all(&agents_dir) {
-        warn!("Failed to create agents directory: {e}");
-        return;
-    }
-
-    // List of (filename, content) for built-in agents
-    let builtin_agents: &[(&str, &str)] = &[
-        ("review.md", BUILTIN_REVIEW_AGENT),
-        ("finder.md", BUILTIN_FINDER_AGENT),
-        ("rush.md", BUILTIN_RUSH_AGENT),
-        ("oracle.md", BUILTIN_ORACLE_AGENT),
-        ("general.md", BUILTIN_GENERAL_AGENT),
-        ("librarian.md", BUILTIN_LIBRARIAN_AGENT),
-        ("painter.md", BUILTIN_PAINTER_AGENT),
-        ("session_reader.md", BUILTIN_SESSION_READER_AGENT),
-    ];
-
-    for (filename, content) in builtin_agents {
-        let path = agents_dir.join(filename);
-        if !path.exists() {
-            if let Err(e) = std::fs::write(&path, content) {
-                warn!("Failed to create built-in agent {filename}: {e}");
-            } else {
-                info!(path = %path.display(), "Created built-in agent");
-            }
-        }
-    }
-}
+const BUILTIN_AGENTS: &[(&str, &str)] = &[
+    ("review", include_str!("subagents/review.md")),
+    ("finder", include_str!("subagents/finder.md")),
+    ("rush", include_str!("subagents/rush.md")),
+    ("oracle", include_str!("subagents/oracle.md")),
+    ("general", include_str!("subagents/general.md")),
+    ("librarian", include_str!("subagents/librarian.md")),
+    ("painter", include_str!("subagents/painter.md")),
+    (
+        "session_reader",
+        include_str!("subagents/session_reader.md"),
+    ),
+];
 
 /// Load and validate all subagents from the agents directory.
 /// Returns both successfully loaded agents and errors for invalid ones.
-pub async fn load_subagents(codex_home: &Path) -> SubagentLoadOutcome {
+pub async fn load_subagents(codex_home: &Path, config: &Config) -> SubagentLoadOutcome {
     let started = std::time::Instant::now();
     let mut outcome = SubagentLoadOutcome::default();
     let agents_dir = codex_home.join("agents");
 
-    // Ensure built-in agents exist before loading
-    ensure_builtin_agents(codex_home);
+    let mut agents_by_slug: HashMap<String, SubagentDefinition> = HashMap::new();
 
-    let entries = match std::fs::read_dir(&agents_dir) {
-        Ok(entries) => entries,
-        Err(_) => return outcome,
-    };
+    for (slug, content) in BUILTIN_AGENTS {
+        match SubagentRegistry::load_agent_from_str(slug, content) {
+            Ok(agent) => {
+                agents_by_slug.insert(slug.to_string(), agent);
+            }
+            Err(e) => {
+                warn!("Failed to load built-in subagent '{slug}': {e}");
+            }
+        }
+    }
 
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().is_some_and(|ext| ext == "md")
-            && let Some(slug) = path.file_stem().and_then(|s| s.to_str())
-        {
-            match SubagentRegistry::load_agent(&path, slug) {
-                Ok(agent) => outcome.agents.push(agent),
-                Err(e) => {
-                    outcome.errors.push(SubagentError {
-                        path,
-                        message: e.to_string(),
-                    });
+    if let Ok(entries) = std::fs::read_dir(&agents_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().is_some_and(|ext| ext == "md")
+                && let Some(slug) = path.file_stem().and_then(|s| s.to_str())
+            {
+                if agents_by_slug.contains_key(slug) {
+                    continue;
+                }
+
+                match SubagentRegistry::load_agent(&path, slug) {
+                    Ok(agent) => {
+                        agents_by_slug.insert(slug.to_string(), agent);
+                    }
+                    Err(e) => {
+                        outcome.errors.push(SubagentError {
+                            path,
+                            message: e.to_string(),
+                        });
+                    }
                 }
             }
         }
     }
+
+    apply_agent_overrides(&mut agents_by_slug, &config.agent);
+
+    outcome.agents = agents_by_slug.into_values().collect();
 
     info!(
         agents = outcome.agents.len(),
@@ -360,17 +320,60 @@ pub async fn load_subagents(codex_home: &Path) -> SubagentLoadOutcome {
     outcome
 }
 
+fn apply_agent_overrides(
+    agents: &mut HashMap<String, SubagentDefinition>,
+    agent_overrides: &[AgentConfigToml],
+) {
+    for override_config in agent_overrides {
+        if override_config.enabled == Some(false) {
+            agents.remove(&override_config.name);
+            continue;
+        }
+
+        let Some(agent) = agents.get_mut(&override_config.name) else {
+            continue;
+        };
+
+        if let Some(model) = &override_config.model {
+            if model.trim().eq_ignore_ascii_case("inherit") {
+                agent.metadata.model = SubagentModel::Inherit;
+            } else {
+                agent.metadata.model = SubagentModel::Canonical(model.clone());
+            }
+        }
+
+        if let Some(reasoning_effort) = override_config.reasoning_effort {
+            agent.metadata.reasoning_effort = reasoning_effort;
+        }
+    }
+}
+
 impl SubagentRegistry {
     /// Legacy constructor used by tool specs and handlers.
     /// Synchronously loads agents from `~/.codex/agents`, logging but ignoring
-    /// any invalid definitions. Ensures built-in agents exist before loading.
-    pub fn new(codex_home: &Path) -> Self {
+    /// any invalid definitions. Always includes embedded built-in agents.
+    pub fn new(codex_home: &Path, config: &Config) -> Self {
+        Self::new_with_agent_overrides(codex_home, &config.agent)
+    }
+
+    pub fn new_with_agent_overrides(
+        codex_home: &Path,
+        agent_overrides: &[AgentConfigToml],
+    ) -> Self {
         let started = std::time::Instant::now();
         let mut agents = HashMap::new();
         let agents_dir = codex_home.join("agents");
 
-        // Ensure built-in agents exist before loading
-        ensure_builtin_agents(codex_home);
+        for (slug, content) in BUILTIN_AGENTS {
+            match Self::load_agent_from_str(slug, content) {
+                Ok(agent) => {
+                    agents.insert(slug.to_string(), agent);
+                }
+                Err(e) => {
+                    warn!("Failed to load built-in subagent '{slug}': {e}");
+                }
+            }
+        }
 
         if let Ok(entries) = std::fs::read_dir(&agents_dir) {
             for entry in entries.flatten() {
@@ -378,6 +381,10 @@ impl SubagentRegistry {
                 if path.extension().is_some_and(|ext| ext == "md")
                     && let Some(slug) = path.file_stem().and_then(|s| s.to_str())
                 {
+                    if agents.contains_key(slug) {
+                        continue;
+                    }
+
                     match Self::load_agent(&path, slug) {
                         Ok(agent) => {
                             agents.insert(slug.to_string(), agent);
@@ -390,7 +397,9 @@ impl SubagentRegistry {
             }
         }
 
-        info!(
+        apply_agent_overrides(&mut agents, agent_overrides);
+
+        debug!(
             agents = agents.len(),
             path = %agents_dir.display(),
             elapsed_ms = started.elapsed().as_millis(),
@@ -411,7 +420,11 @@ impl SubagentRegistry {
 
     fn load_agent(path: &Path, slug: &str) -> Result<SubagentDefinition> {
         let content = std::fs::read_to_string(path)?;
-        let (frontmatter, body) = Self::parse_frontmatter(&content)?;
+        Self::load_agent_from_str(slug, &content)
+    }
+
+    fn load_agent_from_str(slug: &str, content: &str) -> Result<SubagentDefinition> {
+        let (frontmatter, body) = Self::parse_frontmatter(content)?;
 
         anyhow::ensure!(
             !frontmatter.is_empty(),
@@ -472,6 +485,16 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn loads_builtins_without_agents_dir() {
+        let codex_home = tempfile::tempdir().expect("tempdir");
+
+        let outcome = load_subagents(codex_home.path(), &crate::config::test_config()).await;
+        assert!(outcome.errors.is_empty(), "Expected no errors");
+        assert_eq!(outcome.agents.len(), 8);
+        assert!(outcome.agents.iter().any(|a| a.slug == "review"));
+    }
+
+    #[tokio::test]
     async fn loads_valid_agent_with_inherit_model() {
         let codex_home = setup_codex_home();
         write_agent(
@@ -480,7 +503,7 @@ mod tests {
             "---\nname: Test Agent\ndescription: A test agent\nmodel: inherit\nsandbox_policy: inherit\napproval_policy: inherit\n---\n\nYou are a test agent.",
         );
 
-        let outcome = load_subagents(codex_home.path()).await;
+        let outcome = load_subagents(codex_home.path(), &crate::config::test_config()).await;
         assert!(outcome.errors.is_empty(), "Expected no errors");
         // Includes user agent + 8 built-in agents
         assert_eq!(outcome.agents.len(), 9);
@@ -497,7 +520,7 @@ mod tests {
             "---\nname: Explorer\ndescription: Fast agent\nmodel: openai/gpt-4o-mini\nsandbox_policy: read-only\napproval_policy: never\n---\n\nYou are an explorer.",
         );
 
-        let outcome = load_subagents(codex_home.path()).await;
+        let outcome = load_subagents(codex_home.path(), &crate::config::test_config()).await;
         assert!(outcome.errors.is_empty(), "Expected no errors");
         // Includes user agent + 8 built-in agents
         assert_eq!(outcome.agents.len(), 9);
@@ -514,7 +537,7 @@ mod tests {
             "---\nname: Explorer\ndescription: Fast agent\nmodel: grok-4.1-fast\nsandbox_policy: inherit\napproval_policy: inherit\n---\n\nYou are an explorer.",
         );
 
-        let outcome = load_subagents(codex_home.path()).await;
+        let outcome = load_subagents(codex_home.path(), &crate::config::test_config()).await;
         // Built-in agents should still load successfully
         assert_eq!(outcome.agents.len(), 8);
         assert!(outcome.agents.iter().any(|a| a.slug == "review"));
@@ -538,7 +561,7 @@ mod tests {
             "---\nname: Broken\ninvalid yaml here\nmodel: inherit\nsandbox_policy: inherit\napproval_policy: inherit\n---\n\nYou are broken.",
         );
 
-        let outcome = load_subagents(codex_home.path()).await;
+        let outcome = load_subagents(codex_home.path(), &crate::config::test_config()).await;
         // Built-in agents should still load successfully
         assert_eq!(outcome.agents.len(), 8);
         assert!(outcome.agents.iter().any(|a| a.slug == "review"));
@@ -561,7 +584,7 @@ mod tests {
             "---\nname: Incomplete\ndescription: Missing required fields\nmodel: inherit\n---\n\nYou are incomplete.",
         );
 
-        let outcome = load_subagents(codex_home.path()).await;
+        let outcome = load_subagents(codex_home.path(), &crate::config::test_config()).await;
         // Built-in agents should still load successfully
         assert_eq!(outcome.agents.len(), 8);
         assert!(outcome.agents.iter().any(|a| a.slug == "review"));
@@ -587,7 +610,7 @@ mod tests {
             "You are an agent without frontmatter.",
         );
 
-        let outcome = load_subagents(codex_home.path()).await;
+        let outcome = load_subagents(codex_home.path(), &crate::config::test_config()).await;
         // Built-in agents should still load successfully
         assert_eq!(outcome.agents.len(), 8);
         assert!(outcome.agents.iter().any(|a| a.slug == "review"));
@@ -609,7 +632,7 @@ mod tests {
             "---\nmodel: inherit\nsandbox_policy: inherit\napproval_policy: inherit\n---\n",
         );
 
-        let outcome = load_subagents(codex_home.path()).await;
+        let outcome = load_subagents(codex_home.path(), &crate::config::test_config()).await;
         assert!(
             outcome.errors.is_empty(),
             "Expected no errors: {:?}",
@@ -632,9 +655,9 @@ mod tests {
     #[tokio::test]
     async fn handles_empty_agents_directory() {
         let codex_home = setup_codex_home();
-        let outcome = load_subagents(codex_home.path()).await;
+        let outcome = load_subagents(codex_home.path(), &crate::config::test_config()).await;
         assert!(outcome.errors.is_empty());
-        // 8 Built-in agents are auto-created
+        // 8 built-in agents are always available
         assert_eq!(outcome.agents.len(), 8);
         assert!(outcome.agents.iter().any(|a| a.slug == "review"));
     }
@@ -643,9 +666,9 @@ mod tests {
     async fn handles_missing_agents_directory() {
         let temp = tempfile::tempdir().expect("tempdir");
         // Don't create agents dir
-        let outcome = load_subagents(temp.path()).await;
+        let outcome = load_subagents(temp.path(), &crate::config::test_config()).await;
         assert!(outcome.errors.is_empty());
-        // 8 Built-in agents are auto-created (agents dir is also created)
+        // 8 built-in agents are available even if ~/.codex/agents does not exist
         assert_eq!(outcome.agents.len(), 8);
         assert!(outcome.agents.iter().any(|a| a.slug == "review"));
     }
@@ -706,7 +729,7 @@ mod internal_visibility_tests {
             "---\nname: Internal Test\ndescription: An internal agent\ninternal: true\nmodel: inherit\nsandbox_policy: read-only\napproval_policy: never\n---\n\nYou are an internal test agent.",
         );
 
-        let outcome = load_subagents(codex_home.path()).await;
+        let outcome = load_subagents(codex_home.path(), &crate::config::test_config()).await;
         let agent = outcome
             .agents
             .iter()
@@ -728,7 +751,7 @@ mod internal_visibility_tests {
             "---\nname: Public Test\ndescription: A public agent\nmodel: inherit\nsandbox_policy: read-only\napproval_policy: never\n---\n\nYou are a public test agent.",
         );
 
-        let outcome = load_subagents(codex_home.path()).await;
+        let outcome = load_subagents(codex_home.path(), &crate::config::test_config()).await;
         let agent = outcome
             .agents
             .iter()
@@ -750,7 +773,7 @@ mod internal_visibility_tests {
             "---\nname: Reasoning Test\nreasoning_effort: high\nsandbox_policy: read-only\napproval_policy: never\n---\n\nYou are a test agent.",
         );
 
-        let outcome = load_subagents(codex_home.path()).await;
+        let outcome = load_subagents(codex_home.path(), &crate::config::test_config()).await;
         let agent = outcome
             .agents
             .iter()
@@ -776,7 +799,7 @@ mod internal_visibility_tests {
             "---\nname: Inherit Test\nsandbox_policy: read-only\napproval_policy: never\n---\n\nYou are a test agent.",
         );
 
-        let outcome = load_subagents(codex_home.path()).await;
+        let outcome = load_subagents(codex_home.path(), &crate::config::test_config()).await;
         let agent = outcome
             .agents
             .iter()
@@ -799,7 +822,7 @@ mod internal_visibility_tests {
             "---\nname: XHigh Test\nreasoning_effort: xhigh\nsandbox_policy: read-only\napproval_policy: never\n---\n\nYou are a test agent.",
         );
 
-        let outcome = load_subagents(codex_home.path()).await;
+        let outcome = load_subagents(codex_home.path(), &crate::config::test_config()).await;
         let agent = outcome
             .agents
             .iter()
@@ -855,16 +878,76 @@ mod internal_visibility_tests {
     async fn builtin_session_reader_is_internal() {
         let codex_home = setup_codex_home();
 
-        // Ensure builtin agents are created
-        ensure_builtin_agents(codex_home.path());
-
-        let registry = SubagentRegistry::new(codex_home.path());
+        let registry = SubagentRegistry::new(codex_home.path(), &crate::config::test_config());
 
         let session_reader = registry.get("session_reader");
         assert!(session_reader.is_some(), "session_reader should exist");
         assert!(
             session_reader.unwrap().metadata.is_internal(),
             "session_reader should be marked as internal"
+        );
+    }
+
+    #[tokio::test]
+    async fn skips_disk_agents_that_collide_with_builtins() {
+        let codex_home = setup_codex_home();
+        write_agent(
+            &codex_home,
+            "review",
+            "---\nname: Override Reviewer\nmodel: inherit\nsandbox_policy: inherit\napproval_policy: inherit\n---\n\nOverride prompt",
+        );
+
+        let outcome = load_subagents(codex_home.path(), &crate::config::test_config()).await;
+        let review = outcome
+            .agents
+            .iter()
+            .find(|a| a.slug == "review")
+            .expect("review agent should exist");
+
+        assert_eq!(review.metadata.name.as_deref(), Some("Code Reviewer"));
+    }
+
+    #[tokio::test]
+    async fn applies_config_overrides_to_loaded_agents() {
+        let codex_home = setup_codex_home();
+        let mut config = crate::config::test_config();
+        config.agent = vec![
+            crate::config::types::AgentConfigToml {
+                name: "review".to_string(),
+                model: Some("openai/gpt-4o-mini".to_string()),
+                reasoning_effort: Some(SubagentReasoningEffort::High),
+                enabled: None,
+            },
+            crate::config::types::AgentConfigToml {
+                name: "oracle".to_string(),
+                model: None,
+                reasoning_effort: None,
+                enabled: Some(false),
+            },
+            crate::config::types::AgentConfigToml {
+                name: "unknown".to_string(),
+                model: Some("openai/gpt-4o-mini".to_string()),
+                reasoning_effort: None,
+                enabled: Some(false),
+            },
+        ];
+
+        let outcome = load_subagents(codex_home.path(), &config).await;
+        assert!(!outcome.agents.iter().any(|a| a.slug == "oracle"));
+
+        let review = outcome
+            .agents
+            .iter()
+            .find(|a| a.slug == "review")
+            .expect("review agent should exist");
+
+        assert_eq!(
+            review.metadata.model,
+            SubagentModel::Canonical("openai/gpt-4o-mini".to_string())
+        );
+        assert_eq!(
+            review.metadata.reasoning_effort,
+            SubagentReasoningEffort::High
         );
     }
 }

@@ -1,5 +1,6 @@
 use crate::client_common::tools::ResponsesApiTool;
 use crate::client_common::tools::ToolSpec;
+use crate::config::types::AgentConfigToml;
 use crate::features::Feature;
 use crate::features::Features;
 use crate::openai_models::model_family::ModelFamily;
@@ -27,6 +28,7 @@ pub(crate) struct ToolsConfig {
     pub web_search_request: bool,
     pub include_view_image_tool: bool,
     pub experimental_supported_tools: Vec<String>,
+    pub agent: Vec<AgentConfigToml>,
     /// Controls which subagents this session can delegate to via the task tool.
     /// - `None`: full access to all subagents (default for root sessions)
     /// - `Some(vec![])`: no access to any subagents (task tool not injected)
@@ -44,6 +46,7 @@ pub(crate) struct ToolsConfigParams<'a> {
     pub(crate) features: &'a Features,
     pub(crate) codex_home: &'a std::path::Path,
     pub(crate) experimental_tools_enable: &'a [String],
+    pub(crate) agent: &'a [AgentConfigToml],
     /// Controls which subagents this session can delegate to.
     /// Passed through to ToolsConfig.allowed_subagents.
     pub(crate) allowed_subagents: Option<Vec<String>>,
@@ -60,6 +63,7 @@ impl ToolsConfig {
             features,
             codex_home,
             experimental_tools_enable,
+            agent,
             allowed_subagents,
             is_read_only,
             session_log_path,
@@ -106,6 +110,7 @@ impl ToolsConfig {
             web_search_request: include_web_search_request,
             include_view_image_tool,
             experimental_supported_tools: experimental,
+            agent: agent.to_vec(),
             allowed_subagents: allowed_subagents.clone(),
             is_read_only: *is_read_only,
             session_log_path: session_log_path.clone(),
@@ -1142,14 +1147,16 @@ pub(crate) fn build_specs(
     match &config.allowed_subagents {
         // None: full access to all subagents
         None => {
-            builder
-                .push_spec_with_parallel_support(create_task_tool(&config.codex_home, None), true);
+            builder.push_spec_with_parallel_support(
+                create_task_tool(&config.codex_home, &config.agent, None),
+                true,
+            );
             builder.register_handler("task", task_handler);
         }
         // Some with non-empty list: filtered access
         Some(allowed) if !allowed.is_empty() => {
             builder.push_spec_with_parallel_support(
-                create_task_tool(&config.codex_home, Some(allowed)),
+                create_task_tool(&config.codex_home, &config.agent, Some(allowed)),
                 true,
             );
             builder.register_handler("task", task_handler);
@@ -1294,9 +1301,10 @@ mod tests {
 
     #[test]
     fn test_full_toolset_specs_for_gpt5_codex_unified_exec_web_search() {
-        let config = test_config();
+        let runtime_config = test_config();
         let codex_home = temp_codex_home();
-        let model_family = ModelsManager::construct_model_family_offline("gpt-5.1-codex", &config);
+        let model_family =
+            ModelsManager::construct_model_family_offline("gpt-5.1-codex", &runtime_config);
         let mut features = Features::with_defaults();
         features.enable(Feature::UnifiedExec);
         features.enable(Feature::WebSearchRequest);
@@ -1306,6 +1314,7 @@ mod tests {
             features: &features,
             codex_home: codex_home.path(),
             experimental_tools_enable: &[],
+            agent: &runtime_config.agent,
             allowed_subagents: None,
             is_read_only: false,
             session_log_path: None,
@@ -1337,7 +1346,7 @@ mod tests {
             create_list_mcp_resource_templates_tool(&[]),
             create_read_mcp_resource_tool(&[]),
             PLAN_TOOL.clone(),
-            create_task_tool(std::path::Path::new("."), None),
+            create_task_tool(&runtime_config.codex_home, &runtime_config.agent, None),
             create_apply_patch_freeform_tool(),
             ToolSpec::WebSearch {},
             create_view_image_tool(),
@@ -1370,6 +1379,7 @@ mod tests {
             features,
             codex_home: codex_home.path(),
             experimental_tools_enable: &[],
+            agent: &[],
             allowed_subagents: None,
             is_read_only: false,
             session_log_path: None,
@@ -1492,6 +1502,7 @@ mod tests {
             features: &features,
             codex_home: codex_home.path(),
             experimental_tools_enable: &[],
+            agent: &[],
             allowed_subagents: None,
             is_read_only: false,
             session_log_path: None,
@@ -1520,6 +1531,7 @@ mod tests {
             features: &features,
             codex_home: codex_home.path(),
             experimental_tools_enable: &[],
+            agent: &[],
             allowed_subagents: None,
             is_read_only: false,
             session_log_path: None,
@@ -1547,6 +1559,7 @@ mod tests {
             features: &features,
             codex_home: codex_home.path(),
             experimental_tools_enable: &[],
+            agent: &[],
             allowed_subagents: None,
             is_read_only: false,
             session_log_path: None,
@@ -1584,6 +1597,7 @@ mod tests {
             features: &features,
             codex_home: codex_home.path(),
             experimental_tools_enable: &[],
+            agent: &[],
             allowed_subagents: None,
             is_read_only: false,
             session_log_path: None,
@@ -1684,6 +1698,7 @@ mod tests {
             features: &features,
             codex_home: codex_home.path(),
             experimental_tools_enable: &[],
+            agent: &[],
             allowed_subagents: None,
             is_read_only: false,
             session_log_path: None,
@@ -1767,6 +1782,7 @@ mod tests {
             features: &features,
             codex_home: codex_home.path(),
             experimental_tools_enable: &[],
+            agent: &[],
             allowed_subagents: None,
             is_read_only: false,
             session_log_path: None,
@@ -1830,6 +1846,7 @@ mod tests {
             features: &features,
             codex_home: codex_home.path(),
             experimental_tools_enable: &[],
+            agent: &[],
             allowed_subagents: None,
             is_read_only: false,
             session_log_path: None,
@@ -1890,6 +1907,7 @@ mod tests {
             features: &features,
             codex_home: codex_home.path(),
             experimental_tools_enable: &[],
+            agent: &[],
             allowed_subagents: None,
             is_read_only: false,
             session_log_path: None,
@@ -1952,6 +1970,7 @@ mod tests {
             features: &features,
             codex_home: codex_home.path(),
             experimental_tools_enable: &[],
+            agent: &[],
             allowed_subagents: None,
             is_read_only: false,
             session_log_path: None,
@@ -2040,6 +2059,7 @@ Examples of valid command strings:
             features: &features,
             codex_home: codex_home.path(),
             experimental_tools_enable: &[],
+            agent: &[],
             allowed_subagents: None,
             is_read_only: false,
             session_log_path: None,
@@ -2215,6 +2235,7 @@ Examples of valid command strings:
             features: &features,
             codex_home: codex_home.path(),
             experimental_tools_enable: &[],
+            agent: &[],
             allowed_subagents: None,
             is_read_only: false,
             session_log_path: None,
@@ -2233,6 +2254,7 @@ Examples of valid command strings:
             features: &features,
             codex_home: codex_home.path(),
             experimental_tools_enable: &["read_file".to_string()],
+            agent: &[],
             allowed_subagents: None,
             is_read_only: false,
             session_log_path: None,
@@ -2264,6 +2286,7 @@ Examples of valid command strings:
                 "read_file".to_string(),
                 "grep_files".to_string(),
             ],
+            agent: &[],
             allowed_subagents: None,
             is_read_only: false,
             session_log_path: None,
@@ -2296,6 +2319,7 @@ Examples of valid command strings:
             features: &features,
             codex_home: codex_home.path(),
             experimental_tools_enable: &[],
+            agent: &[],
             allowed_subagents: None,
             is_read_only: false,
             session_log_path: Some(PathBuf::from("/tmp/test_session.jsonl")),
