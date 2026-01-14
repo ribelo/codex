@@ -2243,6 +2243,7 @@ mod handlers {
                     description: s.description.clone(),
                     path: s.path.clone(),
                     scope: s.scope,
+                    internal: s.internal,
                 })
                 .collect();
 
@@ -2283,6 +2284,7 @@ fn skill_load_outcome_for_client(
                 description: skill.description.clone(),
                 path: skill.path.clone(),
                 scope: skill.scope,
+                internal: skill.internal,
             })
             .collect(),
         errors: outcome

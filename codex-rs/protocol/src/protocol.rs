@@ -1782,6 +1782,8 @@ pub struct SkillInfo {
     pub description: String,
     pub path: PathBuf,
     pub scope: SkillScope,
+    #[serde(default)]
+    pub internal: bool,
 }
 
 /// Entry in skills list response, one per requested cwd.

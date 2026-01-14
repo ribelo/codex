@@ -4334,6 +4334,7 @@ fn skills_from_outcome(outcome: &SkillLoadOutcomeInfo) -> Vec<SkillMetadata> {
             description: skill.description.clone(),
             path: skill.path.clone(),
             scope: skill.scope,
+            internal: skill.internal,
         })
         .collect()
 }

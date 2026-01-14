@@ -7,6 +7,9 @@ pub struct SkillMetadata {
     pub description: String,
     pub path: PathBuf,
     pub scope: SkillScope,
+    /// If true, this skill is internal and should not appear in the skills
+    /// section of the system prompt shown to the user.
+    pub internal: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

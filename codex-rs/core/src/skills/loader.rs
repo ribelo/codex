@@ -20,6 +20,8 @@ use tracing::error;
 struct SkillFrontmatter {
     name: String,
     description: String,
+    #[serde(default)]
+    internal: bool,
 }
 
 #[derive(Clone)]
@@ -206,6 +208,7 @@ fn parse_skill_file(path: &Path, scope: SkillScope) -> Result<SkillMetadata, Ski
         description,
         path: resolved_path,
         scope,
+        internal: parsed.internal,
     })
 }
 
@@ -345,6 +348,7 @@ mod tests {
         let skill = &outcome.skills[0];
         assert_eq!(skill.name, "demo-skill");
         assert_eq!(skill.description, "does things carefully");
+        assert!(!skill.internal, "expected internal to default to false");
         let path_str = skill.path.to_string_lossy().replace('\\', "/");
         assert!(
             path_str.ends_with("skills/demo/SKILL.md"),
@@ -452,5 +456,42 @@ mod tests {
         let skill = &outcome.skills[0];
         assert_eq!(skill.name, "repo-skill");
         assert!(skill.path.starts_with(&repo_root));
+    }
+
+    #[test]
+    fn internal_field_defaults_to_false() {
+        let codex_home = tempfile::tempdir().expect("tempdir");
+        write_skill(&codex_home, "public", "public-skill", "visible skill");
+        let cfg = make_config(&codex_home);
+
+        let outcome = load_skills(&cfg);
+        assert!(
+            outcome.errors.is_empty(),
+            "unexpected errors: {:?}",
+            outcome.errors
+        );
+        assert_eq!(outcome.skills.len(), 1);
+        assert!(!outcome.skills[0].internal);
+    }
+
+    #[test]
+    fn internal_field_set_to_true() {
+        let codex_home = tempfile::tempdir().expect("tempdir");
+        let skill_dir = codex_home.path().join("skills/internal");
+        fs::create_dir_all(&skill_dir).unwrap();
+        let content =
+            "---\nname: internal-skill\ndescription: hidden skill\ninternal: true\n---\n\n# Body\n";
+        fs::write(skill_dir.join(SKILLS_FILENAME), content).unwrap();
+
+        let cfg = make_config(&codex_home);
+        let outcome = load_skills(&cfg);
+
+        assert!(
+            outcome.errors.is_empty(),
+            "unexpected errors: {:?}",
+            outcome.errors
+        );
+        assert_eq!(outcome.skills.len(), 1);
+        assert!(outcome.skills[0].internal);
     }
 }
