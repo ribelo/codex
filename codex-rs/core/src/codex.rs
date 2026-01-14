@@ -2,6 +2,8 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicI32;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::AtomicU64;
 
@@ -54,6 +56,7 @@ use mcp_types::RequestId;
 use serde_json;
 use serde_json::Value;
 use tokio::sync::Mutex;
+use tokio::sync::Notify;
 use tokio::sync::RwLock;
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
@@ -345,6 +348,10 @@ pub(crate) struct TurnContext {
 
     /// Counter for subagent invocation order within this turn
     pub(crate) task_invocation_counter: AtomicU32,
+    /// Number of `task` tool calls in the current model request (reset per request).
+    pub(crate) task_tool_call_count: AtomicI32,
+    pub(crate) task_tool_call_count_finalized: AtomicBool,
+    pub(crate) task_tool_call_count_notify: Arc<Notify>,
 
     pub(crate) mcp_truncation_policy: TruncationPolicy,
     pub(crate) mcp_truncation_bias: TruncationBias,
@@ -363,6 +370,39 @@ impl TurnContext {
         self.compact_prompt
             .as_deref()
             .unwrap_or(compact::SUMMARIZATION_PROMPT)
+    }
+
+    pub(crate) fn reset_task_tool_call_count_for_request(&self) {
+        self.task_tool_call_count
+            .store(0, std::sync::atomic::Ordering::SeqCst);
+        self.task_tool_call_count_finalized
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub(crate) fn note_task_tool_call_for_request(&self) -> i32 {
+        self.task_tool_call_count
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            + 1
+    }
+
+    pub(crate) fn task_tool_calls_in_request(&self) -> i32 {
+        self.task_tool_call_count
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    pub(crate) fn finalize_task_tool_calls_for_request(&self) {
+        self.task_tool_call_count_finalized
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.task_tool_call_count_notify.notify_waiters();
+    }
+
+    pub(crate) async fn wait_task_tool_calls_finalized_for_request(&self) {
+        while !self
+            .task_tool_call_count_finalized
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            self.task_tool_call_count_notify.notified().await;
+        }
     }
 }
 
@@ -521,6 +561,7 @@ impl Session {
                 .original_config_do_not_use
                 .experimental_tools_enable,
             agent: &session_configuration.original_config_do_not_use.agent,
+            tasks: &session_configuration.original_config_do_not_use.tasks,
             // Pass through allowed_subagents from config (None for root, restricted for subagents)
             allowed_subagents: session_configuration
                 .original_config_do_not_use
@@ -559,6 +600,9 @@ impl Session {
             ),
             truncation_bias: model_family.truncation_bias,
             task_invocation_counter: AtomicU32::new(0),
+            task_tool_call_count: AtomicI32::new(0),
+            task_tool_call_count_finalized: AtomicBool::new(false),
+            task_tool_call_count_notify: Arc::new(Notify::new()),
             mcp_truncation_policy: TruncationPolicy::new(
                 per_turn_config.as_ref(),
                 model_family.mcp_truncation_policy,
@@ -2010,7 +2054,7 @@ mod handlers {
         let args = serde_json::json!({
             "description": description,
             "prompt": prompt,
-            "subagent_name": agent,
+            "task_type": agent,
         });
         let args_str = args.to_string();
 
@@ -2610,6 +2654,7 @@ async fn try_run_turn(
         Arc::clone(&turn_context),
         Arc::clone(&turn_diff_tracker),
     );
+    turn_context.reset_task_tool_call_count_for_request();
     let mut in_flight: FuturesOrdered<BoxFuture<'static, CodexResult<ResponseInputItem>>> =
         FuturesOrdered::new();
     let mut needs_follow_up = false;
@@ -2777,6 +2822,10 @@ async fn try_run_turn(
         }
     };
 
+    // Tool calls to `task` may wait until we know how many task workers were spawned
+    // in this model request. Unblock them now that the stream is complete.
+    turn_context.finalize_task_tool_calls_for_request();
+
     drain_in_flight(
         &mut in_flight,
         sess.clone(),
@@ -2877,6 +2926,23 @@ mod tests {
         let reconstructed = session.reconstruct_history_from_rollout(&turn_context, &rollout_items);
 
         assert_eq!(expected, reconstructed);
+    }
+
+    #[tokio::test]
+    async fn task_tool_call_count_tracks_per_request() {
+        let (_sess, turn_context, _rx) = make_session_and_context_with_rx();
+
+        turn_context.reset_task_tool_call_count_for_request();
+        assert_eq!(turn_context.task_tool_calls_in_request(), 0);
+
+        assert_eq!(turn_context.note_task_tool_call_for_request(), 1);
+        assert_eq!(turn_context.note_task_tool_call_for_request(), 2);
+        assert_eq!(turn_context.task_tool_calls_in_request(), 2);
+
+        turn_context.finalize_task_tool_calls_for_request();
+        turn_context
+            .wait_task_tool_calls_finalized_for_request()
+            .await;
     }
 
     #[test]

@@ -543,6 +543,7 @@ mod tests {
                 "call-1".to_string(),
                 None,
                 "finder".to_string(),
+                "medium".to_string(),
                 "Find files".to_string(),
                 None,
                 Some("del-1".to_string()),

@@ -10,6 +10,7 @@ Codex configuration gives you fine-grained control over the model, execution env
 - [MCP integration](#mcp-integration)
 - [Observability and telemetry](#observability-and-telemetry)
 - [Profiles and overrides](#profiles-and-overrides)
+- [Tasks and Difficulty](#tasks-and-difficulty)
 - [Reference table](#config-reference)
 
 Codex supports several mechanisms for setting config values:
@@ -969,6 +970,26 @@ animations = false
 > Codex emits desktop notifications using terminal escape codes. Not all terminals support these (notably, macOS Terminal.app and VS Code's terminal do not support custom notifications. iTerm2, Ghostty and WezTerm do support these notifications).
 
 > [!NOTE] > `tui.notifications` is built‑in and limited to the TUI session. For programmatic or cross‑environment notifications—or to integrate with OS‑specific notifiers—use the top‑level `notify` option to run an external program that receives event JSON. The two settings are independent and can be used together.
+
+## Tasks and Difficulty
+
+Codex uses a "WHAT+DIFFICULTY" routing system to determine how to handle a request.
+
+### [[task]]
+
+You can customize built-in tasks or add new ones using the `[[task]]` array. This allows you to override models, reasoning effort, and sandbox policies based on the task type and estimated difficulty.
+
+```toml
+[[task]]
+type = "rust"
+model = "anthropic/claude-3-5-sonnet"
+
+[task.difficulty.large]
+model = "openai/o3-mini"
+reasoning_effort = "high"
+```
+
+For full details on task routing, API fields, and customization, see `codex-rs/docs/tasks.md`.
 
 ## Authentication and authorization
 

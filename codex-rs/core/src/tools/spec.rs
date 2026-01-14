@@ -1,6 +1,7 @@
 use crate::client_common::tools::ResponsesApiTool;
 use crate::client_common::tools::ToolSpec;
 use crate::config::types::AgentConfigToml;
+use crate::config::types::TaskConfigToml;
 use crate::features::Feature;
 use crate::features::Features;
 use crate::openai_models::model_family::ModelFamily;
@@ -29,6 +30,7 @@ pub(crate) struct ToolsConfig {
     pub include_view_image_tool: bool,
     pub experimental_supported_tools: Vec<String>,
     pub agent: Vec<AgentConfigToml>,
+    pub tasks: Vec<TaskConfigToml>,
     /// Controls which subagents this session can delegate to via the task tool.
     /// - `None`: full access to all subagents (default for root sessions)
     /// - `Some(vec![])`: no access to any subagents (task tool not injected)
@@ -47,6 +49,7 @@ pub(crate) struct ToolsConfigParams<'a> {
     pub(crate) codex_home: &'a std::path::Path,
     pub(crate) experimental_tools_enable: &'a [String],
     pub(crate) agent: &'a [AgentConfigToml],
+    pub(crate) tasks: &'a [TaskConfigToml],
     /// Controls which subagents this session can delegate to.
     /// Passed through to ToolsConfig.allowed_subagents.
     pub(crate) allowed_subagents: Option<Vec<String>>,
@@ -64,6 +67,7 @@ impl ToolsConfig {
             codex_home,
             experimental_tools_enable,
             agent,
+            tasks,
             allowed_subagents,
             is_read_only,
             session_log_path,
@@ -111,6 +115,7 @@ impl ToolsConfig {
             include_view_image_tool,
             experimental_supported_tools: experimental,
             agent: agent.to_vec(),
+            tasks: tasks.to_vec(),
             allowed_subagents: allowed_subagents.clone(),
             is_read_only: *is_read_only,
             session_log_path: session_log_path.clone(),
@@ -1147,16 +1152,13 @@ pub(crate) fn build_specs(
     match &config.allowed_subagents {
         // None: full access to all subagents
         None => {
-            builder.push_spec_with_parallel_support(
-                create_task_tool(&config.codex_home, &config.agent, None),
-                true,
-            );
+            builder.push_spec_with_parallel_support(create_task_tool(&config.tasks, None), true);
             builder.register_handler("task", task_handler);
         }
         // Some with non-empty list: filtered access
         Some(allowed) if !allowed.is_empty() => {
             builder.push_spec_with_parallel_support(
-                create_task_tool(&config.codex_home, &config.agent, Some(allowed)),
+                create_task_tool(&config.tasks, Some(allowed)),
                 true,
             );
             builder.register_handler("task", task_handler);
@@ -1315,6 +1317,7 @@ mod tests {
             codex_home: codex_home.path(),
             experimental_tools_enable: &[],
             agent: &runtime_config.agent,
+            tasks: &runtime_config.tasks,
             allowed_subagents: None,
             is_read_only: false,
             session_log_path: None,
@@ -1346,7 +1349,7 @@ mod tests {
             create_list_mcp_resource_templates_tool(&[]),
             create_read_mcp_resource_tool(&[]),
             PLAN_TOOL.clone(),
-            create_task_tool(&runtime_config.codex_home, &runtime_config.agent, None),
+            create_task_tool(&runtime_config.tasks, None),
             create_apply_patch_freeform_tool(),
             ToolSpec::WebSearch {},
             create_view_image_tool(),
@@ -1380,6 +1383,7 @@ mod tests {
             codex_home: codex_home.path(),
             experimental_tools_enable: &[],
             agent: &[],
+            tasks: &config.tasks,
             allowed_subagents: None,
             is_read_only: false,
             session_log_path: None,
@@ -1503,6 +1507,7 @@ mod tests {
             codex_home: codex_home.path(),
             experimental_tools_enable: &[],
             agent: &[],
+            tasks: &config.tasks,
             allowed_subagents: None,
             is_read_only: false,
             session_log_path: None,
@@ -1532,6 +1537,7 @@ mod tests {
             codex_home: codex_home.path(),
             experimental_tools_enable: &[],
             agent: &[],
+            tasks: &config.tasks,
             allowed_subagents: None,
             is_read_only: false,
             session_log_path: None,
@@ -1560,6 +1566,7 @@ mod tests {
             codex_home: codex_home.path(),
             experimental_tools_enable: &[],
             agent: &[],
+            tasks: &config.tasks,
             allowed_subagents: None,
             is_read_only: false,
             session_log_path: None,
@@ -1598,6 +1605,7 @@ mod tests {
             codex_home: codex_home.path(),
             experimental_tools_enable: &[],
             agent: &[],
+            tasks: &config.tasks,
             allowed_subagents: None,
             is_read_only: false,
             session_log_path: None,
@@ -1699,6 +1707,7 @@ mod tests {
             codex_home: codex_home.path(),
             experimental_tools_enable: &[],
             agent: &[],
+            tasks: &config.tasks,
             allowed_subagents: None,
             is_read_only: false,
             session_log_path: None,
@@ -1783,6 +1792,7 @@ mod tests {
             codex_home: codex_home.path(),
             experimental_tools_enable: &[],
             agent: &[],
+            tasks: &config.tasks,
             allowed_subagents: None,
             is_read_only: false,
             session_log_path: None,
@@ -1847,6 +1857,7 @@ mod tests {
             codex_home: codex_home.path(),
             experimental_tools_enable: &[],
             agent: &[],
+            tasks: &config.tasks,
             allowed_subagents: None,
             is_read_only: false,
             session_log_path: None,
@@ -1908,6 +1919,7 @@ mod tests {
             codex_home: codex_home.path(),
             experimental_tools_enable: &[],
             agent: &[],
+            tasks: &config.tasks,
             allowed_subagents: None,
             is_read_only: false,
             session_log_path: None,
@@ -1971,6 +1983,7 @@ mod tests {
             codex_home: codex_home.path(),
             experimental_tools_enable: &[],
             agent: &[],
+            tasks: &config.tasks,
             allowed_subagents: None,
             is_read_only: false,
             session_log_path: None,
@@ -2060,6 +2073,7 @@ Examples of valid command strings:
             codex_home: codex_home.path(),
             experimental_tools_enable: &[],
             agent: &[],
+            tasks: &config.tasks,
             allowed_subagents: None,
             is_read_only: false,
             session_log_path: None,
@@ -2236,6 +2250,7 @@ Examples of valid command strings:
             codex_home: codex_home.path(),
             experimental_tools_enable: &[],
             agent: &[],
+            tasks: &config.tasks,
             allowed_subagents: None,
             is_read_only: false,
             session_log_path: None,
@@ -2255,6 +2270,7 @@ Examples of valid command strings:
             codex_home: codex_home.path(),
             experimental_tools_enable: &["read_file".to_string()],
             agent: &[],
+            tasks: &config.tasks,
             allowed_subagents: None,
             is_read_only: false,
             session_log_path: None,
@@ -2287,6 +2303,7 @@ Examples of valid command strings:
                 "grep_files".to_string(),
             ],
             agent: &[],
+            tasks: &base_config.tasks,
             allowed_subagents: None,
             is_read_only: false,
             session_log_path: None,
@@ -2320,6 +2337,7 @@ Examples of valid command strings:
             codex_home: codex_home.path(),
             experimental_tools_enable: &[],
             agent: &[],
+            tasks: &base_config.tasks,
             allowed_subagents: None,
             is_read_only: false,
             session_log_path: Some(PathBuf::from("/tmp/test_session.jsonl")),

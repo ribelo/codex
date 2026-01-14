@@ -3,35 +3,35 @@ use serde::Serialize;
 use crate::loop_detector::LoopType;
 use codex_protocol::protocol::TurnAbortReason;
 
-/// Outcome of subagent execution loop.
+/// Outcome of worker execution loop.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "output_type", rename_all = "snake_case")]
 pub enum SubagentExecutionOutcome {
-    /// Subagent completed with a final message.
+    /// Worker completed with a final message.
     CompletedWithMessage { message: String },
-    /// Subagent completed with tool output but no final message.
+    /// Worker completed with tool output but no final message.
     CompletedWithToolOutput { tool_output: String },
-    /// Subagent completed without any output.
+    /// Worker completed without any output.
     CompletedEmpty,
     /// External interruption (Ctrl+C). Always resumable.
     Interrupted,
-    /// Subagent failed (loop detection, HTTP error, quota exceeded, etc).
+    /// Worker failed (loop detection, HTTP error, quota exceeded, etc).
     Failed { reason: String, can_resume: bool },
 }
 
 impl SubagentExecutionOutcome {
     /// Default hint for empty output.
     pub const EMPTY_HINT: &'static str =
-        "Subagent returned nothing. Use session_id to ask what happened or request to continue.";
+        "Worker returned nothing. Use session_id to ask what happened or request to continue.";
 }
 
 impl From<LoopType> for SubagentExecutionOutcome {
     fn from(loop_type: LoopType) -> Self {
         let reason = match loop_type {
             LoopType::ConsecutiveIdenticalToolCalls => {
-                "Subagent got stuck in a loop of identical tool calls"
+                "Worker got stuck in a loop of identical tool calls"
             }
-            LoopType::RepetitiveContent => "Subagent got stuck in a loop of repetitive content",
+            LoopType::RepetitiveContent => "Worker got stuck in a loop of repetitive content",
         };
         Self::Failed {
             reason: reason.to_string(),
@@ -59,7 +59,7 @@ impl From<TurnAbortReason> for SubagentExecutionOutcome {
 /// The complete result returned to the parent agent.
 #[derive(Debug, Clone, Serialize)]
 pub struct SubagentTaskResult {
-    /// Subagent's execution outcome (message, tool output, empty, or aborted).
+    /// Worker's execution outcome (message, tool output, empty, or aborted).
     pub output: SubagentExecutionOutcome,
     /// Session ID to continue the conversation.
     pub session_id: String,
@@ -89,11 +89,11 @@ impl std::fmt::Display for SubagentTaskResult {
             }
             SubagentExecutionOutcome::Interrupted => {
                 writeln!(f, "### Message")?;
-                writeln!(f, "Subagent was interrupted.")?;
+                writeln!(f, "Worker was interrupted.")?;
             }
             SubagentExecutionOutcome::Failed { reason, .. } => {
                 writeln!(f, "### Message")?;
-                writeln!(f, "Subagent failed: {reason}")?;
+                writeln!(f, "Worker failed: {reason}")?;
             }
         }
 
@@ -154,7 +154,7 @@ mod tests {
         let result =
             SubagentTaskResult::new(SubagentExecutionOutcome::Interrupted, "pqr-678".to_string());
         let output = result.to_string();
-        assert!(output.contains("Subagent was interrupted"));
+        assert!(output.contains("Worker was interrupted"));
         assert!(output.contains("**Resumable**: Yes"));
         assert!(output.contains("`pqr-678`"));
     }
@@ -169,7 +169,7 @@ mod tests {
             "err-123".to_string(),
         );
         let output = result.to_string();
-        assert!(output.contains("Subagent failed: Rate limit exceeded"));
+        assert!(output.contains("Worker failed: Rate limit exceeded"));
         assert!(output.contains("**Resumable**: Yes"));
         assert!(output.contains("`err-123`"));
     }
@@ -184,7 +184,7 @@ mod tests {
             "err-456".to_string(),
         );
         let output = result.to_string();
-        assert!(output.contains("Subagent failed: Quota exceeded"));
+        assert!(output.contains("Worker failed: Quota exceeded"));
         assert!(output.contains("**Resumable**: No"));
         assert!(output.contains("`err-456`"));
     }

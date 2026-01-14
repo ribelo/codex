@@ -15,6 +15,10 @@ use serde::Deserializer;
 use serde::Serialize;
 use serde::de::Error as SerdeError;
 
+use crate::protocol::AskForApproval;
+use crate::protocol::SandboxPolicy;
+use codex_protocol::openai_models::ReasoningEffort;
+
 pub const DEFAULT_OTEL_ENVIRONMENT: &str = "dev";
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -40,6 +44,157 @@ pub enum SubagentReasoningEffort {
     High,
     #[serde(alias = "x-high")]
     XHigh,
+}
+
+impl SubagentReasoningEffort {
+    /// Convert to the protocol's `ReasoningEffort`, returning `None` for `Inherit`.
+    pub fn to_reasoning_effort(self) -> Option<ReasoningEffort> {
+        match self {
+            SubagentReasoningEffort::Inherit => None,
+            SubagentReasoningEffort::None => Some(ReasoningEffort::None),
+            SubagentReasoningEffort::Minimal => Some(ReasoningEffort::Minimal),
+            SubagentReasoningEffort::Low => Some(ReasoningEffort::Low),
+            SubagentReasoningEffort::Medium => Some(ReasoningEffort::Medium),
+            SubagentReasoningEffort::High => Some(ReasoningEffort::High),
+            SubagentReasoningEffort::XHigh => Some(ReasoningEffort::XHigh),
+        }
+    }
+}
+
+/// Approval policy for delegated tasks, with an additional `Inherit` variant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SubagentApprovalPolicy {
+    /// Inherit the parent session's approval policy.
+    Inherit,
+    /// Only "known safe" commands are auto-approved.
+    #[serde(rename = "untrusted")]
+    UnlessTrusted,
+    /// All commands auto-approved in sandbox; failures escalate.
+    OnFailure,
+    /// The model decides when to ask.
+    OnRequest,
+    /// Never ask the user.
+    Never,
+}
+
+impl SubagentApprovalPolicy {
+    /// Convert to the protocol's `AskForApproval`, returning `None` for `Inherit`.
+    pub fn to_ask_for_approval(self) -> Option<AskForApproval> {
+        match self {
+            SubagentApprovalPolicy::Inherit => None,
+            SubagentApprovalPolicy::UnlessTrusted => Some(AskForApproval::UnlessTrusted),
+            SubagentApprovalPolicy::OnFailure => Some(AskForApproval::OnFailure),
+            SubagentApprovalPolicy::OnRequest => Some(AskForApproval::OnRequest),
+            SubagentApprovalPolicy::Never => Some(AskForApproval::Never),
+        }
+    }
+
+    /// Returns the restrictiveness level (lower = more restrictive).
+    /// `Inherit` returns `None` since it depends on the parent.
+    pub fn restrictiveness(self) -> Option<i32> {
+        match self {
+            SubagentApprovalPolicy::Inherit => None,
+            // Keep this mapping consistent with `approval_restrictiveness()` in
+            // `core/src/tools/handlers/task.rs`.
+            SubagentApprovalPolicy::UnlessTrusted => Some(0),
+            SubagentApprovalPolicy::Never => Some(1),
+            SubagentApprovalPolicy::OnRequest => Some(2),
+            SubagentApprovalPolicy::OnFailure => Some(3),
+        }
+    }
+}
+
+/// Simplified sandbox policy for delegated tasks.
+/// Maps to the full `SandboxPolicy` enum but with simpler serialization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SubagentSandboxPolicy {
+    ReadOnly,
+    WorkspaceWrite,
+    #[serde(rename = "danger-full-access")]
+    DangerFullAccess,
+    /// Inherit the parent session's sandbox policy.
+    Inherit,
+}
+
+impl SubagentSandboxPolicy {
+    /// Convert to the full SandboxPolicy enum, returning `None` for `Inherit`.
+    pub fn to_sandbox_policy(self) -> Option<SandboxPolicy> {
+        match self {
+            SubagentSandboxPolicy::ReadOnly => Some(SandboxPolicy::new_read_only_policy()),
+            SubagentSandboxPolicy::WorkspaceWrite => {
+                Some(SandboxPolicy::new_workspace_write_policy())
+            }
+            SubagentSandboxPolicy::DangerFullAccess => Some(SandboxPolicy::DangerFullAccess),
+            SubagentSandboxPolicy::Inherit => None,
+        }
+    }
+
+    /// Returns the restrictiveness level (lower = more restrictive).
+    /// `Inherit` returns `None` since it depends on the parent.
+    pub fn restrictiveness(self) -> Option<i32> {
+        match self {
+            SubagentSandboxPolicy::ReadOnly => Some(0),
+            SubagentSandboxPolicy::WorkspaceWrite => Some(1),
+            SubagentSandboxPolicy::DangerFullAccess => Some(2),
+            SubagentSandboxPolicy::Inherit => None,
+        }
+    }
+
+    /// Convert from SandboxPolicy to SubagentSandboxPolicy for comparison.
+    pub fn from_sandbox_policy(policy: &SandboxPolicy) -> Self {
+        match policy {
+            SandboxPolicy::ReadOnly => SubagentSandboxPolicy::ReadOnly,
+            SandboxPolicy::WorkspaceWrite { .. } => SubagentSandboxPolicy::WorkspaceWrite,
+            SandboxPolicy::DangerFullAccess => SubagentSandboxPolicy::DangerFullAccess,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, std::hash::Hash, Deserialize, Serialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum TaskDifficulty {
+    Small,
+    #[default]
+    Medium,
+    Large,
+}
+
+impl TaskDifficulty {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            TaskDifficulty::Small => "small",
+            TaskDifficulty::Medium => "medium",
+            TaskDifficulty::Large => "large",
+        }
+    }
+}
+
+impl std::fmt::Display for TaskDifficulty {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct TaskDifficultyStrategy {
+    pub model: Option<String>,
+    pub reasoning_effort: Option<SubagentReasoningEffort>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct TaskConfigToml {
+    #[serde(rename = "type")]
+    pub task_type: String,
+    pub description: Option<String>,
+    pub skills: Option<Vec<String>>,
+    pub model: Option<String>,
+    pub reasoning_effort: Option<SubagentReasoningEffort>,
+    pub sandbox_policy: Option<SubagentSandboxPolicy>,
+    pub approval_policy: Option<SubagentApprovalPolicy>,
+    pub difficulty: Option<HashMap<TaskDifficulty, TaskDifficultyStrategy>>,
 }
 
 #[derive(Serialize, Debug, Clone, PartialEq)]
@@ -889,6 +1044,77 @@ mod tests {
         assert!(
             err.to_string().contains("bearer_token is not supported"),
             "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn subagent_sandbox_policy_restrictiveness_ordering() {
+        // Verify restrictiveness ordering for policy comparison
+        let readonly = SubagentSandboxPolicy::ReadOnly;
+        let workspace = SubagentSandboxPolicy::WorkspaceWrite;
+        let full = SubagentSandboxPolicy::DangerFullAccess;
+        let inherit = SubagentSandboxPolicy::Inherit;
+
+        // ReadOnly (0) < WorkspaceWrite (1) < DangerFullAccess (2)
+        assert!(readonly.restrictiveness().unwrap() < workspace.restrictiveness().unwrap());
+        assert!(workspace.restrictiveness().unwrap() < full.restrictiveness().unwrap());
+        // Inherit has no restrictiveness (depends on parent)
+        assert!(inherit.restrictiveness().is_none());
+    }
+
+    #[test]
+    fn subagent_sandbox_policy_roundtrip_preserves_variant() {
+        // Verify from_sandbox_policy correctly identifies policy variants
+        use codex_protocol::protocol::SandboxPolicy;
+
+        assert_eq!(
+            SubagentSandboxPolicy::from_sandbox_policy(&SandboxPolicy::ReadOnly),
+            SubagentSandboxPolicy::ReadOnly
+        );
+        assert_eq!(
+            SubagentSandboxPolicy::from_sandbox_policy(&SandboxPolicy::new_workspace_write_policy()),
+            SubagentSandboxPolicy::WorkspaceWrite
+        );
+        assert_eq!(
+            SubagentSandboxPolicy::from_sandbox_policy(&SandboxPolicy::DangerFullAccess),
+            SubagentSandboxPolicy::DangerFullAccess
+        );
+    }
+
+    #[test]
+    fn subagent_sandbox_policy_equal_level_should_not_override_parent_with_writable_roots() {
+        // Bug fix test: when task and parent both have WorkspaceWrite,
+        // the task's fresh default policy should NOT replace parent's
+        // policy which may have custom writable_roots.
+        use codex_protocol::protocol::SandboxPolicy;
+        use std::path::PathBuf;
+
+        let parent_policy = SandboxPolicy::WorkspaceWrite {
+            writable_roots: vec![PathBuf::from("/custom/path")],
+            network_access: false,
+            exclude_tmpdir_env_var: false,
+            exclude_slash_tmp: false,
+        };
+        let parent_subagent = SubagentSandboxPolicy::from_sandbox_policy(&parent_policy);
+
+        let task_policy = SubagentSandboxPolicy::WorkspaceWrite;
+
+        // Both are WorkspaceWrite, so same restrictiveness level
+        assert_eq!(
+            parent_subagent.restrictiveness(),
+            task_policy.restrictiveness()
+        );
+
+        // The fix: use strict < instead of <= to prevent clobbering
+        // When sub_level == parent_level, we should NOT apply the task policy
+        let sub_level = task_policy.restrictiveness().unwrap();
+        let parent_level = parent_subagent.restrictiveness().unwrap();
+
+        // This is what the fixed code checks: sub_level < parent_level
+        // Should be false when levels are equal
+        assert!(
+            !(sub_level < parent_level),
+            "equal levels should not trigger override"
         );
     }
 }

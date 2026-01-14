@@ -31,7 +31,7 @@ pub(crate) enum AppEvent {
     /// Open the resume picker inside the running TUI session.
     OpenResumePicker,
 
-    /// Open the children picker to browse subagent sessions.
+    /// Open the children picker to browse worker sessions.
     OpenChildrenPicker(ConversationId),
 
     /// Request to exit the application gracefully.
@@ -170,13 +170,13 @@ pub(crate) enum AppEvent {
         category: FeedbackCategory,
     },
 
-    /// Delegate a task to a subagent.
+    /// Delegate a task to a worker.
     DelegateAgent {
         /// Short description for the task.
         description: String,
-        /// The prompt to send to the agent.
+        /// The prompt to send to the worker.
         prompt: String,
-        /// Subagent slug.
+        /// Worker slug.
         agent: String,
     },
 }

@@ -97,7 +97,7 @@ pub(crate) async fn apply_bespoke_event_handling(
             .await;
         }
         EventMsg::SubagentEvent(payload) => {
-            if payload.subagent_name != "review" {
+            if payload.task_type != "review" {
                 return;
             }
 

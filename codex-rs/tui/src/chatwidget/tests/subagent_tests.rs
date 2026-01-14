@@ -94,7 +94,7 @@ fn make_chatwidget_manual() -> (ChatWidget, tokio::sync::mpsc::UnboundedReceiver
 fn subagent_nesting_logic() {
     let (mut chat, _rx) = make_chatwidget_manual();
 
-    // 1. Parent subagent starts.
+    // 1. Parent worker starts.
     // Call ID: "call_parent"
     // Delegation ID: "del_parent"
     // Parent Delegation ID: None (Top level)
@@ -102,7 +102,8 @@ fn subagent_nesting_logic() {
         task_prompt: None,
         parent_call_id: "call_parent".to_string(),
         session_id: None,
-        subagent_name: "explorer".to_string(),
+        task_type: "explorer".to_string(),
+        difficulty: "medium".to_string(),
         task_description: "Parent Task".to_string(),
         delegation_id: Some("del_parent".to_string()),
         parent_delegation_id: None,
@@ -119,7 +120,7 @@ fn subagent_nesting_logic() {
     );
     assert!(chat.active_subagent_cells.contains_key("call_parent"));
 
-    // 2. Child subagent starts.
+    // 2. Child worker starts.
     // Call ID: "call_child"
     // Delegation ID: "del_child"
     // Parent Delegation ID: "del_parent" (Should link to parent)
@@ -127,7 +128,8 @@ fn subagent_nesting_logic() {
         task_prompt: None,
         parent_call_id: "call_child".to_string(),
         session_id: None,
-        subagent_name: "explorer".to_string(),
+        task_type: "explorer".to_string(),
+        difficulty: "medium".to_string(),
         task_description: "Child Task".to_string(),
         delegation_id: Some("del_child".to_string()),
         parent_delegation_id: Some("del_parent".to_string()),
@@ -208,12 +210,13 @@ fn subagent_nested_rendering_order() {
 
     let (mut chat, _rx) = make_chatwidget_manual();
 
-    // Parent subagent starts first
+    // Parent worker starts first
     chat.on_subagent_event(SubagentEventPayload {
         task_prompt: None,
         parent_call_id: "call_parent".to_string(),
         session_id: None,
-        subagent_name: "explorer".to_string(),
+        task_type: "explorer".to_string(),
+        difficulty: "medium".to_string(),
         task_description: "Parent Task".to_string(),
         delegation_id: Some("del_parent".to_string()),
         parent_delegation_id: None,
@@ -223,12 +226,13 @@ fn subagent_nested_rendering_order() {
         })),
     });
 
-    // Child subagent starts, nested under parent
+    // Child worker starts, nested under parent
     chat.on_subagent_event(SubagentEventPayload {
         task_prompt: None,
         parent_call_id: "call_child".to_string(),
         session_id: None,
-        subagent_name: "explorer".to_string(),
+        task_type: "explorer".to_string(),
+        difficulty: "medium".to_string(),
         task_description: "Child Task".to_string(),
         delegation_id: Some("del_child".to_string()),
         parent_delegation_id: Some("del_parent".to_string()),
@@ -332,12 +336,13 @@ fn subagent_child_before_parent_becomes_separate_cell() {
 
     let (mut chat, _rx) = make_chatwidget_manual();
 
-    // Child subagent event arrives FIRST (before parent exists)
+    // Child worker event arrives FIRST (before parent exists)
     chat.on_subagent_event(SubagentEventPayload {
         task_prompt: None,
         parent_call_id: "call_child".to_string(),
         session_id: None,
-        subagent_name: "explorer".to_string(),
+        task_type: "explorer".to_string(),
+        difficulty: "medium".to_string(),
         task_description: "Child Task".to_string(),
         delegation_id: Some("del_child".to_string()),
         parent_delegation_id: Some("del_parent".to_string()), // References non-existent parent
@@ -347,12 +352,13 @@ fn subagent_child_before_parent_becomes_separate_cell() {
         })),
     });
 
-    // Parent subagent event arrives SECOND
+    // Parent worker event arrives SECOND
     chat.on_subagent_event(SubagentEventPayload {
         task_prompt: None,
         parent_call_id: "call_parent".to_string(),
         session_id: None,
-        subagent_name: "explorer".to_string(),
+        task_type: "explorer".to_string(),
+        difficulty: "medium".to_string(),
         task_description: "Parent Task".to_string(),
         delegation_id: Some("del_parent".to_string()),
         parent_delegation_id: None,
@@ -387,12 +393,13 @@ fn subagent_patch_activity_display() {
     let (mut chat, _rx) = make_chatwidget_manual();
     use std::path::PathBuf;
 
-    // Start a subagent
+    // Start a worker
     chat.on_subagent_event(SubagentEventPayload {
         task_prompt: None,
         parent_call_id: "call_sub".to_string(),
         session_id: None,
-        subagent_name: "explorer".to_string(),
+        task_type: "explorer".to_string(),
+        difficulty: "medium".to_string(),
         task_description: "Patching Task".to_string(),
         delegation_id: Some("del_sub".to_string()),
         parent_delegation_id: None,
@@ -422,7 +429,8 @@ fn subagent_patch_activity_display() {
         task_prompt: None,
         parent_call_id: "call_sub".to_string(),
         session_id: None,
-        subagent_name: "explorer".to_string(),
+        task_type: "explorer".to_string(),
+        difficulty: "medium".to_string(),
         task_description: "Patching Task".to_string(),
         delegation_id: Some("del_sub".to_string()),
         parent_delegation_id: None,

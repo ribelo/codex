@@ -4,7 +4,7 @@ Looking for something specific? Jump ahead:
 
 - [Tips & shortcuts](#tips--shortcuts) – hotkeys, resume flow, prompts
 - [Non-interactive runs](./exec.md) – automate with `codex exec`
-- [Subagents](./subagents.md) – configure and delegate to subagents
+- [Tasks](../codex-rs/docs/tasks.md) – configure task routing and worker handlers
 - Ready for deeper customization? Head to [`advanced.md`](./advanced.md)
 
 ### CLI usage

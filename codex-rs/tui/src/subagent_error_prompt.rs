@@ -84,7 +84,7 @@ struct SubagentErrorScreen {
 impl SubagentErrorScreen {
     fn new(request_frame: FrameRequester, errors: &[SubagentError]) -> Self {
         let mut lines: Vec<Line<'static>> = Vec::new();
-        lines.push(Line::from("Subagent configuration errors detected".bold()));
+        lines.push(Line::from("Worker configuration errors detected".bold()));
         lines.push(Line::from(
             "Fix these agent .md files (frontmatter now uses `model:`) and restart. Invalid subagents are ignored until resolved. Press enter or esc to continue, Ctrl+C or Ctrl+D to exit.",
         ));
@@ -154,7 +154,7 @@ impl WidgetRef for &SubagentErrorScreen {
     fn render_ref(&self, area: Rect, buf: &mut Buffer) {
         Clear.render(area, buf);
         let block = Block::default()
-            .title("Subagent errors".bold())
+            .title("Worker errors".bold())
             .borders(Borders::ALL);
         Paragraph::new(self.lines.clone())
             .block(block)

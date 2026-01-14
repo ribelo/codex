@@ -52,7 +52,7 @@ const LOAD_NEAR_THRESHOLD: usize = 5;
 pub enum PickerMode {
     /// Standard resume picker - shows interactive sessions filtered by CWD/provider
     Resume { show_all: bool },
-    /// Children picker - shows subagent sessions with given parent_id
+    /// Children picker - shows worker sessions with given parent_id
     Children { parent_id: ConversationId },
 }
 

@@ -3,13 +3,13 @@ name: Code Reviewer
 description: |
   Review code changes for bugs, security issues, and improvements.
 
-  Usage: Pass a prompt describing WHAT to review. The subagent runs git commands to fetch diffs.
+  Usage: Pass a prompt describing WHAT to review. The worker runs git commands to fetch diffs.
 
   Prompt patterns:
   - Uncommitted: "Review current code changes (staged, unstaged, untracked) and provide prioritized findings."
   - Base branch: "Review changes against branch '{branch}'. Run `git diff $(git merge-base HEAD {branch})`. Provide findings."
   - Commit: "Review changes introduced by commit {sha}. Provide prioritized findings."
-  - Custom: Any review instructions (subagent determines how to fetch code).
+  - Custom: Any review instructions (worker determines how to fetch code).
 model: inherit
 reasoning_effort: inherit
 sandbox_policy: read-only

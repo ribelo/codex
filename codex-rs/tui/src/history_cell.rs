@@ -1336,19 +1336,19 @@ pub(crate) fn new_active_mcp_tool_call(
     McpToolCallCell::new(call_id, invocation, animations_enabled)
 }
 
-/// Status of a subagent task.
+/// Status of a worker task.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[allow(dead_code)]
 pub(crate) enum SubagentTaskStatus {
-    /// The subagent task is still running.
+    /// The worker task is still running.
     Running,
-    /// The subagent task completed successfully.
+    /// The worker task completed successfully.
     Completed,
-    /// The subagent task failed.
+    /// The worker task failed.
     Failed,
 }
 
-/// A summarized event from a subagent for display purposes.
+/// A summarized event from a worker for display purposes.
 #[derive(Debug, Clone)]
 pub(crate) struct SubagentActivityItem {
     /// A short description of what happened (e.g., "Ran ls -la", "Read main.rs").
@@ -1385,17 +1385,18 @@ impl Default for SubagentState {
     }
 }
 
-/// History cell for displaying a subagent task container.
+/// History cell for displaying a worker task container.
 /// Groups all events from a delegated task under a single collapsible UI element.
 #[derive(Debug, Clone)]
 pub(crate) struct SubagentTaskCell {
     /// The tool_call_id of the parent "task" tool invocation.
     #[allow(dead_code)]
     parent_call_id: String,
-    /// Session ID for the subagent (for resumability)
+    /// Session ID for the worker (for resumability)
     session_id: Option<String>,
-    /// The subagent type (slug) that is handling this task.
-    subagent_name: String,
+    /// The task type (slug) that is handling this task.
+    task_type: String,
+    difficulty: String,
     /// Description of the task being delegated.
     pub(crate) task_description: String,
     /// Full prompt of the task if available.
@@ -1421,7 +1422,8 @@ impl SubagentTaskCell {
     pub(crate) fn new(
         parent_call_id: String,
         session_id: Option<String>,
-        subagent_name: String,
+        task_type: String,
+        difficulty: String,
         task_description: String,
         task_prompt: Option<String>,
         delegation_id: Option<String>,
@@ -1433,7 +1435,8 @@ impl SubagentTaskCell {
         Self {
             parent_call_id,
             session_id,
-            subagent_name,
+            task_type,
+            difficulty,
             task_description,
             task_prompt,
             delegation_id,
@@ -1523,13 +1526,13 @@ impl HistoryCell for SubagentTaskCell {
         };
 
         // Header
-        let profile_name = self.subagent_name.strip_prefix("profile:");
+        let profile_name = self.task_type.strip_prefix("profile:");
         let header = if let Some(profile_name) = profile_name {
             let action = match status {
                 SubagentTaskStatus::Running => "Running with profile:",
                 _ => "Ran with profile:",
             };
-            let mut header_spans = vec![
+            let mut header_spans: Vec<Span<'static>> = vec![
                 indent.into(),
                 bullet,
                 " ".into(),
@@ -1552,14 +1555,18 @@ impl HistoryCell for SubagentTaskCell {
                 SubagentTaskStatus::Running => "Delegating to",
                 _ => "Delegated to",
             };
-            let mut header_spans = vec![
+            let mut header_spans: Vec<Span<'static>> = vec![
                 indent.into(),
                 bullet,
                 " ".into(),
                 action.bold(),
                 " @".magenta(),
-                self.subagent_name.clone().magenta(),
+                self.task_type.clone().magenta(),
             ];
+            if self.difficulty != "medium" {
+                header_spans.push(":".magenta());
+                header_spans.push(self.difficulty.clone().magenta());
+            }
             if let Some(ref sid) = self.session_id {
                 let short_id = sid.clone();
                 header_spans.push(" #".dim());
@@ -1678,13 +1685,13 @@ impl HistoryCell for SubagentTaskCell {
         };
 
         // Header
-        let profile_name = self.subagent_name.strip_prefix("profile:");
+        let profile_name = self.task_type.strip_prefix("profile:");
         let header = if let Some(profile_name) = profile_name {
             let action = match status {
                 SubagentTaskStatus::Running => "Running with profile:",
                 _ => "Ran with profile:",
             };
-            let mut spans = vec![
+            let mut spans: Vec<Span<'static>> = vec![
                 indent.into(),
                 bullet,
                 " ".into(),
@@ -1702,14 +1709,18 @@ impl HistoryCell for SubagentTaskCell {
                 SubagentTaskStatus::Running => "Delegating to",
                 _ => "Delegated to",
             };
-            let mut spans = vec![
+            let mut spans: Vec<Span<'static>> = vec![
                 indent.into(),
                 bullet,
                 " ".into(),
                 action.bold(),
                 " @".magenta(),
-                self.subagent_name.clone().magenta(),
+                self.task_type.clone().magenta(),
             ];
+            if self.difficulty != "medium" {
+                spans.push(":".magenta());
+                spans.push(self.difficulty.clone().magenta());
+            }
             if let Some(model_id) = model_id {
                 spans.push(" · ".dim());
                 spans.push(model_id.dim());
@@ -1820,7 +1831,8 @@ impl HistoryCell for SubagentTaskCell {
 pub(crate) fn new_subagent_task_cell(
     parent_call_id: String,
     session_id: Option<String>,
-    subagent_name: String,
+    task_type: String,
+    difficulty: String,
     task_description: String,
     task_prompt: Option<String>,
     delegation_id: Option<String>,
@@ -1832,7 +1844,8 @@ pub(crate) fn new_subagent_task_cell(
     SubagentTaskCell::new(
         parent_call_id,
         session_id,
-        subagent_name,
+        task_type,
+        difficulty,
         task_description,
         task_prompt,
         delegation_id,
@@ -3176,6 +3189,7 @@ mod tests {
             "call-1".to_string(),
             None,
             "explorer".to_string(),
+            "medium".to_string(),
             "Find all test files".to_string(),
             None,
             Some("delegation-1".to_string()),
@@ -3207,6 +3221,7 @@ mod tests {
             "call-1".to_string(),
             None,
             "profile:kimi".to_string(),
+            "medium".to_string(),
             "Find current Bitcoin (BTC) price".to_string(),
             None,
             Some("delegation-1".to_string()),
@@ -3238,6 +3253,7 @@ mod tests {
             "call-2".to_string(),
             None,
             "explorer".to_string(),
+            "medium".to_string(),
             "Search for API endpoints".to_string(),
             None,
             Some("delegation-2".to_string()),
@@ -3272,6 +3288,7 @@ mod tests {
             "call-3".to_string(),
             None,
             "explorer".to_string(),
+            "medium".to_string(),
             "List directory contents".to_string(),
             None,
             Some("delegation-3".to_string()),
@@ -3307,6 +3324,7 @@ mod tests {
             "call-1".to_string(),
             None,
             "explorer".to_string(),
+            "medium".to_string(),
             task_description.to_string(),
             Some(task_prompt.to_string()),
             Some("delegation-1".to_string()),
@@ -3343,6 +3361,7 @@ mod tests {
             "call-1".to_string(),
             None,
             "profile:kimi".to_string(),
+            "medium".to_string(),
             long_description.to_string(),
             None,
             Some("delegation-1".to_string()),
@@ -3397,6 +3416,7 @@ mod tests {
             "call-1".to_string(),
             None,
             "explorer".to_string(),
+            "medium".to_string(),
             "Test task".to_string(),
             None,
             Some("delegation-1".to_string()),
@@ -3447,6 +3467,7 @@ mod tests {
             "call-1".to_string(),
             None,
             "explorer".to_string(),
+            "medium".to_string(),
             "Test".to_string(),
             None,
             Some("delegation-1".to_string()),
@@ -3485,6 +3506,7 @@ mod tests {
             "call-1".to_string(),
             None,
             "explorer".to_string(),
+            "medium".to_string(),
             "Test task".to_string(),
             None,
             None,
@@ -3550,6 +3572,7 @@ mod tests {
             "child-call-1".to_string(),
             None,
             "finder".to_string(),
+            "medium".to_string(),
             "First finder call".to_string(),
             None,
             Some("child-del-1".to_string()),
@@ -3562,6 +3585,7 @@ mod tests {
             "child-call-2".to_string(),
             None,
             "finder".to_string(),
+            "medium".to_string(),
             "Second finder call".to_string(),
             None,
             Some("child-del-2".to_string()),
@@ -3583,6 +3607,7 @@ mod tests {
             "parent-call".to_string(),
             None,
             "general".to_string(),
+            "medium".to_string(),
             "Run two finder calls".to_string(),
             None,
             Some("parent-del".to_string()),

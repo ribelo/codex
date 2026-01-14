@@ -13,54 +13,13 @@ use tracing::warn;
 use crate::codex::Codex;
 use crate::config::Config;
 use crate::config::types::AgentConfigToml;
+use crate::config::types::SubagentApprovalPolicy;
 use crate::config::types::SubagentReasoningEffort;
+use crate::config::types::SubagentSandboxPolicy;
+use crate::config::types::TaskDifficulty;
 use crate::openai_models::model_family::InstructionMode;
-use crate::protocol::AskForApproval;
-use crate::protocol::SandboxPolicy;
 use codex_protocol::openai_models::ReasoningEffort;
 use tokio_util::sync::CancellationToken;
-
-/// Approval policy for subagents, with an additional `Inherit` variant.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum SubagentApprovalPolicy {
-    /// Inherit the parent session's approval policy.
-    Inherit,
-    /// Only "known safe" commands are auto-approved.
-    #[serde(rename = "untrusted")]
-    UnlessTrusted,
-    /// All commands auto-approved in sandbox; failures escalate.
-    OnFailure,
-    /// The model decides when to ask.
-    OnRequest,
-    /// Never ask the user.
-    Never,
-}
-
-impl SubagentApprovalPolicy {
-    /// Convert to the protocol's `AskForApproval`, returning `None` for `Inherit`.
-    pub fn to_ask_for_approval(self) -> Option<AskForApproval> {
-        match self {
-            SubagentApprovalPolicy::Inherit => None,
-            SubagentApprovalPolicy::UnlessTrusted => Some(AskForApproval::UnlessTrusted),
-            SubagentApprovalPolicy::OnFailure => Some(AskForApproval::OnFailure),
-            SubagentApprovalPolicy::OnRequest => Some(AskForApproval::OnRequest),
-            SubagentApprovalPolicy::Never => Some(AskForApproval::Never),
-        }
-    }
-
-    /// Returns the restrictiveness level (lower = more restrictive).
-    /// `Inherit` returns `None` since it depends on the parent.
-    pub fn restrictiveness(self) -> Option<i32> {
-        match self {
-            SubagentApprovalPolicy::Inherit => None,
-            SubagentApprovalPolicy::UnlessTrusted => Some(0),
-            SubagentApprovalPolicy::OnFailure => Some(2),
-            SubagentApprovalPolicy::OnRequest => Some(1),
-            SubagentApprovalPolicy::Never => Some(-1),
-        }
-    }
-}
 
 /// Model setting for subagents.
 ///
@@ -82,21 +41,6 @@ impl SubagentModel {
         match self {
             SubagentModel::Inherit => None,
             SubagentModel::Canonical(canonical_model_id) => Some(canonical_model_id),
-        }
-    }
-}
-
-impl SubagentReasoningEffort {
-    /// Convert to the protocol's `ReasoningEffort`, returning `None` for `Inherit`.
-    pub fn to_reasoning_effort(self) -> Option<ReasoningEffort> {
-        match self {
-            SubagentReasoningEffort::Inherit => None,
-            SubagentReasoningEffort::None => Some(ReasoningEffort::None),
-            SubagentReasoningEffort::Minimal => Some(ReasoningEffort::Minimal),
-            SubagentReasoningEffort::Low => Some(ReasoningEffort::Low),
-            SubagentReasoningEffort::Medium => Some(ReasoningEffort::Medium),
-            SubagentReasoningEffort::High => Some(ReasoningEffort::High),
-            SubagentReasoningEffort::XHigh => Some(ReasoningEffort::XHigh),
         }
     }
 }
@@ -181,53 +125,6 @@ impl SubagentMetadata {
     }
 }
 
-/// Simplified sandbox policy for subagent frontmatter.
-/// Maps to the full SandboxPolicy enum but with simpler serialization.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum SubagentSandboxPolicy {
-    ReadOnly,
-    WorkspaceWrite,
-    #[serde(rename = "danger-full-access")]
-    DangerFullAccess,
-    /// Inherit the parent session's sandbox policy.
-    Inherit,
-}
-
-impl SubagentSandboxPolicy {
-    /// Convert to the full SandboxPolicy enum, returning `None` for `Inherit`.
-    pub fn to_sandbox_policy(self) -> Option<SandboxPolicy> {
-        match self {
-            SubagentSandboxPolicy::ReadOnly => Some(SandboxPolicy::new_read_only_policy()),
-            SubagentSandboxPolicy::WorkspaceWrite => {
-                Some(SandboxPolicy::new_workspace_write_policy())
-            }
-            SubagentSandboxPolicy::DangerFullAccess => Some(SandboxPolicy::DangerFullAccess),
-            SubagentSandboxPolicy::Inherit => None,
-        }
-    }
-
-    /// Returns the restrictiveness level (lower = more restrictive).
-    /// `Inherit` returns `None` since it depends on the parent.
-    pub fn restrictiveness(self) -> Option<i32> {
-        match self {
-            SubagentSandboxPolicy::ReadOnly => Some(0),
-            SubagentSandboxPolicy::WorkspaceWrite => Some(1),
-            SubagentSandboxPolicy::DangerFullAccess => Some(2),
-            SubagentSandboxPolicy::Inherit => None,
-        }
-    }
-
-    /// Convert from SandboxPolicy to SubagentSandboxPolicy for comparison.
-    pub fn from_sandbox_policy(policy: &SandboxPolicy) -> Self {
-        match policy {
-            SandboxPolicy::ReadOnly => SubagentSandboxPolicy::ReadOnly,
-            SandboxPolicy::WorkspaceWrite { .. } => SubagentSandboxPolicy::WorkspaceWrite,
-            SandboxPolicy::DangerFullAccess => SubagentSandboxPolicy::DangerFullAccess,
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct SubagentDefinition {
     pub slug: String,
@@ -239,6 +136,8 @@ pub struct SubagentSession {
     pub codex: Arc<Codex>,
     pub cancellation_token: CancellationToken,
     pub session_id: String,
+    pub task_type: String,
+    pub difficulty: TaskDifficulty,
     pub instruction_mode: InstructionMode,
 }
 
@@ -263,6 +162,25 @@ const BUILTIN_AGENTS: &[(&str, &str)] = &[
 /// Load and validate all subagents from the agents directory.
 /// Returns both successfully loaded agents and errors for invalid ones.
 pub async fn load_subagents(codex_home: &Path, config: &Config) -> SubagentLoadOutcome {
+    let codex_home = codex_home.to_path_buf();
+    let agent_overrides = config.agent.clone();
+    let codex_home_for_err = codex_home.clone();
+
+    tokio::task::spawn_blocking(move || load_subagents_sync(codex_home, agent_overrides))
+        .await
+        .unwrap_or_else(|e| SubagentLoadOutcome {
+            agents: Vec::new(),
+            errors: vec![SubagentError {
+                path: codex_home_for_err,
+                message: format!("Failed to load subagents: {e}"),
+            }],
+        })
+}
+
+fn load_subagents_sync(
+    codex_home: PathBuf,
+    agent_overrides: Vec<AgentConfigToml>,
+) -> SubagentLoadOutcome {
     let started = std::time::Instant::now();
     let mut outcome = SubagentLoadOutcome::default();
     let agents_dir = codex_home.join("agents");
@@ -305,7 +223,7 @@ pub async fn load_subagents(codex_home: &Path, config: &Config) -> SubagentLoadO
         }
     }
 
-    apply_agent_overrides(&mut agents_by_slug, &config.agent);
+    apply_agent_overrides(&mut agents_by_slug, &agent_overrides);
 
     outcome.agents = agents_by_slug.into_values().collect();
 
@@ -314,7 +232,7 @@ pub async fn load_subagents(codex_home: &Path, config: &Config) -> SubagentLoadO
         errors = outcome.errors.len(),
         path = %agents_dir.display(),
         elapsed_ms = started.elapsed().as_millis(),
-        "Loaded subagents (async)"
+        "Loaded subagents"
     );
 
     outcome

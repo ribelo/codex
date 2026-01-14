@@ -1,19 +1,19 @@
-# Subagent Patch Application: Edge Cases and Failure Scenarios
+# Worker Patch Application: Edge Cases and Failure Scenarios
 
 This document provides a comprehensive analysis of potential edge cases and failure scenarios
-in the subagent patch application system.
+in the worker patch application system.
 
 ## Architecture Overview
 
-Subagents apply changes directly to the workspace. Parallel subagents are serialized via a `repo_lock`.
+Workers apply changes directly to the workspace. Parallel workers are serialized via a `repo_lock`.
 
 1. **Patch Application**:
-   - Changes made by subagents are captured and applied to the main workspace.
+   - Changes made by workers are captured and applied to the main workspace.
    - Uses `apply_patch` logic to update files.
 
 2. **Locking**:
    - `repo_lock` mutex prevents parallel merges within the same turn.
-   - Parallel subagents from the same turn serialize correctly.
+   - Parallel workers from the same turn serialize correctly.
 
 ---
 
@@ -23,18 +23,18 @@ None currently tracked.
 
 ---
 
-## Parallel Subagents from Same Turn
+## Parallel Workers from Same Turn
 
-**Scenario**: Main agent spawns subagent A and B in parallel.
+**Scenario**: Main agent spawns worker A and B in parallel.
 
 **Why it's safe**:
 1. Both share the same `invocation.turn.repo_lock`.
 2. When A finishes, it acquires lock and merges its changes.
 3. When B finishes, it waits for the lock, then merges its changes.
 
-### Nested Subagents
+### Nested Workers
 
-**Scenario**: Subagent A spawns subagent B.
+**Scenario**: Worker A spawns worker B.
 
 **Why it's safe**:
 1. B merges its changes (using A's `repo_lock`).

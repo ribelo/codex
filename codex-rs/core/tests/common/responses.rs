@@ -70,6 +70,17 @@ impl ResponsesRequest {
         self.0.body_json().unwrap()
     }
 
+    pub fn instructions(&self) -> String {
+        self.0.body_json::<Value>().unwrap()["instructions"]
+            .as_str()
+            .expect("instructions not found in request")
+            .to_string()
+    }
+
+    pub fn from_wiremock(req: &wiremock::Request) -> Self {
+        Self(req.clone())
+    }
+
     /// Returns all `input_text` spans from `message` inputs for the provided role.
     pub fn message_input_texts(&self, role: &str) -> Vec<String> {
         self.inputs_of_type("message")

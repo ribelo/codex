@@ -78,7 +78,8 @@ fn wrap_subagent_event(
 ) -> EventMsg {
     EventMsg::SubagentEvent(SubagentEventPayload {
         parent_call_id: parent_call_id.to_string(),
-        subagent_name: subagent_name.to_string(),
+        task_type: subagent_name.to_string(),
+        difficulty: "medium".to_string(),
         task_description: task_description.to_string(),
         task_prompt: task_prompt.map(ToString::to_string),
         delegation_id,

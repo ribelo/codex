@@ -1880,11 +1880,11 @@ use core_test_support::responses::ev_response_created;
 use core_test_support::responses::start_mock_server;
 use wiremock::matchers::header;
 
-/// Test that subagent request includes the system_prompt markdown from the subagent template.
-/// This verifies that finder.md's system_prompt is present in the first user message
-/// (wrapped in <agent_context>) for Strict instruction mode models.
+/// Test that task-based delegation includes task context + identity prompt.
+/// This verifies that the `search` task description and worker identity prompt are present in the
+/// subagent request for Strict instruction mode models.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn subagent_request_includes_template_system_prompt() {
+async fn subagent_request_includes_task_description_and_identity_prompt() {
     skip_if_no_network!();
 
     let server = start_mock_server().await;
@@ -1893,7 +1893,7 @@ async fn subagent_request_includes_template_system_prompt() {
     let task_args = json!({
         "description": "Find code",
         "prompt": "Search for the main function",
-        "subagent_name": "finder"
+        "task_type": "search"
     });
     let parent_response = sse(vec![
         ev_response_created("resp-parent-1"),
@@ -1910,7 +1910,7 @@ async fn subagent_request_includes_template_system_prompt() {
     ]);
     let subagent_mock = mount_sse_once_match(
         &server,
-        header("x-openai-subagent", "finder"),
+        header("x-openai-subagent", "search"),
         subagent_response,
     )
     .await;
@@ -1939,27 +1939,20 @@ async fn subagent_request_includes_template_system_prompt() {
     assert_eq!(subagent_mock.requests().len(), 1);
     assert_eq!(parent_completion_mock.requests().len(), 1);
 
-    // Verify the subagent request contains finder's system_prompt
+    // Verify the subagent request contains the task description + identity prompt.
     let subagent_request = &subagent_mock.requests()[0];
-    let user_messages = subagent_request.message_input_texts("user");
-    let combined = user_messages.join("\n");
-
-    let finder_template_path =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/subagents/finder.md");
-    let finder_template =
-        std::fs::read_to_string(&finder_template_path).expect("read src/subagents/finder.md");
-    let finder_system_prompt = finder_template
-        .splitn(3, "---\n")
-        .nth(2)
-        .expect("finder template missing closing frontmatter delimiter")
-        .trim_start_matches('\n')
-        .trim_end_matches('\n');
-
-    // Verify the exact system prompt content appears, and that the identity prompt is appended.
-    let expected = format!("<agent_context>\n{finder_system_prompt}\n\n# Subagent Context");
+    let combined = format!(
+        "{}\n{}",
+        subagent_request.instructions(),
+        subagent_request.message_input_texts("user").join("\n")
+    );
     assert!(
-        combined.contains(&expected),
-        "subagent request should include finder.md system_prompt. Got: {combined}"
+        combined.contains("Find code, definitions, and references"),
+        "subagent request should include task description. Got: {combined}"
+    );
+    assert!(
+        combined.contains("# Worker Context"),
+        "subagent request should include identity prompt header. Got: {combined}"
     );
 }
 
@@ -1974,7 +1967,7 @@ async fn subagent_request_includes_identity_prompt_with_parent_uuid() {
     let task_args = json!({
         "description": "Quick fix",
         "prompt": "Fix the typo",
-        "subagent_name": "rush"
+        "task_type": "code"
     });
     let parent_response = sse(vec![
         ev_response_created("resp-parent-1"),
@@ -1991,7 +1984,7 @@ async fn subagent_request_includes_identity_prompt_with_parent_uuid() {
     ]);
     let subagent_mock = mount_sse_once_match(
         &server,
-        header("x-openai-subagent", "rush"),
+        header("x-openai-subagent", "code"),
         subagent_response,
     )
     .await;
@@ -2022,16 +2015,19 @@ async fn subagent_request_includes_identity_prompt_with_parent_uuid() {
 
     // Verify the subagent request contains identity prompt
     let subagent_request = &subagent_mock.requests()[0];
-    let user_messages = subagent_request.message_input_texts("user");
-    let combined = user_messages.join("\n");
+    let combined = format!(
+        "{}\n{}",
+        subagent_request.instructions(),
+        subagent_request.message_input_texts("user").join("\n")
+    );
 
     // Check for identity prompt header and content
     assert!(
-        combined.contains("# Subagent Context"),
+        combined.contains("# Worker Context"),
         "subagent request should include identity prompt header. Got: {combined}"
     );
     assert!(
-        combined.contains("You are a specialized subagent delegated by a parent agent"),
+        combined.contains("You are an internal worker session delegated by a parent agent"),
         "subagent request should include identity prompt text. Got: {combined}"
     );
 
@@ -2064,7 +2060,7 @@ async fn subagent_with_empty_system_prompt_still_gets_identity_prompt() {
     let task_args = json!({
         "description": "Review code",
         "prompt": "Check the changes",
-        "subagent_name": "minimal"
+        "task_type": "minimal"
     });
     let parent_response = sse(vec![
         ev_response_created("resp-parent-1"),
@@ -2095,14 +2091,17 @@ async fn subagent_with_empty_system_prompt_still_gets_identity_prompt() {
     let parent_completion_mock = mount_sse_once(&server, parent_completion).await;
 
     // Build and run codex
-    let mut builder = test_codex().with_pre_build_hook(|codex_home| {
-        let agents_dir = codex_home.join("agents");
-        std::fs::create_dir_all(&agents_dir).expect("create agents dir");
-        std::fs::write(
-            agents_dir.join("minimal.md"),
-            "---\nmodel: inherit\nsandbox_policy: inherit\napproval_policy: inherit\n---\n",
-        )
-        .expect("write minimal agent");
+    let mut builder = test_codex().with_config(|config| {
+        config.tasks = vec![codex_core::config::types::TaskConfigToml {
+            task_type: "minimal".to_string(),
+            description: None,
+            skills: None,
+            model: None,
+            reasoning_effort: None,
+            sandbox_policy: None,
+            approval_policy: None,
+            difficulty: None,
+        }];
     });
     let test = builder
         .build(&server)
@@ -2113,32 +2112,24 @@ async fn subagent_with_empty_system_prompt_still_gets_identity_prompt() {
         .await
         .expect("submit turn");
 
-    // Ensure we observed both the parent and subagent requests.
     assert_eq!(parent_mock.requests().len(), 1);
     assert_eq!(subagent_mock.requests().len(), 1);
     assert_eq!(parent_completion_mock.requests().len(), 1);
 
-    // Verify the identity prompt is present (proving it's injected even with system_prompt)
     let subagent_request = &subagent_mock.requests()[0];
-    let user_messages = subagent_request.message_input_texts("user");
-    let combined = user_messages.join("\n");
+    let combined = format!(
+        "{}\n{}",
+        subagent_request.instructions(),
+        subagent_request.message_input_texts("user").join("\n")
+    );
 
-    // The identity prompt should be injected regardless of whether system_prompt is empty
     assert!(
-        combined.contains("# Subagent Context"),
+        combined.contains("# Worker Context"),
         "identity prompt should be injected. Got: {combined}"
     );
     assert!(
-        combined.contains("You are a specialized subagent delegated by a parent agent"),
+        combined.contains("You are an internal worker session delegated by a parent agent"),
         "identity prompt content should be present. Got: {combined}"
-    );
-    assert!(
-        combined.contains("Focus ONLY on your assigned task"),
-        "identity prompt instructions should be present. Got: {combined}"
-    );
-    assert!(
-        !combined.contains("You are a powerful code search agent"),
-        "minimal frontmatter-only agent should have an empty system_prompt. Got: {combined}"
     );
 }
 
@@ -2147,30 +2138,6 @@ async fn subagent_with_empty_system_prompt_still_gets_identity_prompt() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn nested_delegation_includes_identity_prompt_in_user_input() {
     skip_if_no_network!();
-
-    fn role_input_texts(body: &serde_json::Value, role: &str) -> Vec<String> {
-        body.get("input")
-            .and_then(serde_json::Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter(|item| item.get("type").and_then(serde_json::Value::as_str) == Some("message"))
-            .filter(|item| item.get("role").and_then(serde_json::Value::as_str) == Some(role))
-            .filter_map(|item| {
-                item.get("content")
-                    .and_then(serde_json::Value::as_array)
-                    .cloned()
-            })
-            .flatten()
-            .filter(|span| {
-                span.get("type").and_then(serde_json::Value::as_str) == Some("input_text")
-            })
-            .filter_map(|span| {
-                span.get("text")
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_owned)
-            })
-            .collect()
-    }
 
     fn parent_session_ids(text: &str) -> Vec<Uuid> {
         text.lines()
@@ -2181,26 +2148,36 @@ async fn nested_delegation_includes_identity_prompt_in_user_input() {
 
     let server = start_mock_server().await;
 
-    let mut builder = test_codex().with_pre_build_hook(|codex_home| {
-        let agents_dir = codex_home.join("agents");
-        std::fs::create_dir_all(&agents_dir).expect("create agents dir");
-        std::fs::write(
-            agents_dir.join("child.md"),
-            "---\nname: Child\ndescription: Nested delegation test child\nmodel: inherit\nsandbox_policy: inherit\napproval_policy: inherit\nallowed_subagents: [grandchild]\n---\n\nCHILD_SYSTEM_PROMPT_MARKER\n",
-        )
-        .expect("write child agent");
-        std::fs::write(
-            agents_dir.join("grandchild.md"),
-            "---\nname: Grandchild\ndescription: Nested delegation test grandchild\nmodel: inherit\nsandbox_policy: inherit\napproval_policy: inherit\nallowed_subagents: []\n---\n\nGRANDCHILD_SYSTEM_PROMPT_MARKER\n",
-        )
-        .expect("write grandchild agent");
+    let mut builder = test_codex().with_config(|config| {
+        config.tasks = vec![
+            codex_core::config::types::TaskConfigToml {
+                task_type: "child".to_string(),
+                description: Some("CHILD_SYSTEM_PROMPT_MARKER".to_string()),
+                skills: None,
+                model: None,
+                reasoning_effort: None,
+                sandbox_policy: None,
+                approval_policy: None,
+                difficulty: None,
+            },
+            codex_core::config::types::TaskConfigToml {
+                task_type: "grandchild".to_string(),
+                description: Some("GRANDCHILD_SYSTEM_PROMPT_MARKER".to_string()),
+                skills: None,
+                model: None,
+                reasoning_effort: None,
+                sandbox_policy: None,
+                approval_policy: None,
+                difficulty: None,
+            },
+        ];
     });
 
     // Root -> child task call.
     let parent_task_args = json!({
         "description": "Spawn child",
         "prompt": "CHILD_PROMPT",
-        "subagent_name": "child"
+        "task_type": "child"
     });
     let parent_response = sse(vec![
         ev_response_created("resp-parent-1"),
@@ -2213,14 +2190,19 @@ async fn nested_delegation_includes_identity_prompt_in_user_input() {
     let child_task_args = json!({
         "description": "Spawn grandchild",
         "prompt": "GRANDCHILD_PROMPT",
-        "subagent_name": "grandchild"
+        "task_type": "grandchild"
     });
     let child_response = sse(vec![
         ev_response_created("resp-child-1"),
         ev_function_call("call-child-task-1", "task", &child_task_args.to_string()),
         ev_completed("resp-child-1"),
     ]);
-    mount_sse_once(&server, child_response).await;
+    let child_first_mock = mount_sse_once_match(
+        &server,
+        header("x-openai-subagent", "child"),
+        child_response,
+    )
+    .await;
 
     // Grandchild completion.
     let grandchild_response = sse(vec![
@@ -2228,7 +2210,12 @@ async fn nested_delegation_includes_identity_prompt_in_user_input() {
         ev_assistant_message("msg-grandchild-1", "grandchild done"),
         ev_completed("resp-grandchild-1"),
     ]);
-    mount_sse_once(&server, grandchild_response).await;
+    let grandchild_mock = mount_sse_once_match(
+        &server,
+        header("x-openai-subagent", "grandchild"),
+        grandchild_response,
+    )
+    .await;
 
     // Child completion after receiving grandchild output.
     let child_completion = sse(vec![
@@ -2236,7 +2223,12 @@ async fn nested_delegation_includes_identity_prompt_in_user_input() {
         ev_assistant_message("msg-child-2", "child done"),
         ev_completed("resp-child-2"),
     ]);
-    mount_sse_once(&server, child_completion).await;
+    let child_completion_mock = mount_sse_once_match(
+        &server,
+        header("x-openai-subagent", "child"),
+        child_completion,
+    )
+    .await;
 
     // Parent completion after receiving child output.
     let parent_completion = sse(vec![
@@ -2244,7 +2236,7 @@ async fn nested_delegation_includes_identity_prompt_in_user_input() {
         ev_assistant_message("msg-parent-2", "parent done"),
         ev_completed("resp-parent-2"),
     ]);
-    mount_sse_once(&server, parent_completion).await;
+    let parent_completion_mock = mount_sse_once(&server, parent_completion).await;
 
     let test = builder
         .build(&server)
@@ -2255,46 +2247,34 @@ async fn nested_delegation_includes_identity_prompt_in_user_input() {
         .await
         .expect("submit turn");
 
-    let requests = core_test_support::responses::get_responses_requests(&server).await;
-    let child_request = requests
-        .iter()
-        .find(|req| {
-            req.headers
-                .get("x-openai-subagent")
-                .and_then(|h| h.to_str().ok())
-                == Some("child")
-        })
-        .expect("child request");
-    let grandchild_request = requests
-        .iter()
-        .find(|req| {
-            req.headers
-                .get("x-openai-subagent")
-                .and_then(|h| h.to_str().ok())
-                == Some("grandchild")
-        })
-        .expect("grandchild request");
+    assert_eq!(child_first_mock.requests().len(), 1);
+    assert_eq!(grandchild_mock.requests().len(), 1);
+    assert_eq!(child_completion_mock.requests().len(), 1);
+    assert_eq!(parent_completion_mock.requests().len(), 1);
 
-    let child_combined = role_input_texts(
-        &child_request.body_json::<serde_json::Value>().unwrap(),
-        "user",
-    )
-    .join("\n");
-    let grandchild_combined = role_input_texts(
-        &grandchild_request.body_json::<serde_json::Value>().unwrap(),
-        "user",
-    )
-    .join("\n");
+    let child_req = &child_first_mock.requests()[0];
+    let grandchild_req = &grandchild_mock.requests()[0];
+
+    let child_combined = format!(
+        "{}\n{}",
+        child_req.instructions(),
+        child_req.message_input_texts("user").join("\n")
+    );
+    let grandchild_combined = format!(
+        "{}\n{}",
+        grandchild_req.instructions(),
+        grandchild_req.message_input_texts("user").join("\n")
+    );
 
     assert_eq!(
-        i64::try_from(child_combined.matches("# Subagent Context").count()).unwrap(),
+        i64::try_from(child_combined.matches("# Worker Context").count()).unwrap(),
         1,
-        "expected exactly 1 identity prompt in child user input. Got: {child_combined}"
+        "expected exactly 1 identity prompt in child request. Got: {child_combined}"
     );
     assert_eq!(
-        i64::try_from(grandchild_combined.matches("# Subagent Context").count()).unwrap(),
+        i64::try_from(grandchild_combined.matches("# Worker Context").count()).unwrap(),
         1,
-        "expected exactly 1 identity prompt in grandchild user input. Got: {grandchild_combined}"
+        "expected exactly 1 identity prompt in grandchild request. Got: {grandchild_combined}"
     );
 
     let child_ids = parent_session_ids(&child_combined);
@@ -2313,10 +2293,10 @@ async fn nested_delegation_includes_identity_prompt_in_user_input() {
     );
     assert!(
         child_combined.contains("CHILD_SYSTEM_PROMPT_MARKER"),
-        "child user input should include child system prompt content. Got: {child_combined}"
+        "child request should include child system prompt content. Got: {child_combined}"
     );
     assert!(
         grandchild_combined.contains("GRANDCHILD_SYSTEM_PROMPT_MARKER"),
-        "grandchild user input should include grandchild system prompt content. Got: {grandchild_combined}"
+        "grandchild request should include grandchild system prompt content. Got: {grandchild_combined}"
     );
 }

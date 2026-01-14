@@ -353,11 +353,11 @@ pub(crate) struct ChatWidget {
     current_rollout_path: Option<PathBuf>,
     // Available profiles for /profile command
     available_profiles: Vec<String>,
-    // Available subagents for @ mentions
+    // Available workers for @ mentions
     available_agents: Vec<String>,
-    // Track subagent states by parent_call_id so cells can share mutable state
+    // Track worker states by parent_call_id so cells can share mutable state
     subagent_states: HashMap<String, Arc<std::sync::Mutex<history_cell::SubagentState>>>,
-    // Active subagent cells that should be rendered dynamically (not flushed to history until complete)
+    // Active worker cells that should be rendered dynamically (not flushed to history until complete)
     active_subagent_cells: HashMap<String, SubagentTaskCell>,
 }
 
@@ -2366,7 +2366,8 @@ impl ChatWidget {
     fn on_subagent_event(&mut self, payload: SubagentEventPayload) {
         let SubagentEventPayload {
             parent_call_id,
-            subagent_name,
+            task_type,
+            difficulty,
             task_description,
             delegation_id,
             parent_delegation_id,
@@ -2376,7 +2377,7 @@ impl ChatWidget {
             task_prompt,
         } = payload;
 
-        // Get or create the shared state for this subagent task
+        // Get or create the shared state for this worker task
         let mut is_new = false;
         let state = self
             .subagent_states
@@ -2394,7 +2395,7 @@ impl ChatWidget {
 
         // Create a new cell if we don't have one for this call_id yet
         if is_new {
-            if subagent_name == "review" {
+            if task_type == "review" {
                 self.is_review_mode = true;
                 if self.pre_review_token_info.is_none() {
                     self.pre_review_token_info = Some(self.token_info.clone());
@@ -2404,7 +2405,8 @@ impl ChatWidget {
             let cell = history_cell::new_subagent_task_cell(
                 parent_call_id.clone(),
                 session_id,
-                subagent_name.clone(),
+                task_type.clone(),
+                difficulty,
                 task_description,
                 task_prompt,
                 delegation_id.clone(),
@@ -2466,7 +2468,7 @@ impl ChatWidget {
             inner.as_ref(),
             EventMsg::TaskComplete(_) | EventMsg::TurnAborted(_) | EventMsg::Error(_)
         ) {
-            if subagent_name == "review" {
+            if task_type == "review" {
                 if let EventMsg::TaskComplete(tc) = inner.as_ref()
                     && let Some(ref output_text) = tc.last_agent_message
                     && let Ok(review_output) =
@@ -2706,13 +2708,13 @@ impl ChatWidget {
                 exec.mark_failed();
             } else if let Some(tool) = cell.as_any_mut().downcast_mut::<McpToolCallCell>() {
                 tool.mark_failed();
-            } else if let Some(subagent) = cell.as_any_mut().downcast_mut::<SubagentTaskCell>() {
-                subagent.mark_failed();
+            } else if let Some(worker) = cell.as_any_mut().downcast_mut::<SubagentTaskCell>() {
+                worker.mark_failed();
             }
             self.add_boxed_history(cell);
         }
 
-        // Also mark all active subagent cells as failed and move to history
+        // Also mark all active worker cells as failed and move to history
         for (_, cell) in self.active_subagent_cells.drain() {
             cell.mark_failed();
             self.app_event_tx
@@ -4065,8 +4067,8 @@ impl ChatWidget {
         self.current_rollout_path.clone()
     }
 
-    /// Returns the active subagent cells as HistoryCell trait objects.
-    /// Used to include running subagent tasks in the transcript overlay.
+    /// Returns the active worker cells as HistoryCell trait objects.
+    /// Used to include running worker tasks in the transcript overlay.
     pub(crate) fn active_subagent_cells_as_history(&self) -> Vec<Arc<dyn HistoryCell>> {
         let mut sorted: Vec<_> = self.active_subagent_cells.values().collect();
         sorted.sort_by_key(|cell| cell.start_time());
@@ -4092,7 +4094,7 @@ impl ChatWidget {
     fn as_renderable(&self) -> RenderableItem<'_> {
         let mut flex = FlexRenderable::new();
 
-        // Render each active subagent cell (these are dynamically updated)
+        // Render each active worker cell (these are dynamically updated)
         // Use flex=0 so each cell takes only as much space as it needs
         let mut sorted_cells: Vec<_> = self.active_subagent_cells.values().collect();
         sorted_cells.sort_by_key(|cell| cell.start_time());

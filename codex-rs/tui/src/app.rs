@@ -1207,7 +1207,7 @@ impl App {
             } => {
                 // Enter alternate screen and set viewport to full size.
                 let _ = tui.enter_alt_screen();
-                // Include both completed transcript cells and active subagent tasks
+                // Include both completed transcript cells and active worker tasks
                 let mut cells = self.transcript_cells.clone();
                 cells.extend(self.chat_widget.active_subagent_cells_as_history());
                 self.overlay = Some(Overlay::new_transcript(cells));

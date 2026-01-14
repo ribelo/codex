@@ -45,6 +45,7 @@ pub mod openai_models;
 pub mod openrouter_types;
 pub mod subagent_result;
 pub mod subagents;
+pub mod task_registry;
 pub use mcp_connection_manager::MCP_SANDBOX_STATE_CAPABILITY;
 pub use mcp_connection_manager::MCP_SANDBOX_STATE_NOTIFICATION;
 pub use mcp_connection_manager::SandboxState;

@@ -160,7 +160,7 @@ pub async fn run_main(
     // Extract available profile names for the /profile command.
     let available_profiles: Vec<String> = config_toml.profiles.keys().cloned().collect();
 
-    // Load available subagents for @ mentions
+    // Load available workers for @ mentions
     let subagent_registry = codex_core::subagents::SubagentRegistry::new_with_agent_overrides(
         &codex_home,
         &config_toml.agent,
@@ -168,6 +168,7 @@ pub async fn run_main(
     let available_agents: Vec<String> = subagent_registry
         .list()
         .into_iter()
+        .filter(|a| !a.metadata.is_internal())
         .map(|a| a.slug.clone())
         .collect();
 

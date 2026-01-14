@@ -14,6 +14,7 @@ use crate::config::types::SandboxWorkspaceWrite;
 use crate::config::types::ShellConfigToml;
 use crate::config::types::ShellEnvironmentPolicy;
 use crate::config::types::ShellEnvironmentPolicyToml;
+use crate::config::types::TaskConfigToml;
 use crate::config::types::Tui;
 use crate::config::types::UriBasedFileOpener;
 use crate::config_loader::LoadedConfigLayers;
@@ -293,6 +294,9 @@ pub struct Config {
 
     /// Overrides for built-in subagents loaded from config.toml (`[[agent]]` entries).
     pub agent: Vec<AgentConfigToml>,
+
+    /// Task definitions loaded from config.toml (`[[task]]` entries).
+    pub tasks: Vec<TaskConfigToml>,
     /// If set to `true`, used only the experimental unified exec tool.
     pub use_experimental_unified_exec_tool: bool,
 
@@ -699,6 +703,9 @@ pub struct ConfigToml {
     #[serde(default)]
     pub agent: Vec<AgentConfigToml>,
 
+    #[serde(default)]
+    pub task: Vec<TaskConfigToml>,
+
     /// Nested tools section for feature toggles
     pub tools: Option<ToolsToml>,
 
@@ -992,6 +999,29 @@ pub struct ConfigOverrides {
     pub additional_writable_roots: Vec<PathBuf>,
 }
 
+fn validate_task_configs(task_configs: &[TaskConfigToml]) -> std::io::Result<()> {
+    use std::collections::HashSet;
+
+    let mut seen: HashSet<String> = HashSet::new();
+    for task in task_configs {
+        let task_type = task.task_type.trim();
+        if task_type.is_empty() {
+            return Err(std::io::Error::new(
+                ErrorKind::InvalidData,
+                "task.type cannot be empty",
+            ));
+        }
+        if !seen.insert(task_type.to_string()) {
+            return Err(std::io::Error::new(
+                ErrorKind::InvalidData,
+                format!("duplicate task.type '{task_type}' in config.toml"),
+            ));
+        }
+    }
+
+    Ok(())
+}
+
 impl Config {
     /// Meant to be used exclusively for tests: `load_with_overrides()` should
     /// be used in all other cases.
@@ -1000,6 +1030,7 @@ impl Config {
         overrides: ConfigOverrides,
         codex_home: PathBuf,
     ) -> std::io::Result<Self> {
+        validate_task_configs(&cfg.task)?;
         let user_instructions = Self::load_instructions(Some(&codex_home));
 
         // Destructure ConfigOverrides fully to ensure all overrides are applied.
@@ -1128,9 +1159,9 @@ impl Config {
             || cfg.sandbox_mode.is_some();
 
         let mut model_providers = built_in_model_providers();
-        // Merge user-defined providers into the built-in list.
+        // Merge user-defined providers into the built-in list, allowing overrides.
         for (key, provider) in cfg.model_providers.into_iter() {
-            model_providers.entry(key).or_insert(provider);
+            model_providers.insert(key, provider);
         }
 
         // Resolve canonical model ID from overrides -> profile -> config, then split it into:
@@ -1353,6 +1384,7 @@ impl Config {
             // Root sessions have full access to all subagents (None)
             allowed_subagents: None,
             agent: cfg.agent,
+            tasks: cfg.task,
             use_experimental_unified_exec_tool,
             features,
             active_profile: active_profile_name,
@@ -1524,6 +1556,102 @@ persistence = "none"
                 max_bytes: None,
             }),
             history_no_persistence_cfg.history
+        );
+    }
+
+    #[test]
+    fn task_config_toml_parses_difficulty_overrides() {
+        let cfg = r#"
+[[task]]
+type = "rust"
+description = "Rust code changes"
+skills = ["tokio", "axum"]
+model = "openai/test-gpt-5.1-codex"
+reasoning_effort = "low"
+
+[task.difficulty.small]
+model = "openai/test-gpt-5.1-codex-mini"
+reasoning_effort = "none"
+
+[task.difficulty.large]
+model = "openai/test-gpt-5.1-codex-large"
+reasoning_effort = "high"
+"#;
+
+        let parsed = toml::from_str::<ConfigToml>(cfg).expect("task config should parse");
+        assert_eq!(parsed.task.len(), 1);
+
+        let task = &parsed.task[0];
+        assert_eq!(task.task_type, "rust");
+        assert_eq!(task.description.as_deref(), Some("Rust code changes"));
+        assert_eq!(
+            task.skills.as_deref(),
+            Some(vec!["tokio".to_string(), "axum".to_string()]).as_deref()
+        );
+
+        let difficulty = task.difficulty.as_ref().expect("difficulty overrides");
+        assert_eq!(
+            difficulty
+                .get(&crate::config::types::TaskDifficulty::Small)
+                .and_then(|s| s.model.as_deref()),
+            Some("openai/test-gpt-5.1-codex-mini")
+        );
+        assert_eq!(
+            difficulty
+                .get(&crate::config::types::TaskDifficulty::Large)
+                .and_then(|s| s.model.as_deref()),
+            Some("openai/test-gpt-5.1-codex-large")
+        );
+    }
+
+    #[test]
+    fn validate_task_configs_rejects_empty_type() {
+        let task_configs = vec![TaskConfigToml {
+            task_type: "   ".to_string(),
+            description: None,
+            skills: None,
+            model: None,
+            reasoning_effort: None,
+            sandbox_policy: None,
+            approval_policy: None,
+            difficulty: None,
+        }];
+
+        let err = validate_task_configs(&task_configs).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn validate_task_configs_rejects_duplicates() {
+        let task_configs = vec![
+            TaskConfigToml {
+                task_type: "rust".to_string(),
+                description: None,
+                skills: None,
+                model: None,
+                reasoning_effort: None,
+                sandbox_policy: None,
+                approval_policy: None,
+                difficulty: None,
+            },
+            TaskConfigToml {
+                task_type: "rust".to_string(),
+                description: None,
+                skills: None,
+                model: None,
+                reasoning_effort: None,
+                sandbox_policy: None,
+                approval_policy: None,
+                difficulty: None,
+            },
+        ];
+
+        let err = validate_task_configs(&task_configs).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::InvalidData);
+        assert!(
+            err.to_string().contains("duplicate task.type"),
+            "{}",
+            err.to_string()
         );
     }
 
@@ -3161,6 +3289,7 @@ model_verbosity = "high"
                 experimental_tools_enable: vec![],
                 allowed_subagents: None,
                 agent: vec![],
+                tasks: vec![],
                 use_experimental_unified_exec_tool: false,
                 features: Features::with_defaults(),
                 active_profile: Some("o3".to_string()),
@@ -3245,6 +3374,7 @@ model_verbosity = "high"
             experimental_tools_enable: vec![],
             allowed_subagents: None,
             agent: vec![],
+            tasks: vec![],
             use_experimental_unified_exec_tool: false,
             features: Features::with_defaults(),
             active_profile: Some("gpt3".to_string()),
@@ -3344,6 +3474,7 @@ model_verbosity = "high"
             experimental_tools_enable: vec![],
             allowed_subagents: None,
             agent: vec![],
+            tasks: vec![],
             use_experimental_unified_exec_tool: false,
             features: Features::with_defaults(),
             active_profile: Some("zdr".to_string()),
@@ -3429,6 +3560,7 @@ model_verbosity = "high"
             experimental_tools_enable: vec![],
             allowed_subagents: None,
             agent: vec![],
+            tasks: vec![],
             use_experimental_unified_exec_tool: false,
             features: Features::with_defaults(),
             active_profile: Some("gpt5".to_string()),
