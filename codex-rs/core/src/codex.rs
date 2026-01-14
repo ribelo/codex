@@ -2238,6 +2238,7 @@ mod handlers {
             let skills: Vec<_> = outcome
                 .skills
                 .iter()
+                .filter(|s| !s.internal)
                 .map(|s| SkillInfo {
                     name: s.name.clone(),
                     description: s.description.clone(),
@@ -2279,6 +2280,7 @@ fn skill_load_outcome_for_client(
         skills: outcome
             .skills
             .iter()
+            .filter(|skill| !skill.internal)
             .map(|skill| SkillInfo {
                 name: skill.name.clone(),
                 description: skill.description.clone(),

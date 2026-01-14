@@ -15,6 +15,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::time::SystemTime;
 use tracing::error;
+use tracing::warn;
 
 #[derive(Debug, Deserialize)]
 struct SkillFrontmatter {
@@ -71,11 +72,37 @@ where
     for root in roots {
         discover_skills_under_root(&root.path, root.scope, &mut outcome, &mut visited_dirs);
     }
-    // Deduplicate by name (first one wins)
-    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    outcome
-        .skills
-        .retain(|skill| seen.insert(skill.name.clone()));
+    // Deduplicate by name (first one wins), but internal system skills cannot be shadowed.
+    let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut result_skills: Vec<SkillMetadata> = Vec::with_capacity(outcome.skills.len());
+
+    for skill in outcome.skills.drain(..) {
+        if let Some(&existing_idx) = seen.get(&skill.name) {
+            // There's already a skill with this name.
+            // If the new skill is internal+system, it overrides the existing one,
+            // unless the existing one is also an internal system skill (first wins).
+            let existing = &result_skills[existing_idx];
+            if skill.internal
+                && skill.scope == SkillScope::System
+                && !(existing.internal && existing.scope == SkillScope::System)
+            {
+                warn!(
+                    "internal system skill '{}' overrides {:?} skill at {}",
+                    skill.name,
+                    existing.scope,
+                    existing.path.display()
+                );
+                result_skills[existing_idx] = skill;
+            }
+            // Otherwise, skip the duplicate (first wins).
+        } else {
+            // No existing skill with this name, add it.
+            seen.insert(skill.name.clone(), result_skills.len());
+            result_skills.push(skill);
+        }
+    }
+
+    outcome.skills = result_skills;
     outcome.skills.sort_by(|a, b| a.name.cmp(&b.name));
     (outcome, visited_dirs)
 }
@@ -493,5 +520,126 @@ mod tests {
         );
         assert_eq!(outcome.skills.len(), 1);
         assert!(outcome.skills[0].internal);
+    }
+
+    fn write_internal_skill_at(root: &Path, dir: &str, name: &str, description: &str) -> PathBuf {
+        let skill_dir = root.join(format!("skills/{dir}"));
+        fs::create_dir_all(&skill_dir).unwrap();
+        let indented_description = description.replace('\n', "\n  ");
+        let content = format!(
+            "---\nname: {name}\ndescription: |-\n  {indented_description}\ninternal: true\n---\n\n# Body\n"
+        );
+        let path = skill_dir.join(SKILLS_FILENAME);
+        fs::write(&path, content).unwrap();
+        path
+    }
+
+    #[test]
+    fn internal_system_skill_overrides_user_skill() {
+        let codex_home = tempfile::tempdir().expect("tempdir");
+
+        // Create a user skill with a name that will collide
+        write_skill(&codex_home, "my-skill", "protected-skill", "user version");
+
+        // Create an internal system skill with the same name
+        let system_root = codex_home.path().join("skills/.system");
+        write_internal_skill_at(
+            &system_root,
+            "protected",
+            "protected-skill",
+            "system version",
+        );
+
+        let cfg = make_config(&codex_home);
+        let outcome = load_skills(&cfg);
+
+        assert!(
+            outcome.errors.is_empty(),
+            "unexpected errors: {:?}",
+            outcome.errors
+        );
+        assert_eq!(outcome.skills.len(), 1);
+        let skill = &outcome.skills[0];
+        assert_eq!(skill.name, "protected-skill");
+        assert_eq!(skill.description, "system version");
+        assert_eq!(skill.scope, SkillScope::System);
+        assert!(skill.internal);
+    }
+
+    #[test]
+    fn internal_system_skill_overrides_repo_skill() {
+        let codex_home = tempfile::tempdir().expect("tempdir");
+        let repo_dir = tempfile::tempdir().expect("tempdir");
+
+        let status = Command::new("git")
+            .arg("init")
+            .current_dir(repo_dir.path())
+            .status()
+            .expect("git init");
+        assert!(status.success(), "git init failed");
+
+        // Create a repo skill with a name that will collide
+        let repo_skills_root = repo_dir
+            .path()
+            .join(REPO_ROOT_CONFIG_DIR_NAME)
+            .join(SKILLS_DIR_NAME);
+        write_skill_at(
+            &repo_skills_root,
+            "my-skill",
+            "protected-skill",
+            "repo version",
+        );
+
+        // Create an internal system skill with the same name
+        let system_root = codex_home.path().join("skills/.system");
+        write_internal_skill_at(
+            &system_root,
+            "protected",
+            "protected-skill",
+            "system version",
+        );
+
+        let mut cfg = make_config(&codex_home);
+        cfg.cwd = repo_dir.path().to_path_buf();
+        let outcome = load_skills(&cfg);
+
+        assert!(
+            outcome.errors.is_empty(),
+            "unexpected errors: {:?}",
+            outcome.errors
+        );
+        assert_eq!(outcome.skills.len(), 1);
+        let skill = &outcome.skills[0];
+        assert_eq!(skill.name, "protected-skill");
+        assert_eq!(skill.description, "system version");
+        assert_eq!(skill.scope, SkillScope::System);
+        assert!(skill.internal);
+    }
+
+    #[test]
+    fn non_internal_system_skill_does_not_override_user_skill() {
+        let codex_home = tempfile::tempdir().expect("tempdir");
+
+        // Create a user skill
+        write_skill(&codex_home, "my-skill", "normal-skill", "user version");
+
+        // Create a non-internal system skill with the same name (should NOT override)
+        let system_root = codex_home.path().join("skills/.system");
+        write_skill_at(&system_root, "my-skill", "normal-skill", "system version");
+
+        let cfg = make_config(&codex_home);
+        let outcome = load_skills(&cfg);
+
+        assert!(
+            outcome.errors.is_empty(),
+            "unexpected errors: {:?}",
+            outcome.errors
+        );
+        assert_eq!(outcome.skills.len(), 1);
+        let skill = &outcome.skills[0];
+        assert_eq!(skill.name, "normal-skill");
+        assert_eq!(skill.description, "user version");
+        assert_eq!(skill.scope, SkillScope::User);
+        assert!(!skill.internal);
     }
 }

@@ -1,7 +1,9 @@
 use crate::skills::model::SkillMetadata;
 
 pub fn render_skills_section(skills: &[SkillMetadata]) -> Option<String> {
-    if skills.is_empty() {
+    let visible_skills: Vec<_> = skills.iter().filter(|s| !s.internal).collect();
+
+    if visible_skills.is_empty() {
         return None;
     }
 
@@ -9,7 +11,7 @@ pub fn render_skills_section(skills: &[SkillMetadata]) -> Option<String> {
     lines.push("## Skills".to_string());
     lines.push("These skills are discovered at startup from ~/.codex/skills; each entry shows name, description, and file path so you can open the source for full instructions. Content is not inlined to keep context lean.".to_string());
 
-    for skill in skills {
+    for skill in visible_skills {
         let path_str = skill.path.to_string_lossy().replace('\\', "/");
         lines.push(format!(
             "- {}: {} (file: {})",
@@ -39,4 +41,48 @@ pub fn render_skills_section(skills: &[SkillMetadata]) -> Option<String> {
     );
 
     Some(lines.join("\n"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use codex_protocol::protocol::SkillScope;
+    use std::path::PathBuf;
+
+    #[test]
+    fn filters_internal_skills() {
+        let skills = vec![
+            SkillMetadata {
+                name: "public".to_string(),
+                description: "public skill".to_string(),
+                path: PathBuf::from("/path/to/public"),
+                scope: SkillScope::User,
+                internal: false,
+            },
+            SkillMetadata {
+                name: "internal".to_string(),
+                description: "internal skill".to_string(),
+                path: PathBuf::from("/path/to/internal"),
+                scope: SkillScope::User,
+                internal: true,
+            },
+        ];
+
+        let rendered = render_skills_section(&skills).unwrap();
+        assert!(rendered.contains("public"));
+        assert!(!rendered.contains("internal"));
+    }
+
+    #[test]
+    fn returns_none_if_all_skills_internal() {
+        let skills = vec![SkillMetadata {
+            name: "internal".to_string(),
+            description: "internal skill".to_string(),
+            path: PathBuf::from("/path/to/internal"),
+            scope: SkillScope::User,
+            internal: true,
+        }];
+
+        assert!(render_skills_section(&skills).is_none());
+    }
 }
