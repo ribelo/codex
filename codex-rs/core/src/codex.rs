@@ -13,6 +13,7 @@ use crate::compact;
 use crate::compact::run_inline_auto_compact_task;
 use crate::compact::should_use_remote_compact_task;
 use crate::compact_remote::run_inline_remote_auto_compact_task;
+use crate::default_client::originator;
 use crate::exec_policy::load_exec_policy_for_features;
 use crate::features::Feature;
 use crate::features::Features;
@@ -64,6 +65,7 @@ use tracing::debug;
 use tracing::error;
 use tracing::info;
 use tracing::warn;
+use uuid::Uuid;
 
 use crate::ModelProviderInfo;
 use crate::client::ModelClient;
@@ -79,6 +81,7 @@ use crate::error::Result as CodexResult;
 #[cfg(test)]
 use crate::exec::StreamOutput;
 use crate::exec_policy::ExecPolicyUpdateError;
+use crate::git_info::collect_git_info;
 use crate::loop_detector::LoopDetector;
 use crate::loop_detector::LoopType;
 use crate::mcp::auth::compute_auth_statuses;
@@ -111,9 +114,9 @@ use crate::protocol::TokenUsageInfo;
 use crate::protocol::TurnDiffEvent;
 use crate::protocol::WarningEvent;
 use crate::protocol::WebSearchBeginEvent;
-use crate::rollout::RolloutRecorder;
-use crate::rollout::RolloutRecorderParams;
 use crate::rollout::map_session_init_error;
+use crate::session_log::SessionLog;
+use crate::session_log::SessionLogParams;
 use crate::shell;
 use crate::shell_snapshot::ShellSnapshot;
 use crate::skills::SkillInjections;
@@ -148,7 +151,11 @@ use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use codex_protocol::protocol::CodexErrorInfo;
+use codex_protocol::protocol::EntryKind;
 use codex_protocol::protocol::InitialHistory;
+use codex_protocol::protocol::LogEntry;
+use codex_protocol::protocol::SessionMeta;
+use codex_protocol::protocol::SessionMetaLine;
 use codex_protocol::user_input::UserInput;
 use codex_utils_readiness::Readiness;
 use codex_utils_readiness::ReadinessFlag;
@@ -325,6 +332,8 @@ pub(crate) struct Session {
 #[derive(Debug)]
 pub(crate) struct TurnContext {
     pub(crate) sub_id: String,
+    /// Unique turn identifier for v2 session log.
+    pub(crate) turn_id: Uuid,
     pub(crate) client: ModelClient,
     /// The session's current working directory. All relative paths provided by
     /// the model as well as sandbox policies are resolved against this path
@@ -477,6 +486,38 @@ impl SessionConfiguration {
     }
 }
 
+async fn is_v2_session_log_file(path: &std::path::Path) -> bool {
+    let file = match tokio::fs::File::open(path).await {
+        Ok(file) => file,
+        Err(_) => return false,
+    };
+
+    let mut reader = tokio::io::BufReader::new(file);
+    let mut line = String::new();
+
+    loop {
+        line.clear();
+        let read = match tokio::io::AsyncBufReadExt::read_line(&mut reader, &mut line).await {
+            Ok(read) => read,
+            Err(_) => return false,
+        };
+        if read == 0 {
+            return false;
+        }
+
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let Ok(entry) = serde_json::from_str::<LogEntry>(trimmed) else {
+            return false;
+        };
+
+        return matches!(entry.kind, EntryKind::SessionHeader { .. });
+    }
+}
+
 #[derive(Default, Clone)]
 pub(crate) struct SessionSettingsUpdate {
     pub(crate) cwd: Option<PathBuf>,
@@ -581,6 +622,7 @@ impl Session {
 
         TurnContext {
             sub_id,
+            turn_id: Uuid::new_v4(),
             client,
             cwd: session_configuration.cwd.clone(),
             developer_instructions: session_configuration.developer_instructions.clone(),
@@ -639,46 +681,75 @@ impl Session {
             ));
         }
 
-        let (conversation_id, rollout_params) = match &initial_history {
-            InitialHistory::New | InitialHistory::Forked(_) | InitialHistory::Handoff { .. } => {
-                let conversation_id = ConversationId::default();
-                (
-                    conversation_id,
-                    RolloutRecorderParams::new(
-                        conversation_id,
-                        session_configuration.user_instructions.clone(),
-                        session_source,
-                    ),
-                )
-            }
+        let (conversation_id, resume_candidate_path) = match &initial_history {
             InitialHistory::Resumed(resumed_history) => (
                 resumed_history.conversation_id,
-                RolloutRecorderParams::resume(resumed_history.rollout_path.clone()),
+                Some(resumed_history.rollout_path.clone()),
             ),
+            InitialHistory::New | InitialHistory::Forked(_) | InitialHistory::Handoff { .. } => {
+                (ConversationId::default(), None)
+            }
         };
 
         // Kick off independent async setup tasks in parallel to reduce startup latency.
-        //
-        // - initialize RolloutRecorder with new or resumed session info
-        // - perform default shell discovery
-        // - load history metadata
-        let rollout_fut = RolloutRecorder::new(&config, rollout_params);
-
+        let git_info_fut = collect_git_info(&session_configuration.cwd);
         let history_meta_fut = crate::message_history::history_metadata(&config);
         let auth_statuses_fut = compute_auth_statuses(
             config.mcp_servers.iter(),
             config.mcp_oauth_credentials_store_mode,
         );
+        let resume_is_v2_fut = async {
+            match resume_candidate_path.as_ref() {
+                Some(path) => is_v2_session_log_file(path.as_path()).await,
+                None => false,
+            }
+        };
 
-        // Join all independent futures.
-        let (rollout_recorder, (history_log_id, history_entry_count), auth_statuses) =
-            tokio::join!(rollout_fut, history_meta_fut, auth_statuses_fut);
+        let (git_info, (history_log_id, history_entry_count), auth_statuses, resume_is_v2) = tokio::join!(
+            git_info_fut,
+            history_meta_fut,
+            auth_statuses_fut,
+            resume_is_v2_fut
+        );
 
-        let rollout_recorder = rollout_recorder.map_err(|e| {
-            error!("failed to initialize rollout recorder: {e:#}");
+        let session_log_params = if let Some(path) = resume_candidate_path
+            && resume_is_v2
+        {
+            SessionLogParams::Resume {
+                path,
+                session_id: conversation_id.as_uuid(),
+            }
+        } else {
+            let timestamp = time::OffsetDateTime::now_utc()
+                .format(&time::format_description::well_known::Rfc3339)
+                .unwrap_or_else(|_| String::new());
+            let session_meta = SessionMeta {
+                id: conversation_id,
+                timestamp,
+                cwd: session_configuration.cwd.clone(),
+                originator: originator().value.clone(),
+                cli_version: env!("CARGO_PKG_VERSION").to_string(),
+                instructions: session_configuration.user_instructions.clone(),
+                source: session_source.clone(),
+                model: Some(session_configuration.model.clone()),
+                model_provider: None,
+            };
+            let session_meta_line = SessionMetaLine {
+                meta: session_meta,
+                git: git_info,
+            };
+            SessionLogParams::Create {
+                session_id: conversation_id.as_uuid(),
+                meta: session_meta_line,
+            }
+        };
+
+        // Create SessionLog (v2 format) for turn-based persistence.
+        let session_log = SessionLog::new(&config.codex_home, session_log_params).map_err(|e| {
+            error!("failed to initialize session log: {e:#}");
             anyhow::Error::from(e)
         })?;
-        let rollout_path = rollout_recorder.rollout_path.clone();
+        let session_log_path = session_log.log_path().to_path_buf();
 
         let mut post_session_configured_events = Vec::<Event>::new();
 
@@ -740,7 +811,8 @@ impl Session {
             mcp_startup_cancellation_token: CancellationToken::new(),
             unified_exec_manager: UnifiedExecSessionManager::default(),
             notifier: UserNotifier::new(config.notify.clone()),
-            rollout: Mutex::new(Some(rollout_recorder)),
+            rollout: Mutex::new(None),
+            session_log: Mutex::new(Some(session_log)),
             user_shell: Arc::new(default_shell),
             auth_manager: Arc::clone(&auth_manager),
             otel_event_manager,
@@ -782,7 +854,7 @@ impl Session {
                 history_entry_count,
                 initial_messages,
                 skill_load_outcome,
-                rollout_path,
+                rollout_path: session_log_path,
             }),
         })
         .chain(post_session_configured_events.into_iter());
@@ -1032,16 +1104,51 @@ impl Session {
             id: turn_context.sub_id.clone(),
             msg,
         };
-        self.send_event_raw(event).await;
-    }
+        // Write to v2 session log
+        let timestamp = time::OffsetDateTime::now_utc()
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap_or_else(|_| String::new());
+        let entry = LogEntry {
+            id: Uuid::new_v4(),
+            timestamp,
+            session_id: self.conversation_id.as_uuid(),
+            turn_id: Some(turn_context.turn_id),
+            parent_id: None,
+            kind: EntryKind::Event {
+                msg: event.msg.clone(),
+            },
+        };
+        self.append_session_log_entry(entry).await;
 
-    pub(crate) async fn send_event_raw(&self, event: Event) {
-        // Persist the event into rollout (recorder filters as needed)
-        let rollout_items = vec![RolloutItem::EventMsg(event.msg.clone())];
-        self.persist_rollout_items(&rollout_items).await;
+        // Send to clients
         if let Err(e) = self.tx_event.send(event).await {
             error!("failed to send tool call event: {e}");
         }
+    }
+
+    pub(crate) async fn send_event_raw_without_session_log(&self, event: Event) {
+        if let Err(e) = self.tx_event.send(event).await {
+            error!("failed to send tool call event: {e}");
+        }
+    }
+
+    pub(crate) async fn send_event_raw(&self, event: Event) {
+        let timestamp = time::OffsetDateTime::now_utc()
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap_or_else(|_| String::new());
+        let entry = LogEntry {
+            id: Uuid::new_v4(),
+            timestamp,
+            session_id: self.conversation_id.as_uuid(),
+            turn_id: None,
+            parent_id: None,
+            kind: EntryKind::Event {
+                msg: event.msg.clone(),
+            },
+        };
+        self.append_session_log_entry(entry).await;
+
+        self.send_event_raw_without_session_log(event).await;
     }
 
     pub(crate) async fn emit_turn_item_started(&self, turn_context: &TurnContext, item: &TurnItem) {
@@ -1223,8 +1330,23 @@ impl Session {
         turn_context: &TurnContext,
         items: &[ResponseItem],
     ) {
+        // Write to v2 session log
+        for item in items {
+            let timestamp = time::OffsetDateTime::now_utc()
+                .format(&time::format_description::well_known::Rfc3339)
+                .unwrap_or_else(|_| String::new());
+            let entry = LogEntry {
+                id: Uuid::new_v4(),
+                timestamp,
+                session_id: self.conversation_id.as_uuid(),
+                turn_id: Some(turn_context.turn_id),
+                parent_id: None,
+                kind: EntryKind::ResponseItem { item: item.clone() },
+            };
+            self.append_session_log_entry(entry).await;
+        }
+
         self.record_into_history(items, turn_context).await;
-        self.persist_rollout_response_items(items).await;
         self.send_raw_response_items(turn_context, items).await;
     }
 
@@ -1380,6 +1502,55 @@ impl Session {
         {
             error!("failed to record rollout items: {e:#}");
         }
+    }
+
+    /// Append a log entry to the v2 session log (if enabled).
+    pub(crate) async fn append_session_log_entry(&self, entry: LogEntry) {
+        let log = {
+            let guard = self.services.session_log.lock().await;
+            guard.clone()
+        };
+        if let Some(log) = log
+            && let Err(e) = log.append(entry).await
+        {
+            warn!("failed to append session log entry: {e:#}");
+        }
+    }
+
+    /// Commit a turn in the v2 session log (fsync durability).
+    pub(crate) async fn commit_session_log_turn(&self, turn_id: Uuid) {
+        let log = {
+            let guard = self.services.session_log.lock().await;
+            guard.clone()
+        };
+        if let Some(log) = log
+            && let Err(e) = log.commit_turn(turn_id).await
+        {
+            warn!("failed to commit session log turn: {e:#}");
+        }
+    }
+
+    /// Emit TurnStarted entry for this turn.
+    pub(crate) async fn emit_turn_started(&self, turn_context: &TurnContext) {
+        let timestamp = time::OffsetDateTime::now_utc()
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap_or_else(|_| String::new());
+        let entry = LogEntry {
+            id: Uuid::new_v4(),
+            timestamp,
+            session_id: self.conversation_id.as_uuid(),
+            turn_id: Some(turn_context.turn_id),
+            parent_id: None,
+            kind: EntryKind::TurnStarted {
+                sub_id: turn_context.sub_id.clone(),
+            },
+        };
+        self.append_session_log_entry(entry).await;
+    }
+
+    /// Emit TurnCommitted and commit the turn.
+    pub(crate) async fn emit_turn_committed(&self, turn_context: &TurnContext) {
+        self.commit_session_log_turn(turn_context.turn_id).await;
     }
 
     pub(crate) async fn clone_history(&self) -> ContextManager {
@@ -2224,11 +2395,33 @@ mod handlers {
             sess.send_event_raw(event).await;
         }
 
-        let event = Event {
-            id: sub_id,
-            msg: EventMsg::ShutdownComplete,
+        let msg = EventMsg::ShutdownComplete;
+        let timestamp = time::OffsetDateTime::now_utc()
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap_or_else(|_| String::new());
+        let entry = codex_protocol::protocol::LogEntry {
+            id: uuid::Uuid::new_v4(),
+            timestamp,
+            session_id: sess.conversation_id.as_uuid(),
+            turn_id: None,
+            parent_id: None,
+            kind: codex_protocol::protocol::EntryKind::Event { msg: msg.clone() },
         };
-        sess.send_event_raw(event).await;
+        sess.append_session_log_entry(entry).await;
+
+        // Gracefully flush and shutdown v2 session log
+        let session_log_opt = {
+            let mut guard = sess.services.session_log.lock().await;
+            guard.take()
+        };
+        if let Some(log) = session_log_opt
+            && let Err(e) = log.shutdown().await
+        {
+            warn!("failed to shutdown session log: {e}");
+        }
+
+        sess.send_event_raw_without_session_log(Event { id: sub_id, msg })
+            .await;
         true
     }
 
@@ -3340,6 +3533,7 @@ mod tests {
             unified_exec_manager: UnifiedExecSessionManager::default(),
             notifier: UserNotifier::new(None),
             rollout: Mutex::new(None),
+            session_log: Mutex::new(None),
             user_shell: Arc::new(default_user_shell()),
             auth_manager: auth_manager.clone(),
             otel_event_manager: otel_event_manager.clone(),
@@ -3433,6 +3627,7 @@ mod tests {
             unified_exec_manager: UnifiedExecSessionManager::default(),
             notifier: UserNotifier::new(None),
             rollout: Mutex::new(None),
+            session_log: Mutex::new(None),
             user_shell: Arc::new(default_user_shell()),
             auth_manager: Arc::clone(&auth_manager),
             otel_event_manager: otel_event_manager.clone(),

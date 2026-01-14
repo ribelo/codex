@@ -91,10 +91,10 @@ pub fn read_session(path: &Path) -> Result<SessionLogData, ReadError> {
         lines_parsed += 1;
 
         // Extract header if this is a SessionHeader entry
-        if let EntryKind::SessionHeader { ref meta } = entry.kind {
-            if header.is_none() {
-                header = Some(meta.clone());
-            }
+        if let EntryKind::SessionHeader { ref meta } = entry.kind
+            && header.is_none()
+        {
+            header = Some(meta.clone());
         }
 
         // Track TurnCommitted entries to know which turns are complete
@@ -265,7 +265,9 @@ mod tests {
             session_id,
             turn_id: Some(turn_id),
             parent_id: None,
-            kind: EntryKind::TurnStarted,
+            kind: EntryKind::TurnStarted {
+                sub_id: "sub-1".to_string(),
+            },
         }
     }
 

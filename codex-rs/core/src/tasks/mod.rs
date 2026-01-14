@@ -21,6 +21,7 @@ use crate::AuthManager;
 use crate::codex::Session;
 use crate::codex::TurnContext;
 use crate::openai_models::models_manager::ModelsManager;
+use crate::protocol::Event;
 use crate::protocol::EventMsg;
 use crate::protocol::TaskCompleteEvent;
 use crate::protocol::TurnAbortReason;
@@ -28,7 +29,10 @@ use crate::protocol::TurnAbortedEvent;
 use crate::state::ActiveTurn;
 use crate::state::RunningTask;
 use crate::state::TaskKind;
+use codex_protocol::protocol::EntryKind;
+use codex_protocol::protocol::LogEntry;
 use codex_protocol::user_input::UserInput;
+use uuid::Uuid;
 
 pub(crate) use compact::CompactTask;
 pub(crate) use ghost_snapshot::GhostSnapshotTask;
@@ -113,6 +117,9 @@ impl Session {
     ) {
         self.abort_all_tasks(TurnAbortReason::Replaced).await;
 
+        // Emit TurnStarted for v2 session log
+        self.emit_turn_started(&turn_context).await;
+
         let task: Arc<dyn SessionTask> = Arc::new(task);
         let task_kind = task.kind();
 
@@ -187,11 +194,30 @@ impl Session {
 
         self.terminate_unified_exec_sessions().await;
 
-        let event = EventMsg::TaskComplete(TaskCompleteEvent {
+        let msg = EventMsg::TaskComplete(TaskCompleteEvent {
             last_agent_message,
             last_tool_output,
         });
-        self.send_event(turn_context.as_ref(), event).await;
+
+        let timestamp = time::OffsetDateTime::now_utc()
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap_or_else(|_| String::new());
+        let entry = LogEntry {
+            id: Uuid::new_v4(),
+            timestamp,
+            session_id: self.conversation_id().as_uuid(),
+            turn_id: Some(turn_context.turn_id),
+            parent_id: None,
+            kind: EntryKind::Event { msg: msg.clone() },
+        };
+        self.append_session_log_entry(entry).await;
+        self.emit_turn_committed(&turn_context).await;
+
+        self.send_event_raw_without_session_log(Event {
+            id: turn_context.sub_id.clone(),
+            msg,
+        })
+        .await;
     }
 
     async fn register_new_active_task(&self, task: RunningTask) {

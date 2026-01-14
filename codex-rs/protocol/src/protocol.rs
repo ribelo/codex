@@ -1950,7 +1950,9 @@ pub enum EntryKind {
     SessionHeader {
         meta: SessionMetaLine,
     },
-    TurnStarted,
+    TurnStarted {
+        sub_id: String,
+    },
     Event {
         msg: EventMsg,
     },
@@ -2102,7 +2104,9 @@ mod tests {
             session_id: Uuid::new_v4(),
             turn_id: Some(Uuid::new_v4()),
             parent_id: None,
-            kind: EntryKind::TurnStarted,
+            kind: EntryKind::TurnStarted {
+                sub_id: "sub-1".to_string(),
+            },
         };
 
         let serialized = serde_json::to_string(&entry)?;
@@ -2120,6 +2124,7 @@ mod tests {
         assert!(value.get("session_id").is_some());
         assert!(value.get("turn_id").is_some());
         assert!(value.get("parent_id").is_none());
+        assert_eq!(value["sub_id"], "sub-1");
 
         Ok(())
     }
@@ -2133,7 +2138,9 @@ mod tests {
                     git: None,
                 },
             },
-            EntryKind::TurnStarted,
+            EntryKind::TurnStarted {
+                sub_id: "sub-1".to_string(),
+            },
             EntryKind::Event {
                 msg: EventMsg::Warning(WarningEvent {
                     message: "hi".to_string(),
@@ -2179,7 +2186,7 @@ mod tests {
 
             let expected_kind = match kind {
                 EntryKind::SessionHeader { .. } => "session_header",
-                EntryKind::TurnStarted => "turn_started",
+                EntryKind::TurnStarted { .. } => "turn_started",
                 EntryKind::Event { .. } => "event",
                 EntryKind::ResponseItem { .. } => "response_item",
                 EntryKind::CompactionApplied { .. } => "compaction_applied",

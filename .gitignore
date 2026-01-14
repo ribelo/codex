@@ -88,6 +88,7 @@ CHANGELOG.ignore.md
 
 # Temporary diff files and third-party research
 diff_*.txt
+codex-rs/core/dfa_on_request.txt
 third-party/
 third_party/
 repomix-output.xml

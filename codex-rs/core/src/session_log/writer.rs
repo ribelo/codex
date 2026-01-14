@@ -282,7 +282,7 @@ async fn writer_task(
                 }
             }
             WriterCmd::CommitTurn { turn_id, ack } => {
-                let result = (async || -> std::io::Result<()> {
+                let result = async {
                     // Write TurnCommitted entry
                     let entry = create_entry(
                         session_id,
@@ -300,13 +300,13 @@ async fn writer_task(
                     writer.get_ref().sync_data().await?;
 
                     Ok(())
-                })()
+                }
                 .await;
 
                 let _ = ack.send(result);
             }
             WriterCmd::Shutdown { ack } => {
-                let result = (async || -> std::io::Result<()> {
+                let result = async {
                     // Drain remaining entries in channel
                     while let Ok(cmd) = rx.try_recv() {
                         if let WriterCmd::Append(entry) = cmd {
@@ -321,7 +321,7 @@ async fn writer_task(
                     writer.get_ref().sync_data().await?;
 
                     Ok(())
-                })()
+                }
                 .await;
 
                 let _ = ack.send(result);
@@ -417,7 +417,14 @@ mod tests {
 
         // Append some entries
         let turn_id = Uuid::new_v4();
-        let entry1 = create_entry(session_id, Some(turn_id), None, EntryKind::TurnStarted);
+        let entry1 = create_entry(
+            session_id,
+            Some(turn_id),
+            None,
+            EntryKind::TurnStarted {
+                sub_id: "sub-1".to_string(),
+            },
+        );
         session_log.append(entry1.clone()).await?;
 
         // Commit the turn (this also writes TurnCommitted)
@@ -439,7 +446,7 @@ mod tests {
 
         // Verify entry kinds
         assert!(matches!(entries[0].kind, EntryKind::SessionHeader { .. }));
-        assert!(matches!(entries[1].kind, EntryKind::TurnStarted));
+        assert!(matches!(entries[1].kind, EntryKind::TurnStarted { .. }));
         assert!(matches!(entries[2].kind, EntryKind::TurnCommitted));
 
         // Verify session_id is consistent
@@ -467,7 +474,14 @@ mod tests {
         )?;
 
         let turn1_id = Uuid::new_v4();
-        let entry1 = create_entry(session_id, Some(turn1_id), None, EntryKind::TurnStarted);
+        let entry1 = create_entry(
+            session_id,
+            Some(turn1_id),
+            None,
+            EntryKind::TurnStarted {
+                sub_id: "sub-1".to_string(),
+            },
+        );
         session_log.append(entry1).await?;
         session_log.commit_turn(turn1_id).await?;
         let path = session_log.log_path().to_path_buf();
@@ -484,7 +498,14 @@ mod tests {
 
         // Add more entries
         let turn2_id = Uuid::new_v4();
-        let entry2 = create_entry(session_id, Some(turn2_id), None, EntryKind::TurnStarted);
+        let entry2 = create_entry(
+            session_id,
+            Some(turn2_id),
+            None,
+            EntryKind::TurnStarted {
+                sub_id: "sub-2".to_string(),
+            },
+        );
         resumed.append(entry2).await?;
         resumed.commit_turn(turn2_id).await?;
         resumed.shutdown().await?;
@@ -578,9 +599,16 @@ mod tests {
         )?;
 
         // Write multiple turns
-        for i in 0..3 {
+        for i in 0_i32..3 {
             let turn_id = Uuid::new_v4();
-            let entry = create_entry(session_id, Some(turn_id), None, EntryKind::TurnStarted);
+            let entry = create_entry(
+                session_id,
+                Some(turn_id),
+                None,
+                EntryKind::TurnStarted {
+                    sub_id: format!("sub-{i}"),
+                },
+            );
             session_log.append(entry).await?;
 
             // Simulate some events within the turn
@@ -620,7 +648,7 @@ mod tests {
             .count();
         let turn_starts = entries
             .iter()
-            .filter(|e| matches!(e.kind, EntryKind::TurnStarted))
+            .filter(|e| matches!(e.kind, EntryKind::TurnStarted { .. }))
             .count();
         let events = entries
             .iter()

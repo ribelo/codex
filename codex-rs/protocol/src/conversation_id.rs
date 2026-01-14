@@ -26,6 +26,11 @@ impl ConversationId {
             uuid: Uuid::parse_str(s)?,
         })
     }
+
+    /// Returns the underlying UUID.
+    pub fn as_uuid(&self) -> Uuid {
+        self.uuid
+    }
 }
 
 impl Default for ConversationId {

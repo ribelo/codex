@@ -2,11 +2,12 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::AuthManager;
-use crate::RolloutRecorder;
 use crate::delegation::DelegationRegistry;
 use crate::mcp_connection_manager::McpConnectionManager;
 use crate::openai_models::models_manager::ModelsManager;
 use crate::project_doc_manager::ProjectDocManager;
+use crate::rollout::RolloutRecorder;
+use crate::session_log::SessionLog;
 use crate::skills::SkillLoadOutcome;
 use crate::skills::SkillsManager;
 use crate::subagents::SubagentSession;
@@ -24,6 +25,7 @@ pub(crate) struct SessionServices {
     pub(crate) unified_exec_manager: UnifiedExecSessionManager,
     pub(crate) notifier: UserNotifier,
     pub(crate) rollout: Mutex<Option<RolloutRecorder>>,
+    pub(crate) session_log: Mutex<Option<SessionLog>>,
     pub(crate) user_shell: Arc<crate::shell::Shell>,
     pub(crate) auth_manager: Arc<AuthManager>,
     pub(crate) models_manager: Arc<ModelsManager>,
