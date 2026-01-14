@@ -34,6 +34,7 @@ use serde_json::Value;
 use serde_with::serde_as;
 use strum_macros::Display;
 use ts_rs::TS;
+use uuid::Uuid;
 
 pub use crate::approvals::ApplyPatchApprovalRequestEvent;
 pub use crate::approvals::ElicitationAction;
@@ -1918,6 +1919,65 @@ pub enum TurnAbortReason {
     ReviewEnded,
 }
 
+/// Represents a single entry in a session log v2.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+pub struct LogEntry {
+    /// Unique id for this log entry.
+    #[schemars(with = "String")]
+    pub id: Uuid,
+    /// ISO 8601 timestamp.
+    pub timestamp: String,
+    /// ID of the session this entry belongs to.
+    #[schemars(with = "String")]
+    pub session_id: Uuid,
+    /// ID of the turn this entry belongs to, if any.
+    #[schemars(with = "String")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<Uuid>,
+    /// ID of the parent entry, for hierarchical logs.
+    #[schemars(with = "String")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<Uuid>,
+    /// The type and data of the entry.
+    #[serde(flatten)]
+    pub kind: EntryKind,
+}
+
+/// Different types of log entries.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum EntryKind {
+    SessionHeader {
+        meta: SessionMetaLine,
+    },
+    TurnStarted,
+    Event {
+        msg: EventMsg,
+    },
+    ResponseItem {
+        item: ResponseItem,
+    },
+    CompactionApplied {
+        tokens_before: i32,
+        summary: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        replacement_history: Option<Vec<ResponseItem>>,
+        #[schemars(with = "String")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        replaces_up_to_head_id: Option<Uuid>,
+    },
+    HeadSet {
+        #[schemars(with = "String")]
+        target_head_id: Uuid,
+        reason: String,
+        #[schemars(with = "String")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from_head_id: Option<Uuid>,
+    },
+    TurnCommitted,
+    SessionEnd,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2031,6 +2091,110 @@ mod tests {
         assert_eq!(value["msg"]["failed"][0]["server"], "b");
         assert_eq!(value["msg"]["failed"][0]["error"], "bad");
         assert_eq!(value["msg"]["cancelled"][0], "c");
+        Ok(())
+    }
+
+    #[test]
+    fn log_entry_serialization_round_trip() -> Result<()> {
+        let entry = LogEntry {
+            id: Uuid::new_v4(),
+            timestamp: "2024-03-20T12:00:00Z".to_string(),
+            session_id: Uuid::new_v4(),
+            turn_id: Some(Uuid::new_v4()),
+            parent_id: None,
+            kind: EntryKind::TurnStarted,
+        };
+
+        let serialized = serde_json::to_string(&entry)?;
+        let deserialized: LogEntry = serde_json::from_str(&serialized)?;
+
+        let expected = serde_json::to_value(&entry)?;
+        let actual = serde_json::to_value(&deserialized)?;
+        assert_eq!(expected, actual);
+
+        // Verify flattened kind and snake_case
+        let value: serde_json::Value = serde_json::from_str(&serialized)?;
+        assert_eq!(value["kind"], "turn_started");
+        assert!(value.get("id").is_some());
+        assert!(value.get("timestamp").is_some());
+        assert!(value.get("session_id").is_some());
+        assert!(value.get("turn_id").is_some());
+        assert!(value.get("parent_id").is_none());
+
+        Ok(())
+    }
+
+    #[test]
+    fn all_entry_kinds_serialization() -> Result<()> {
+        let kinds = vec![
+            EntryKind::SessionHeader {
+                meta: SessionMetaLine {
+                    meta: SessionMeta::default(),
+                    git: None,
+                },
+            },
+            EntryKind::TurnStarted,
+            EntryKind::Event {
+                msg: EventMsg::Warning(WarningEvent {
+                    message: "hi".to_string(),
+                }),
+            },
+            EntryKind::ResponseItem {
+                item: ResponseItem::Message {
+                    id: None,
+                    role: "assistant".to_string(),
+                    content: vec![ContentItem::OutputText {
+                        text: "hello".to_string(),
+                        signature: None,
+                    }],
+                },
+            },
+            EntryKind::CompactionApplied {
+                tokens_before: 123,
+                summary: "summary".to_string(),
+                replacement_history: None,
+                replaces_up_to_head_id: None,
+            },
+            EntryKind::HeadSet {
+                target_head_id: Uuid::new_v4(),
+                reason: "undo".to_string(),
+                from_head_id: None,
+            },
+            EntryKind::TurnCommitted,
+            EntryKind::SessionEnd,
+        ];
+
+        for kind in kinds {
+            let entry = LogEntry {
+                id: Uuid::new_v4(),
+                timestamp: "2024-03-20T12:00:00Z".to_string(),
+                session_id: Uuid::new_v4(),
+                turn_id: None,
+                parent_id: None,
+                kind: kind.clone(),
+            };
+
+            let serialized = serde_json::to_string(&entry)?;
+            let value: serde_json::Value = serde_json::from_str(&serialized)?;
+
+            let expected_kind = match kind {
+                EntryKind::SessionHeader { .. } => "session_header",
+                EntryKind::TurnStarted => "turn_started",
+                EntryKind::Event { .. } => "event",
+                EntryKind::ResponseItem { .. } => "response_item",
+                EntryKind::CompactionApplied { .. } => "compaction_applied",
+                EntryKind::HeadSet { .. } => "head_set",
+                EntryKind::TurnCommitted => "turn_committed",
+                EntryKind::SessionEnd => "session_end",
+            };
+
+            assert_eq!(value["kind"], expected_kind);
+
+            let deserialized: LogEntry = serde_json::from_str(&serialized)?;
+            let expected = serde_json::to_value(&entry)?;
+            let actual = serde_json::to_value(&deserialized)?;
+            assert_eq!(expected, actual);
+        }
         Ok(())
     }
 }
