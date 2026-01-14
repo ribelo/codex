@@ -7,6 +7,9 @@ use crate::config::types::SubagentReasoningEffort;
 use crate::config::types::SubagentSandboxPolicy;
 use crate::config::types::TaskConfigToml;
 use crate::config::types::TaskDifficulty;
+use crate::skills::system::system_cache_root_dir;
+use serde::Deserialize;
+use tracing::error;
 
 /// Built-in task definitions.
 ///
@@ -17,6 +20,7 @@ pub(crate) struct BuiltinTask {
     pub description: &'static str,
     pub sandbox_policy: SubagentSandboxPolicy,
     pub system_prompt: Option<&'static str>,
+    pub skills: &'static [&'static str],
 }
 
 /// System prompt for the `review` task.
@@ -31,36 +35,42 @@ pub(crate) const BUILTIN_TASKS: &[BuiltinTask] = &[
         description: "General code changes and implementation work",
         sandbox_policy: SubagentSandboxPolicy::WorkspaceWrite,
         system_prompt: None,
+        skills: &[],
     },
     BuiltinTask {
         task_type: "search",
         description: "Find code, definitions, and references",
         sandbox_policy: SubagentSandboxPolicy::ReadOnly,
         system_prompt: Some(FINDER_SYSTEM_PROMPT),
+        skills: &[],
     },
     BuiltinTask {
         task_type: "planning",
         description: "Architecture and design decisions",
         sandbox_policy: SubagentSandboxPolicy::ReadOnly,
         system_prompt: None,
+        skills: &[],
     },
     BuiltinTask {
         task_type: "review",
         description: "Code review and feedback",
         sandbox_policy: SubagentSandboxPolicy::ReadOnly,
         system_prompt: Some(REVIEW_SYSTEM_PROMPT),
+        skills: &["review"],
     },
     BuiltinTask {
         task_type: "ui",
         description: "Frontend and UI work",
         sandbox_policy: SubagentSandboxPolicy::WorkspaceWrite,
         system_prompt: None,
+        skills: &[],
     },
     BuiltinTask {
         task_type: "rust",
         description: "Rust code changes",
         sandbox_policy: SubagentSandboxPolicy::WorkspaceWrite,
         system_prompt: None,
+        skills: &[],
     },
 ];
 
@@ -109,7 +119,7 @@ impl TaskRegistry {
                     task_type: builtin.task_type.to_string(),
                     description: Some(builtin.description.to_string()),
                     system_prompt: builtin.system_prompt.map(ToString::to_string),
-                    skills: Vec::new(),
+                    skills: builtin.skills.iter().map(|s| (*s).to_string()).collect(),
                     default_strategy: TaskStrategy::default(),
                     difficulty_overrides: HashMap::new(),
                     sandbox_policy: builtin.sandbox_policy,
@@ -132,6 +142,7 @@ impl TaskRegistry {
             skills_paths: vec![
                 config.cwd.join(".codex/skills"),
                 config.codex_home.join("skills"),
+                system_cache_root_dir(&config.codex_home),
             ],
         }
     }
@@ -165,6 +176,10 @@ impl TaskRegistry {
     }
 
     pub fn load_skill(&self, name: &str) -> Option<LoadedSkill> {
+        if let Some(skill) = self.load_internal_system_skill(name) {
+            return Some(skill);
+        }
+
         for base in &self.skills_paths {
             let candidates = [
                 base.join(name).join("SKILL.md"),
@@ -186,6 +201,56 @@ impl TaskRegistry {
         None
     }
 
+    fn load_internal_system_skill(&self, name: &str) -> Option<LoadedSkill> {
+        let system_root = self
+            .skills_paths
+            .iter()
+            .find(|path| path.file_name().is_some_and(|name| name == ".system"))?;
+        let path = system_root.join(name).join("SKILL.md");
+        if !path.is_file() {
+            return None;
+        }
+
+        let contents = match std::fs::read_to_string(&path) {
+            Ok(contents) => contents,
+            Err(err) => {
+                error!(
+                    "Failed to read internal system skill {name} at {}: {err:#}",
+                    path.display()
+                );
+                return None;
+            }
+        };
+
+        let Some(frontmatter) = extract_frontmatter(&contents) else {
+            error!(
+                "Missing YAML frontmatter for internal system skill {name} at {}",
+                path.display()
+            );
+            return None;
+        };
+
+        let parsed: SkillInternalFrontmatter = match serde_yaml::from_str(&frontmatter) {
+            Ok(parsed) => parsed,
+            Err(err) => {
+                error!(
+                    "Failed to parse YAML frontmatter for internal system skill {name} at {}: {err:#}",
+                    path.display()
+                );
+                return None;
+            }
+        };
+        if !parsed.internal {
+            return None;
+        }
+
+        Some(LoadedSkill {
+            name: name.to_string(),
+            path,
+            contents,
+        })
+    }
+
     pub fn skills_paths(&self) -> &[PathBuf] {
         &self.skills_paths
     }
@@ -199,6 +264,35 @@ impl TaskRegistry {
         tasks.sort_by(|a, b| a.task_type.cmp(&b.task_type));
         tasks
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct SkillInternalFrontmatter {
+    #[serde(default)]
+    internal: bool,
+}
+
+fn extract_frontmatter(contents: &str) -> Option<String> {
+    let mut lines = contents.lines();
+    if !matches!(lines.next(), Some(line) if line.trim() == "---") {
+        return None;
+    }
+
+    let mut frontmatter_lines: Vec<&str> = Vec::new();
+    let mut found_closing = false;
+    for line in lines.by_ref() {
+        if line.trim() == "---" {
+            found_closing = true;
+            break;
+        }
+        frontmatter_lines.push(line);
+    }
+
+    if frontmatter_lines.is_empty() || !found_closing {
+        return None;
+    }
+
+    Some(frontmatter_lines.join("\n"))
 }
 
 impl TaskDefinition {
@@ -280,6 +374,11 @@ impl TaskDefinition {
             }
         }
 
+        let mut skills = task.skills.clone().unwrap_or_else(|| self.skills.clone());
+        if self.task_type == "review" && !skills.iter().any(|skill| skill == "review") {
+            skills.push("review".to_string());
+        }
+
         Self {
             task_type: task.task_type.clone(),
             // Override description only if provided in config
@@ -290,7 +389,7 @@ impl TaskDefinition {
             // Config tasks don't override system_prompt; preserve builtin if present
             system_prompt: self.system_prompt.clone(),
             // Override skills only if provided in config
-            skills: task.skills.clone().unwrap_or_else(|| self.skills.clone()),
+            skills,
             // Merge default strategy: overlay config values onto existing
             default_strategy: TaskStrategy {
                 model: task
@@ -313,6 +412,7 @@ impl TaskDefinition {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::fs;
 
     use pretty_assertions::assert_eq;
 
@@ -323,6 +423,7 @@ mod tests {
     use crate::config::types::TaskConfigToml;
     use crate::config::types::TaskDifficulty;
     use crate::config::types::TaskDifficultyStrategy;
+    use crate::skills::system::system_cache_root_dir;
 
     use super::TaskRegistry;
 
@@ -536,19 +637,19 @@ mod tests {
         );
         let system_prompt = task.system_prompt.as_deref().unwrap();
         assert!(
-            system_prompt.contains("## Output schema"),
-            "review system_prompt should contain the output schema"
+            system_prompt.contains("Review guidelines"),
+            "review system_prompt should contain review guidelines"
         );
         assert!(
-            system_prompt.contains("overall_correctness"),
-            "review system_prompt should contain JSON schema fields"
+            system_prompt.contains("FORMATTING GUIDELINES"),
+            "review system_prompt should contain formatting guidelines"
         );
 
         let effective = task
             .effective_system_prompt()
             .expect("review should have an effective system prompt");
         assert!(effective.contains("Code review and feedback"));
-        assert!(effective.contains("## Output schema"));
+        assert!(effective.contains("Review guidelines"));
     }
 
     #[test]
@@ -627,13 +728,13 @@ mod tests {
         // But system_prompt should still be the original review.md content
         assert!(task.system_prompt.is_some());
         let system_prompt = task.system_prompt.as_deref().unwrap();
-        assert!(system_prompt.contains("## Output schema"));
+        assert!(system_prompt.contains("Review guidelines"));
 
         let effective = task
             .effective_system_prompt()
             .expect("review should have an effective system prompt");
         assert!(effective.contains("Custom review description"));
-        assert!(effective.contains("## Output schema"));
+        assert!(effective.contains("Review guidelines"));
     }
 
     #[test]
@@ -661,6 +762,61 @@ mod tests {
         assert_eq!(
             task.effective_system_prompt().as_deref(),
             Some("My custom task description")
+        );
+    }
+
+    #[test]
+    fn internal_system_skill_cannot_be_shadowed_in_task_registry_load_skill() {
+        let config = test_config();
+
+        let user_skill_dir = config.codex_home.join("skills/review");
+        fs::create_dir_all(&user_skill_dir).unwrap();
+        fs::write(
+            user_skill_dir.join("SKILL.md"),
+            "---\nname: review\ndescription: user override\n---\n\nUser body\n",
+        )
+        .unwrap();
+
+        let internal_skill_dir = system_cache_root_dir(&config.codex_home).join("review");
+        fs::create_dir_all(&internal_skill_dir).unwrap();
+        fs::write(
+            internal_skill_dir.join("SKILL.md"),
+            "---\nname: review\ndescription: internal\ninternal: true\n---\n\nInternal body\n",
+        )
+        .unwrap();
+
+        let registry = TaskRegistry::new(&config);
+        let loaded = registry
+            .load_skill("review")
+            .expect("review skill should load");
+
+        let path_str = loaded.path.to_string_lossy().replace('\\', "/");
+        assert!(
+            path_str.contains("/skills/.system/review/SKILL.md"),
+            "expected internal system skill path, got {path_str}"
+        );
+    }
+
+    #[test]
+    fn config_override_cannot_remove_review_skill() {
+        let mut config = test_config();
+        config.tasks = vec![TaskConfigToml {
+            task_type: "review".to_string(),
+            description: None,
+            skills: Some(Vec::new()),
+            model: None,
+            reasoning_effort: None,
+            sandbox_policy: None,
+            approval_policy: None,
+            difficulty: None,
+        }];
+
+        let registry = TaskRegistry::new(&config);
+        let task = registry.get("review").expect("review task should exist");
+
+        assert!(
+            task.skills.iter().any(|skill| skill == "review"),
+            "expected review task to always include the review contract skill"
         );
     }
 }

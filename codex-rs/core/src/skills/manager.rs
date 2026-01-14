@@ -158,7 +158,7 @@ mod tests {
     }
 
     // Number of system skills that are automatically installed
-    const SYSTEM_SKILLS_COUNT: usize = 2;
+    const SYSTEM_SKILLS_COUNT: usize = 3;
 
     fn find_skill<'a>(outcome: &'a SkillLoadOutcome, name: &str) -> Option<&'a SkillMetadata> {
         outcome.skills.iter().find(|s| s.name == name)
