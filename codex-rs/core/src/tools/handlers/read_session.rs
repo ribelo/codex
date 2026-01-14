@@ -35,12 +35,14 @@ pub fn create_read_session_tool() -> ToolSpec {
         "session_id".to_string(),
         JsonSchema::String {
             description: Some("The session ID (UUID) to read".to_string()),
+            enum_values: None,
         },
     );
     properties.insert(
         "question".to_string(),
         JsonSchema::String {
             description: Some("Question to answer about the session".to_string()),
+            enum_values: None,
         },
     );
 

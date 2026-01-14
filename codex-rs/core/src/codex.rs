@@ -534,6 +534,7 @@ impl Session {
         model_family: ModelFamily,
         conversation_id: ConversationId,
         sub_id: String,
+        public_skill_names: Vec<String>,
     ) -> TurnContext {
         let otel_event_manager = otel_event_manager.clone().with_model(
             session_configuration.model.as_str(),
@@ -575,6 +576,7 @@ impl Session {
                 .original_config_do_not_use
                 .session_log_path
                 .clone(),
+            task_tool_skill_names: &public_skill_names,
         });
 
         TurnContext {
@@ -957,6 +959,24 @@ impl Session {
             .models_manager
             .construct_model_family(session_configuration.model.as_str(), &per_turn_config)
             .await;
+
+        // Extract public skill names for task tool
+        let mut public_skill_names: Vec<String> = self
+            .services
+            .skills
+            .as_ref()
+            .map(|outcome| {
+                outcome
+                    .skills
+                    .iter()
+                    .filter(|s| !s.internal)
+                    .map(|s| s.name.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        public_skill_names.sort();
+        public_skill_names.dedup();
+
         let mut turn_context: TurnContext = Self::make_turn_context(
             Some(Arc::clone(&self.services.auth_manager)),
             &self.services.otel_event_manager,
@@ -966,6 +986,7 @@ impl Session {
             model_family,
             self.conversation_id,
             sub_id,
+            public_skill_names,
         );
         if let Some(final_schema) = updates.final_output_json_schema {
             turn_context.final_output_json_schema = final_schema;
@@ -3340,6 +3361,7 @@ mod tests {
             model_family,
             conversation_id,
             "turn_id".to_string(),
+            vec![], // No skills in test context
         );
 
         let session = Session {
@@ -3432,6 +3454,7 @@ mod tests {
             model_family,
             conversation_id,
             "turn_id".to_string(),
+            vec![], // No skills in test context
         ));
 
         let session = Arc::new(Session {

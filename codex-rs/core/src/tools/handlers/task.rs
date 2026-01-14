@@ -151,6 +151,7 @@ fn build_task_system_prompt(task_description: Option<&str>, skills: &[LoadedSkil
 pub fn create_task_tool(
     tasks: &[TaskConfigToml],
     allowed_task_types: Option<&[String]>,
+    public_skill_names: &[String],
 ) -> ToolSpec {
     use crate::task_registry::BUILTIN_TASKS;
     use std::collections::BTreeMap;
@@ -209,18 +210,21 @@ pub fn create_task_tool(
         "description".to_string(),
         JsonSchema::String {
             description: Some("Description of the task".to_string()),
+            enum_values: None,
         },
     );
     properties.insert(
         "prompt".to_string(),
         JsonSchema::String {
             description: Some("The prompt for the worker".to_string()),
+            enum_values: None,
         },
     );
     properties.insert(
         "task_type".to_string(),
         JsonSchema::String {
             description: Some("Category of work (e.g. rust, search, ui)".to_string()),
+            enum_values: None,
         },
     );
     properties.insert(
@@ -230,6 +234,11 @@ pub fn create_task_tool(
                 "Task complexity. small=trivial, medium=standard (default), large=complex"
                     .to_string(),
             ),
+            enum_values: Some(vec![
+                "small".to_string(),
+                "medium".to_string(),
+                "large".to_string(),
+            ]),
         },
     );
     properties.insert(
@@ -241,8 +250,25 @@ pub fn create_task_tool(
                  for multi-turn tasks, iterative refinement, or follow-up work."
                     .to_string(),
             ),
+            enum_values: None,
         },
     );
+    // Add skills field - only valid for task_type="general"
+    if !public_skill_names.is_empty() {
+        properties.insert(
+            "skills".to_string(),
+            JsonSchema::Array {
+                items: Box::new(JsonSchema::String {
+                    description: None,
+                    enum_values: Some(public_skill_names.to_vec()),
+                }),
+                description: Some(
+                    "Skills to inject into the worker session. Only valid for task_type=\"general\"."
+                        .to_string(),
+                ),
+            },
+        );
+    }
 
     ToolSpec::Function(ResponsesApiTool {
         name: "task".to_string(),
@@ -268,6 +294,8 @@ struct TaskArgs {
     #[serde(default)]
     difficulty: Option<TaskDifficulty>,
     session_id: Option<String>,
+    #[serde(default)]
+    skills: Option<Vec<String>>,
 }
 
 pub struct TaskHandler;
@@ -317,6 +345,35 @@ fn approval_restrictiveness(policy: AskForApproval) -> i32 {
     }
 }
 
+fn validate_requested_skills(
+    task_type: &str,
+    requested_skills: Option<&[String]>,
+    available_skills: &[String],
+) -> Result<(), FunctionCallError> {
+    if requested_skills.is_some() && task_type != "general" {
+        return Err(FunctionCallError::RespondToModel(format!(
+            "The 'skills' parameter is only valid for task_type=\"general\", not \"{task_type}\"."
+        )));
+    }
+
+    if let Some(skills) = requested_skills {
+        for skill_name in skills {
+            if !available_skills.contains(skill_name) {
+                let available_str = if available_skills.is_empty() {
+                    "(none)".to_string()
+                } else {
+                    available_skills.join(", ")
+                };
+                return Err(FunctionCallError::RespondToModel(format!(
+                    "Unknown skill '{skill_name}'. Available skills: {available_str}."
+                )));
+            }
+        }
+    }
+
+    Ok(())
+}
+
 #[async_trait]
 impl ToolHandler for TaskHandler {
     fn kind(&self) -> crate::tools::registry::ToolKind {
@@ -344,6 +401,7 @@ impl ToolHandler for TaskHandler {
             task_type,
             difficulty: difficulty_override,
             session_id,
+            skills: requested_skills,
         } = args;
 
         let task_type = task_type.trim().to_string();
@@ -352,6 +410,12 @@ impl ToolHandler for TaskHandler {
                 "task_type cannot be empty".to_string(),
             ));
         }
+
+        validate_requested_skills(
+            &task_type,
+            requested_skills.as_deref(),
+            &turn.tools_config.task_tool_skill_names,
+        )?;
 
         let requested_difficulty = difficulty_override.unwrap_or_default();
 
@@ -408,9 +472,14 @@ impl ToolHandler for TaskHandler {
         let parallel_constraints = parallel_execution_constraints(parallel_worker_count);
         let identity_prompt = subagent_identity_prompt(&parent_session_id, parallel_worker_count);
 
+        let skills_to_load = if task_type == "general" {
+            requested_skills.unwrap_or_else(|| task_def.skills.clone())
+        } else {
+            task_def.skills.clone()
+        };
+
         let (loaded_skills, missing_skills) = tokio::task::spawn_blocking({
             let registry = registry.clone();
-            let skills_to_load = task_def.skills.clone();
             move || {
                 let mut loaded = Vec::new();
                 let mut missing = Vec::new();
@@ -1025,5 +1094,57 @@ mod tests {
         let prompt = subagent_identity_prompt("parent-1", 2);
         assert!(prompt.contains("Parallel Execution Constraints"));
         assert!(prompt.contains("spawned 2 worker sessions"));
+    }
+
+    #[test]
+    fn test_task_args_deserialize_with_skills() {
+        let json = r#"{"description":"desc","prompt":"prompt","task_type":"general","skills":["skill-a","skill-b"]}"#;
+        let args: TaskArgs = serde_json::from_str(json).unwrap();
+        assert_eq!(args.description, "desc");
+        assert_eq!(args.prompt, "prompt");
+        assert_eq!(args.task_type, "general");
+        assert_eq!(
+            args.skills,
+            Some(vec!["skill-a".to_string(), "skill-b".to_string()])
+        );
+    }
+
+    #[test]
+    fn test_task_args_deserialize_without_skills() {
+        let json = r#"{"description":"desc","prompt":"prompt","task_type":"code"}"#;
+        let args: TaskArgs = serde_json::from_str(json).unwrap();
+        assert_eq!(args.description, "desc");
+        assert_eq!(args.prompt, "prompt");
+        assert_eq!(args.task_type, "code");
+        assert!(args.skills.is_none());
+    }
+
+    #[test]
+    fn test_task_args_deserialize_with_empty_skills() {
+        let json = r#"{"description":"desc","prompt":"prompt","task_type":"general","skills":[]}"#;
+        let args: TaskArgs = serde_json::from_str(json).unwrap();
+        assert_eq!(args.skills, Some(vec![]));
+    }
+
+    #[test]
+    fn validate_requested_skills_rejects_non_general_even_empty() {
+        let err = validate_requested_skills("rust", Some(&[]), &[]).unwrap_err();
+        let FunctionCallError::RespondToModel(message) = err else {
+            panic!("expected RespondToModel");
+        };
+        assert!(message.contains("only valid for task_type=\"general\""));
+    }
+
+    #[test]
+    fn validate_requested_skills_rejects_unknown_skill() {
+        let requested = vec!["skill-x".to_string()];
+        let available = vec!["skill-a".to_string(), "skill-b".to_string()];
+        let err = validate_requested_skills("general", Some(&requested), &available).unwrap_err();
+        let FunctionCallError::RespondToModel(message) = err else {
+            panic!("expected RespondToModel");
+        };
+        assert!(message.contains("Unknown skill 'skill-x'"));
+        assert!(message.contains("skill-a"));
+        assert!(message.contains("skill-b"));
     }
 }

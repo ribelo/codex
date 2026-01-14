@@ -58,6 +58,7 @@ impl SessionLogTool {
             "pattern".to_string(),
             JsonSchema::String {
                 description: Some("Search pattern (supports regex)".to_string()),
+                enum_values: None,
             },
         );
         properties.insert(
