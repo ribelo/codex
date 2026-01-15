@@ -73,6 +73,7 @@ mod style;
 mod terminal_palette;
 mod text_formatting;
 mod tooltips;
+mod tree_overlay;
 mod tui;
 mod ui_consts;
 pub mod update_action;

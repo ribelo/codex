@@ -63,6 +63,9 @@ pub(crate) enum AppEvent {
     /// Result of computing a `/diff` command.
     DiffResult(String),
 
+    /// Result of computing a `/tree` command.
+    TreeResult(codex_core::session_log::graph::CommitGraph),
+
     InsertHistoryCell(Box<dyn HistoryCell>),
 
     StartCommitAnimation,

@@ -30,6 +30,7 @@ pub enum SlashCommand {
     Ps,
     Mcp,
     Logout,
+    Tree,
     Quit,
     Exit,
     Feedback,
@@ -61,6 +62,7 @@ impl SlashCommand {
             SlashCommand::Mcp => "list configured MCP tools",
             SlashCommand::Ps => "list background terminals",
             SlashCommand::Logout => "log out of Codex",
+            SlashCommand::Tree => "show commit graph as an ASCII tree",
             SlashCommand::Rollout => "print the rollout file path",
             SlashCommand::TestApproval => "test approval request",
         }
@@ -94,7 +96,8 @@ impl SlashCommand {
             | SlashCommand::Mcp
             | SlashCommand::Feedback
             | SlashCommand::Quit
-            | SlashCommand::Exit => true,
+            | SlashCommand::Exit
+            | SlashCommand::Tree => true,
             SlashCommand::Rollout => true,
             SlashCommand::TestApproval => true,
             SlashCommand::Ps => true,

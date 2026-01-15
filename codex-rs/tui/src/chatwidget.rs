@@ -1920,6 +1920,23 @@ impl ChatWidget {
             SlashCommand::Ps => {
                 self.add_ps_output();
             }
+            SlashCommand::Tree => {
+                if let Some(path) = self.rollout_path() {
+                    let tx = self.app_event_tx.clone();
+                    let result = codex_core::session_log::read_session(&path);
+                    match result {
+                        Ok(data) => {
+                            let graph = codex_core::session_log::build_commit_graph(&data.entries);
+                            tx.send(AppEvent::TreeResult(graph));
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to read session for /tree: {e}");
+                        }
+                    }
+                } else {
+                    self.add_info_message("No active session to show tree.".to_string(), None);
+                }
+            }
             SlashCommand::Mcp => {
                 self.add_mcp_output();
             }

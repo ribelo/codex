@@ -37,6 +37,8 @@ pub enum ReadError {
     EmptyFile,
     #[error("No session header found")]
     NoHeader,
+    #[error("Head ID {0} not found in session")]
+    HeadNotFound(Uuid),
 }
 
 /// Read a v2 session log file and return structured data.
@@ -48,6 +50,32 @@ pub enum ReadError {
 /// - Handles truncated/unparseable final line gracefully
 /// - Builds entries list: all events on active head path
 pub fn read_session(path: &Path) -> Result<SessionLogData, ReadError> {
+    let parsed = parse_session_file(path)?;
+    filter_entries_for_head(parsed, None)
+}
+
+/// Read session entries filtered to a specific head commit.
+///
+/// Similar to `read_session`, but uses the provided head_id instead of
+/// scanning for the most recent head. This enables viewing different
+/// branches in the commit graph.
+pub fn read_session_at_head(path: &Path, head_id: Uuid) -> Result<SessionLogData, ReadError> {
+    let parsed = parse_session_file(path)?;
+    filter_entries_for_head(parsed, Some(head_id))
+}
+
+/// Intermediate parsed data before filtering.
+struct ParsedSession {
+    header: SessionMetaLine,
+    all_entries: Vec<LogEntry>,
+    committed_turn_ids: HashSet<Uuid>,
+    current_head_id: Option<Uuid>,
+    /// Maps commit_id -> (parent_id, turn_id)
+    commits: HashMap<Uuid, (Option<Uuid>, Option<Uuid>)>,
+}
+
+/// Parse a session file into intermediate data structures.
+fn parse_session_file(path: &Path) -> Result<ParsedSession, ReadError> {
     let file = std::fs::File::open(path)?;
     let reader = BufReader::new(file);
 
@@ -121,15 +149,41 @@ pub fn read_session(path: &Path) -> Result<SessionLogData, ReadError> {
 
     let header = header.ok_or(ReadError::NoHeader)?;
 
+    Ok(ParsedSession {
+        header,
+        all_entries,
+        committed_turn_ids,
+        current_head_id,
+        commits,
+    })
+}
+
+/// Filter entries based on the active head path.
+/// If `explicit_head_id` is Some, use it; otherwise use the parsed current_head_id.
+fn filter_entries_for_head(
+    parsed: ParsedSession,
+    explicit_head_id: Option<Uuid>,
+) -> Result<SessionLogData, ReadError> {
+    let head_id = match explicit_head_id {
+        Some(id) => {
+            // Verify the head_id exists in our commits
+            if !parsed.commits.contains_key(&id) {
+                return Err(ReadError::HeadNotFound(id));
+            }
+            Some(id)
+        }
+        None => parsed.current_head_id,
+    };
+
     // Compute active head commit chain and turn IDs.
     let mut active_commit_ids: HashSet<Uuid> = HashSet::new();
     let mut active_turn_ids: HashSet<Uuid> = HashSet::new();
-    let mut cursor = current_head_id;
+    let mut cursor = head_id;
     while let Some(commit_id) = cursor {
         if !active_commit_ids.insert(commit_id) {
             break;
         }
-        let Some((parent_id, turn_id)) = commits.get(&commit_id) else {
+        let Some((parent_id, turn_id)) = parsed.commits.get(&commit_id) else {
             break;
         };
         if let Some(turn_id) = *turn_id {
@@ -140,11 +194,12 @@ pub fn read_session(path: &Path) -> Result<SessionLogData, ReadError> {
 
     // Filter entries to only include those from committed turns
     // Entries without turn_id are included if they are relevant to the active head path.
-    let committed_entries: Vec<LogEntry> = all_entries
+    let committed_entries: Vec<LogEntry> = parsed
+        .all_entries
         .into_iter()
         .filter(|entry| match entry.turn_id {
             Some(turn_id) => {
-                committed_turn_ids.contains(&turn_id) && active_turn_ids.contains(&turn_id)
+                parsed.committed_turn_ids.contains(&turn_id) && active_turn_ids.contains(&turn_id)
             }
             None => match &entry.kind {
                 EntryKind::SessionHeader { .. } | EntryKind::SessionEnd => true,
@@ -161,9 +216,9 @@ pub fn read_session(path: &Path) -> Result<SessionLogData, ReadError> {
         .collect();
 
     Ok(SessionLogData {
-        header,
+        header: parsed.header,
         entries: committed_entries,
-        head_id: current_head_id,
+        head_id,
     })
 }
 
@@ -697,5 +752,110 @@ mod tests {
 
         // After HeadSet to committed1, the parent of committed1 is None
         assert!(parent.is_none());
+    }
+
+    #[test]
+    fn test_read_session_at_head_branching() {
+        let session_id = Uuid::new_v4();
+        let turn1 = Uuid::new_v4();
+        let turn2 = Uuid::new_v4();
+        let turn3 = Uuid::new_v4();
+
+        // Create a branching history:
+        // turn1 (committed1) -> turn2 (committed2)
+        //                   \-> turn3 (committed3) [branching from committed1]
+
+        let committed1 = make_turn_committed_entry(session_id, turn1);
+        let committed1_id = committed1.id;
+
+        let mut committed2 = make_turn_committed_entry(session_id, turn2);
+        committed2.parent_id = Some(committed1_id);
+        let committed2_id = committed2.id;
+
+        let mut committed3 = make_turn_committed_entry(session_id, turn3);
+        committed3.parent_id = Some(committed1_id);
+        let committed3_id = committed3.id;
+
+        let entries = vec![
+            make_session_header_entry(session_id),
+            make_turn_started_entry(session_id, turn1),
+            make_response_item_entry(session_id, turn1, "Response 1"),
+            committed1,
+            make_turn_started_entry(session_id, turn2),
+            make_response_item_entry(session_id, turn2, "Response 2"),
+            committed2,
+            make_turn_started_entry(session_id, turn3),
+            make_response_item_entry(session_id, turn3, "Response 3"),
+            committed3,
+        ];
+
+        let file = write_entries_to_file(&entries);
+
+        // Read at committed2: should include turn1 and turn2, but not turn3
+        let result_at_2 = read_session_at_head(file.path(), committed2_id).unwrap();
+        assert_eq!(result_at_2.head_id, Some(committed2_id));
+        assert!(
+            result_at_2.entries.iter().any(|e| e.turn_id == Some(turn1)),
+            "turn1 should be in committed2 branch"
+        );
+        assert!(
+            result_at_2.entries.iter().any(|e| e.turn_id == Some(turn2)),
+            "turn2 should be in committed2 branch"
+        );
+        assert!(
+            !result_at_2.entries.iter().any(|e| e.turn_id == Some(turn3)),
+            "turn3 should NOT be in committed2 branch"
+        );
+
+        // Read at committed3: should include turn1 and turn3, but not turn2
+        let result_at_3 = read_session_at_head(file.path(), committed3_id).unwrap();
+        assert_eq!(result_at_3.head_id, Some(committed3_id));
+        assert!(
+            result_at_3.entries.iter().any(|e| e.turn_id == Some(turn1)),
+            "turn1 should be in committed3 branch"
+        );
+        assert!(
+            !result_at_3.entries.iter().any(|e| e.turn_id == Some(turn2)),
+            "turn2 should NOT be in committed3 branch"
+        );
+        assert!(
+            result_at_3.entries.iter().any(|e| e.turn_id == Some(turn3)),
+            "turn3 should be in committed3 branch"
+        );
+
+        // Read at committed1: should include only turn1
+        let result_at_1 = read_session_at_head(file.path(), committed1_id).unwrap();
+        assert_eq!(result_at_1.head_id, Some(committed1_id));
+        assert!(
+            result_at_1.entries.iter().any(|e| e.turn_id == Some(turn1)),
+            "turn1 should be in committed1 branch"
+        );
+        assert!(
+            !result_at_1.entries.iter().any(|e| e.turn_id == Some(turn2)),
+            "turn2 should NOT be in committed1 branch"
+        );
+        assert!(
+            !result_at_1.entries.iter().any(|e| e.turn_id == Some(turn3)),
+            "turn3 should NOT be in committed1 branch"
+        );
+    }
+
+    #[test]
+    fn test_read_session_at_head_not_found() {
+        let session_id = Uuid::new_v4();
+        let turn_id = Uuid::new_v4();
+
+        let entries = vec![
+            make_session_header_entry(session_id),
+            make_turn_started_entry(session_id, turn_id),
+            make_turn_committed_entry(session_id, turn_id),
+        ];
+
+        let file = write_entries_to_file(&entries);
+
+        // Try to read at a non-existent head
+        let fake_head = Uuid::new_v4();
+        let result = read_session_at_head(file.path(), fake_head);
+        assert!(matches!(result, Err(ReadError::HeadNotFound(id)) if id == fake_head));
     }
 }

@@ -31,6 +31,7 @@ use ratatui::widgets::Wrap;
 pub(crate) enum Overlay {
     Transcript(TranscriptOverlay),
     Static(StaticOverlay),
+    Tree(TreeOverlay),
 }
 
 impl Overlay {
@@ -49,10 +50,15 @@ impl Overlay {
         Self::Static(StaticOverlay::with_renderables(renderables, title))
     }
 
+    pub(crate) fn new_tree(graph: codex_core::session_log::graph::CommitGraph) -> Self {
+        Self::Tree(TreeOverlay::new(graph))
+    }
+
     pub(crate) fn handle_event(&mut self, tui: &mut tui::Tui, event: TuiEvent) -> Result<()> {
         match self {
             Overlay::Transcript(o) => o.handle_event(tui, event),
             Overlay::Static(o) => o.handle_event(tui, event),
+            Overlay::Tree(o) => o.handle_event(tui, event),
         }
     }
 
@@ -60,6 +66,7 @@ impl Overlay {
         match self {
             Overlay::Transcript(o) => o.is_done(),
             Overlay::Static(o) => o.is_done(),
+            Overlay::Tree(o) => o.is_done(),
         }
     }
 }
@@ -1036,3 +1043,4 @@ mod tests {
         );
     }
 }
+use crate::tree_overlay::TreeOverlay;

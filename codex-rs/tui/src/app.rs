@@ -923,6 +923,11 @@ impl App {
                 ));
                 tui.frame_requester().schedule_frame();
             }
+            AppEvent::TreeResult(graph) => {
+                let _ = tui.enter_alt_screen();
+                self.overlay = Some(Overlay::new_tree(graph));
+                tui.frame_requester().schedule_frame();
+            }
             AppEvent::StartFileSearch(query) => {
                 if !query.is_empty() {
                     self.file_search.on_user_query(query);

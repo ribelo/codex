@@ -208,6 +208,49 @@ pub async fn list_sessions_v2(
     .await
 }
 
+/// Find the v2 session log file path for a given session ID.
+///
+/// Scans `~/.codex/sessions/v2/` directories (newest first) looking for a file
+/// with the matching UUID in its filename. Returns the first match.
+pub async fn find_session_log_v2_by_id(
+    codex_home: &Path,
+    session_id: Uuid,
+) -> io::Result<Option<PathBuf>> {
+    let mut root = codex_home.to_path_buf();
+    root.push(SESSIONS_V2_SUBDIR);
+
+    if !tokio::fs::try_exists(&root).await.unwrap_or(false) {
+        return Ok(None);
+    }
+
+    let year_dirs = collect_dirs_desc(&root, |s| s.parse::<i32>().ok()).await?;
+
+    for (_year, year_path) in year_dirs.iter() {
+        let month_dirs = collect_dirs_desc(year_path, |s| s.parse::<i32>().ok()).await?;
+        for (_month, month_path) in month_dirs.iter() {
+            let day_dirs = collect_dirs_desc(month_path, |s| s.parse::<i32>().ok()).await?;
+            for (_day, day_path) in day_dirs.iter() {
+                let day_files = collect_files(day_path, |name_str, path| {
+                    // v2 files: session-YYYY-MM-DDThh-mm-ss-{uuid}.jsonl
+                    if !name_str.starts_with("session-") || !name_str.ends_with(".jsonl") {
+                        return None;
+                    }
+                    parse_timestamp_uuid_from_v2_filename(name_str)
+                        .filter(|(_, id)| *id == session_id)
+                        .map(|_| path.to_path_buf())
+                })
+                .await?;
+
+                if let Some(path) = day_files.into_iter().next() {
+                    return Ok(Some(path));
+                }
+            }
+        }
+    }
+
+    Ok(None)
+}
+
 /// Load v2 session file paths from disk using directory traversal.
 async fn traverse_v2_directories(
     root: PathBuf,
@@ -707,6 +750,29 @@ mod tests {
         assert_eq!(page_3.num_scanned_files, 1);
         assert_eq!(page_3.reached_scan_cap, false);
         assert_eq!(page_3.next_cursor, None);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_find_session_log_v2_by_id() -> io::Result<()> {
+        let tmp = TempDir::new()?;
+        let codex_home = tmp.path();
+        let mut root = codex_home.to_path_buf();
+        root.push(SESSIONS_V2_SUBDIR);
+        let day_dir = root.join("2025").join("01").join("15");
+        std::fs::create_dir_all(&day_dir)?;
+
+        let session_id = Uuid::new_v4();
+        let filename = format!("session-2025-01-15T14-30-45-{session_id}.jsonl");
+        let path = day_dir.join(filename);
+        std::fs::write(&path, "{}")?;
+
+        let found = find_session_log_v2_by_id(codex_home, session_id).await?;
+        assert_eq!(found, Some(path));
+
+        let not_found = find_session_log_v2_by_id(codex_home, Uuid::new_v4()).await?;
+        assert_eq!(not_found, None);
+
         Ok(())
     }
 }
