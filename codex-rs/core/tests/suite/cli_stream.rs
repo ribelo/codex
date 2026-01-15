@@ -1,5 +1,7 @@
 use codex_core::RolloutRecorder;
 use codex_core::protocol::GitInfo;
+use codex_protocol::protocol::EntryKind;
+use codex_protocol::protocol::LogEntry;
 use core_test_support::fs_wait;
 use core_test_support::skip_if_no_network;
 use escargot::CargoBuild;
@@ -260,7 +262,7 @@ async fn integration_creates_and_checks_session_file() -> anyhow::Result<()> {
     );
 
     // Wait for sessions dir to appear.
-    let sessions_dir = home.path().join("sessions");
+    let sessions_dir = home.path().join("sessions").join("v2");
     fs_wait::wait_for_path_exists(&sessions_dir, Duration::from_secs(5)).await?;
 
     // Find the session file that contains `marker`.
@@ -315,23 +317,26 @@ async fn integration_creates_and_checks_session_file() -> anyhow::Result<()> {
     let content =
         std::fs::read_to_string(&path).unwrap_or_else(|_| panic!("Failed to read session file"));
     let mut lines = content.lines();
-    let meta_line = lines
+    let header_line = lines
         .next()
-        .ok_or("missing session meta line")
-        .unwrap_or_else(|_| panic!("missing session meta line"));
-    let meta: serde_json::Value = serde_json::from_str(meta_line)
-        .unwrap_or_else(|_| panic!("Failed to parse session meta line as JSON"));
-    assert_eq!(
-        meta.get("type").and_then(|v| v.as_str()),
-        Some("session_meta")
+        .ok_or("missing session header line")
+        .unwrap_or_else(|_| panic!("missing session header line"));
+    let header: LogEntry = serde_json::from_str(header_line)
+        .unwrap_or_else(|_| panic!("Failed to parse session header line as JSON"));
+    let EntryKind::SessionHeader { meta } = header.kind else {
+        panic!(
+            "expected first log entry to be SessionHeader, got {:?}",
+            header.kind
+        );
+    };
+    assert_ne!(
+        meta.meta.id.as_uuid(),
+        Uuid::nil(),
+        "SessionMeta id missing"
     );
-    let payload = meta
-        .get("payload")
-        .unwrap_or_else(|| panic!("Missing payload in meta line"));
-    assert!(payload.get("id").is_some(), "SessionMeta missing id");
     assert!(
-        payload.get("timestamp").is_some(),
-        "SessionMeta missing timestamp"
+        !meta.meta.timestamp.is_empty(),
+        "SessionMeta timestamp missing"
     );
 
     let mut found_message = false;
@@ -342,8 +347,8 @@ async fn integration_creates_and_checks_session_file() -> anyhow::Result<()> {
         let Ok(item) = serde_json::from_str::<serde_json::Value>(line) else {
             continue;
         };
-        if item.get("type").and_then(|t| t.as_str()) == Some("response_item")
-            && let Some(payload) = item.get("payload")
+        if item.get("kind").and_then(|t| t.as_str()) == Some("response_item")
+            && let Some(payload) = item.get("item")
             && payload.get("type").and_then(|t| t.as_str()) == Some("message")
             && let Some(c) = payload.get("content")
             && c.to_string().contains(&marker)

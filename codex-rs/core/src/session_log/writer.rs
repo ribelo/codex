@@ -1,7 +1,11 @@
-//! SessionLog writer: background writer task with bounded async channel and turn-commit fsync.
+//! SessionLog writer: background writer thread with turn-commit fsync.
 
 use std::fs;
+use std::io::BufRead;
+use std::io::BufReader;
+use std::io::BufWriter;
 use std::io::Error as IoError;
+use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -11,21 +15,14 @@ use codex_protocol::protocol::SessionMetaLine;
 use time::OffsetDateTime;
 use time::format_description::FormatItem;
 use time::macros::format_description;
-use tokio::io::AsyncBufReadExt;
-use tokio::io::AsyncWrite;
-use tokio::io::AsyncWriteExt;
-use tokio::io::BufReader;
-use tokio::io::BufWriter;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tracing::error;
+use tracing::trace;
 use tracing::warn;
 use uuid::Uuid;
 
 use super::SESSIONS_V2_SUBDIR;
-
-/// Channel buffer size for log entries.
-const CHANNEL_BUFFER_SIZE: i32 = 256;
 
 /// Parameters for creating or resuming a SessionLog.
 #[derive(Clone)]
@@ -59,6 +56,19 @@ enum WriterCmd {
     Shutdown {
         ack: oneshot::Sender<Result<(), IoError>>,
     },
+    /// Set head to a target commit ID, fsync, then ack.
+    SetHead {
+        target_head_id: Uuid,
+        reason: String,
+        ack: oneshot::Sender<Result<(), IoError>>,
+    },
+    /// Append a compaction entry and fsync, then ack.
+    AppendCompaction {
+        tokens_before: i32,
+        summary: String,
+        replacement_history: Option<Vec<codex_protocol::models::ResponseItem>>,
+        ack: oneshot::Sender<Result<(), IoError>>,
+    },
 }
 
 /// Session log writer with background task and bounded async channel.
@@ -69,7 +79,7 @@ enum WriterCmd {
 /// - `shutdown()`: drains pending writes, flushes, sync_data, closes
 #[derive(Clone)]
 pub struct SessionLog {
-    tx: mpsc::Sender<WriterCmd>,
+    tx: mpsc::UnboundedSender<WriterCmd>,
     session_id: Uuid,
     log_path: PathBuf,
 }
@@ -96,14 +106,14 @@ impl SessionLog {
             }
         };
 
-        let (tx, rx) = mpsc::channel(CHANNEL_BUFFER_SIZE as usize);
+        let (tx, rx) = mpsc::unbounded_channel();
 
-        // Spawn the background writer task
+        // Spawn the background writer thread.
         let path_clone = log_path.clone();
         let session_id_clone = session_id;
-        tokio::spawn(async move {
-            if let Err(e) = writer_task(path_clone, rx, session_id_clone, meta).await {
-                error!("SessionLog writer task failed: {e}");
+        std::thread::spawn(move || {
+            if let Err(e) = writer_thread(path_clone, rx, session_id_clone, meta) {
+                error!("SessionLog writer thread failed: {e}");
             }
         });
 
@@ -129,10 +139,9 @@ impl SessionLog {
     /// Returns immediately after queueing the entry. The entry will be written
     /// by the background task but is not guaranteed to be durable until
     /// `commit_turn` is called.
-    pub async fn append(&self, entry: LogEntry) -> Result<(), IoError> {
+    pub fn append(&self, entry: LogEntry) -> Result<(), IoError> {
         self.tx
             .send(WriterCmd::Append(entry))
-            .await
             .map_err(|e| IoError::other(format!("failed to queue log entry: {e}")))
     }
 
@@ -146,7 +155,6 @@ impl SessionLog {
                 turn_id,
                 ack: ack_tx,
             })
-            .await
             .map_err(|e| IoError::other(format!("failed to queue turn commit: {e}")))?;
 
         ack_rx
@@ -159,12 +167,63 @@ impl SessionLog {
         let (ack_tx, ack_rx) = oneshot::channel();
         self.tx
             .send(WriterCmd::Shutdown { ack: ack_tx })
-            .await
             .map_err(|e| IoError::other(format!("failed to queue shutdown: {e}")))?;
 
         ack_rx
             .await
             .map_err(|e| IoError::other(format!("failed waiting for shutdown ack: {e}")))?
+    }
+
+    /// Set head to a target commit ID: writes HeadSet entry and waits for fsync.
+    ///
+    /// This is used for undo operations to revert to a previous commit.
+    pub async fn set_head(&self, target_head_id: Uuid, reason: String) -> Result<(), IoError> {
+        let (ack_tx, ack_rx) = oneshot::channel();
+        self.tx
+            .send(WriterCmd::SetHead {
+                target_head_id,
+                reason,
+                ack: ack_tx,
+            })
+            .map_err(|e| IoError::other(format!("failed to queue head set: {e}")))?;
+
+        ack_rx
+            .await
+            .map_err(|e| IoError::other(format!("failed waiting for head set ack: {e}")))?
+    }
+
+    /// Get the current head ID.
+    ///
+    /// This scans the log file to find the most recent head (from TurnCommitted or HeadSet).
+    pub async fn get_current_head_id(&self) -> Result<Option<Uuid>, IoError> {
+        let path = self.log_path.clone();
+        tokio::task::spawn_blocking(move || scan_current_head_id_sync(&path))
+            .await
+            .map_err(|e| IoError::other(format!("failed waiting for head-id scan: {e}")))?
+    }
+
+    /// Append a compaction entry with replacement history and fsync.
+    ///
+    /// This records a CompactionApplied entry with the current head as replaces_up_to_head_id.
+    pub async fn append_compaction(
+        &self,
+        tokens_before: i32,
+        summary: String,
+        replacement_history: Option<Vec<codex_protocol::models::ResponseItem>>,
+    ) -> Result<(), IoError> {
+        let (ack_tx, ack_rx) = oneshot::channel();
+        self.tx
+            .send(WriterCmd::AppendCompaction {
+                tokens_before,
+                summary,
+                replacement_history,
+                ack: ack_tx,
+            })
+            .map_err(|e| IoError::other(format!("failed to queue compaction: {e}")))?;
+
+        ack_rx
+            .await
+            .map_err(|e| IoError::other(format!("failed waiting for compaction ack: {e}")))?
     }
 }
 
@@ -208,11 +267,12 @@ fn create_log_file(codex_home: &Path, session_id: Uuid) -> std::io::Result<PathB
     Ok(path)
 }
 
-async fn scan_current_head_id(path: &Path) -> std::io::Result<Option<Uuid>> {
-    let file = tokio::fs::File::open(path).await?;
-    let mut lines = BufReader::new(file).lines();
+fn scan_current_head_id_sync(path: &Path) -> std::io::Result<Option<Uuid>> {
+    let file = std::fs::File::open(path)?;
+    let reader = BufReader::new(file);
     let mut head_id: Option<Uuid> = None;
-    while let Some(line) = lines.next_line().await? {
+    for line in reader.lines() {
+        let line = line?;
         if line.trim().is_empty() {
             continue;
         }
@@ -234,33 +294,31 @@ async fn scan_current_head_id(path: &Path) -> std::io::Result<Option<Uuid>> {
     Ok(head_id)
 }
 
-/// Background writer task.
+/// Background writer thread.
 ///
-/// Uses BufWriter for efficient batched writes. Flushes on TurnCommitted and Shutdown.
-async fn writer_task(
+/// Uses a dedicated OS thread for file I/O (including `sync_data`) so we don't depend on Tokio's
+/// blocking pool scheduling for durability-critical operations.
+fn writer_thread(
     path: PathBuf,
-    mut rx: mpsc::Receiver<WriterCmd>,
+    mut rx: mpsc::UnboundedReceiver<WriterCmd>,
     session_id: Uuid,
     meta: Option<SessionMetaLine>,
 ) -> std::io::Result<()> {
     let mut current_head_id: Option<Uuid> = if meta.is_some() {
         None
     } else {
-        scan_current_head_id(&path).await.unwrap_or_else(|e| {
+        scan_current_head_id_sync(&path).unwrap_or_else(|e| {
             warn!("failed to scan existing head_id from {path:?}: {e}");
             None
         })
     };
 
-    // Open file in append mode with buffering.
-    let file = tokio::fs::OpenOptions::new()
+    let file = std::fs::OpenOptions::new()
         .append(true)
         .create(true)
-        .open(&path)
-        .await?;
+        .open(&path)?;
     let mut writer = BufWriter::new(file);
 
-    // Write session header if this is a new session
     if let Some(session_meta) = meta {
         let entry = create_entry(
             session_id,
@@ -268,64 +326,119 @@ async fn writer_task(
             None,
             EntryKind::SessionHeader { meta: session_meta },
         );
-        write_entry(&mut writer, &entry).await?;
-        // Flush header immediately to ensure it's visible
-        writer.flush().await?;
+        write_entry_sync(&mut writer, &entry)?;
+        writer.flush()?;
     }
 
-    // Process commands
-    while let Some(cmd) = rx.recv().await {
+    while let Some(cmd) = rx.blocking_recv() {
         match cmd {
             WriterCmd::Append(entry) => {
-                if let Err(e) = write_entry(&mut writer, &entry).await {
+                if let Err(e) = write_entry_sync(&mut writer, &entry) {
                     warn!("failed to write log entry: {e}");
                 }
             }
             WriterCmd::CommitTurn { turn_id, ack } => {
-                let result = async {
-                    // Write TurnCommitted entry
+                let result = (|| -> std::io::Result<()> {
+                    trace!(%turn_id, "session_log writer: commit_turn begin");
                     let entry = create_entry(
                         session_id,
                         Some(turn_id),
                         current_head_id,
                         EntryKind::TurnCommitted,
                     );
-                    write_entry(&mut writer, &entry).await?;
-                    current_head_id = Some(entry.id);
+                    let committed_id = entry.id;
+                    write_entry_sync(&mut writer, &entry)?;
+                    current_head_id = Some(committed_id);
 
-                    // Flush buffer to OS
-                    writer.flush().await?;
-
-                    // Fsync to disk
-                    writer.get_ref().sync_data().await?;
-
+                    writer.flush()?;
+                    trace!(%turn_id, "session_log writer: commit_turn sync_data begin");
+                    writer.get_ref().sync_data()?;
+                    trace!(%turn_id, "session_log writer: commit_turn sync_data end");
                     Ok(())
-                }
-                .await;
+                })();
 
-                let _ = ack.send(result);
+                if ack.send(result).is_ok() {
+                    trace!(%turn_id, "session_log writer: commit_turn ack sent");
+                } else {
+                    trace!(%turn_id, "session_log writer: commit_turn ack dropped");
+                }
             }
             WriterCmd::Shutdown { ack } => {
-                let result = async {
-                    // Drain remaining entries in channel
+                let result = (|| -> std::io::Result<()> {
+                    trace!("session_log writer: shutdown begin");
                     while let Ok(cmd) = rx.try_recv() {
                         if let WriterCmd::Append(entry) = cmd {
-                            write_entry(&mut writer, &entry).await?;
+                            write_entry_sync(&mut writer, &entry)?;
                         }
                     }
 
-                    // Flush buffer to OS
-                    writer.flush().await?;
-
-                    // Fsync to disk
-                    writer.get_ref().sync_data().await?;
-
+                    writer.flush()?;
+                    trace!("session_log writer: shutdown sync_data begin");
+                    writer.get_ref().sync_data()?;
+                    trace!("session_log writer: shutdown sync_data end");
                     Ok(())
-                }
-                .await;
+                })();
 
                 let _ = ack.send(result);
                 break;
+            }
+            WriterCmd::SetHead {
+                target_head_id,
+                reason,
+                ack,
+            } => {
+                let result = (|| -> std::io::Result<()> {
+                    trace!(%target_head_id, "session_log writer: set_head begin");
+                    let entry = create_entry(
+                        session_id,
+                        None,
+                        current_head_id,
+                        EntryKind::HeadSet {
+                            target_head_id,
+                            reason,
+                            from_head_id: current_head_id,
+                        },
+                    );
+                    write_entry_sync(&mut writer, &entry)?;
+                    current_head_id = Some(target_head_id);
+
+                    writer.flush()?;
+                    trace!(%target_head_id, "session_log writer: set_head sync_data begin");
+                    writer.get_ref().sync_data()?;
+                    trace!(%target_head_id, "session_log writer: set_head sync_data end");
+                    Ok(())
+                })();
+
+                let _ = ack.send(result);
+            }
+            WriterCmd::AppendCompaction {
+                tokens_before,
+                summary,
+                replacement_history,
+                ack,
+            } => {
+                let result = (|| -> std::io::Result<()> {
+                    trace!("session_log writer: append_compaction begin");
+                    let entry = create_entry(
+                        session_id,
+                        None,
+                        None,
+                        EntryKind::CompactionApplied {
+                            tokens_before,
+                            summary,
+                            replacement_history,
+                            replaces_up_to_head_id: current_head_id,
+                        },
+                    );
+                    write_entry_sync(&mut writer, &entry)?;
+                    writer.flush()?;
+                    trace!("session_log writer: append_compaction sync_data begin");
+                    writer.get_ref().sync_data()?;
+                    trace!("session_log writer: append_compaction sync_data end");
+                    Ok(())
+                })();
+
+                let _ = ack.send(result);
             }
         }
     }
@@ -356,14 +469,13 @@ fn create_entry(
     }
 }
 
-/// Write a single LogEntry as a JSON line.
-async fn write_entry<W: AsyncWrite + Unpin>(
-    writer: &mut W,
+fn write_entry_sync(
+    writer: &mut BufWriter<std::fs::File>,
     entry: &LogEntry,
 ) -> std::io::Result<()> {
-    let json = serde_json::to_string(entry)?;
-    writer.write_all(json.as_bytes()).await?;
-    writer.write_all(b"\n").await?;
+    serde_json::to_writer(&mut *writer, entry)
+        .map_err(|e| IoError::other(format!("failed to serialize log entry: {e}")))?;
+    writer.write_all(b"\n")?;
     Ok(())
 }
 
@@ -425,7 +537,7 @@ mod tests {
                 sub_id: "sub-1".to_string(),
             },
         );
-        session_log.append(entry1.clone()).await?;
+        session_log.append(entry1.clone())?;
 
         // Commit the turn (this also writes TurnCommitted)
         session_log.commit_turn(turn_id).await?;
@@ -482,7 +594,7 @@ mod tests {
                 sub_id: "sub-1".to_string(),
             },
         );
-        session_log.append(entry1).await?;
+        session_log.append(entry1)?;
         session_log.commit_turn(turn1_id).await?;
         let path = session_log.log_path().to_path_buf();
         session_log.shutdown().await?;
@@ -506,7 +618,7 @@ mod tests {
                 sub_id: "sub-2".to_string(),
             },
         );
-        resumed.append(entry2).await?;
+        resumed.append(entry2)?;
         resumed.commit_turn(turn2_id).await?;
         resumed.shutdown().await?;
 
@@ -561,7 +673,7 @@ mod tests {
                 }),
             },
         );
-        session_log.append(event_entry).await?;
+        session_log.append(event_entry)?;
         session_log.commit_turn(turn_id).await?;
         session_log.shutdown().await?;
 
@@ -609,7 +721,7 @@ mod tests {
                     sub_id: format!("sub-{i}"),
                 },
             );
-            session_log.append(entry).await?;
+            session_log.append(entry)?;
 
             // Simulate some events within the turn
             let event = create_entry(
@@ -622,7 +734,7 @@ mod tests {
                     }),
                 },
             );
-            session_log.append(event).await?;
+            session_log.append(event)?;
 
             session_log.commit_turn(turn_id).await?;
         }

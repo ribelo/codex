@@ -7,10 +7,10 @@ use codex_core::CodexAuth;
 use codex_core::features::Feature;
 use codex_core::protocol::EventMsg;
 use codex_core::protocol::Op;
-use codex_core::protocol::RolloutItem;
-use codex_core::protocol::RolloutLine;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::EntryKind;
+use codex_protocol::protocol::LogEntry;
 use codex_protocol::user_input::UserInput;
 use core_test_support::responses;
 use core_test_support::responses::mount_sse_once;
@@ -260,27 +260,24 @@ async fn remote_compact_persists_replacement_history_in_rollout() -> Result<()> 
     assert_eq!(compact_mock.requests().len(), 1);
 
     let rollout_text = fs::read_to_string(&rollout_path)?;
-    let mut saw_compacted_history = false;
-    for line in rollout_text
+    let entries: Vec<LogEntry> = rollout_text
         .lines()
         .map(str::trim)
         .filter(|l| !l.is_empty())
-    {
-        let Ok(entry) = serde_json::from_str::<RolloutLine>(line) else {
-            continue;
-        };
-        if let RolloutItem::Compacted(compacted) = entry.item
-            && compacted.message.is_empty()
-            && compacted.replacement_history.as_ref() == Some(&compacted_history)
-        {
-            saw_compacted_history = true;
-            break;
-        }
-    }
+        .map(|line| serde_json::from_str::<LogEntry>(line).expect("log entry line"))
+        .collect();
+
+    let saw_compacted_history = entries.iter().any(|entry| {
+        matches!(
+            &entry.kind,
+            EntryKind::CompactionApplied { replacement_history, .. }
+                if replacement_history.as_ref() == Some(&compacted_history)
+        )
+    });
 
     assert!(
         saw_compacted_history,
-        "expected rollout to persist remote compaction history"
+        "expected session log to persist remote compaction history"
     );
 
     Ok(())

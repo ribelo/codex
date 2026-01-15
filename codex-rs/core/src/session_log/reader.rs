@@ -221,6 +221,47 @@ pub fn build_transcript(data: &SessionLogData) -> Vec<&LogEntry> {
     data.entries.iter().collect()
 }
 
+/// Get the parent commit ID for the current head.
+///
+/// Scans the log to build the commit chain and returns the parent of the current head.
+/// Returns None if the log is empty, has no commits, or the head has no parent.
+pub fn get_parent_commit_id(path: &Path) -> Result<Option<Uuid>, ReadError> {
+    let file = std::fs::File::open(path)?;
+    let reader = BufReader::new(file);
+
+    let mut current_head_id: Option<Uuid> = None;
+    let mut commits: HashMap<Uuid, Option<Uuid>> = HashMap::new();
+
+    for line_result in reader.lines() {
+        let line = match line_result {
+            Ok(l) => l,
+            Err(_) => break,
+        };
+
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        let Ok(entry) = serde_json::from_str::<LogEntry>(&line) else {
+            continue;
+        };
+
+        match entry.kind {
+            EntryKind::TurnCommitted => {
+                commits.insert(entry.id, entry.parent_id);
+                current_head_id = Some(entry.id);
+            }
+            EntryKind::HeadSet { target_head_id, .. } => {
+                current_head_id = Some(target_head_id);
+            }
+            _ => {}
+        }
+    }
+
+    // Return the parent of the current head
+    Ok(current_head_id.and_then(|head| commits.get(&head).copied().flatten()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -364,16 +405,16 @@ mod tests {
 
         // Verify no uncommitted content
         let has_uncommitted = result.entries.iter().any(|e| {
-            if let EntryKind::ResponseItem { item } = &e.kind {
-                if let ResponseItem::Message { content, .. } = item {
-                    return content.iter().any(|c| {
-                        if let codex_protocol::models::ContentItem::OutputText { text, .. } = c {
-                            text.contains("Uncommitted")
-                        } else {
-                            false
-                        }
-                    });
-                }
+            if let EntryKind::ResponseItem { item } = &e.kind
+                && let ResponseItem::Message { content, .. } = item
+            {
+                return content.iter().any(|c| {
+                    if let codex_protocol::models::ContentItem::OutputText { text, .. } = c {
+                        text.contains("Uncommitted")
+                    } else {
+                        false
+                    }
+                });
             }
             false
         });
@@ -527,7 +568,7 @@ mod tests {
             kind: EntryKind::CompactionApplied {
                 tokens_before: 1000,
                 summary: "Compacted".to_string(),
-                replacement_history: Some(vec![replacement_item.clone()]),
+                replacement_history: Some(vec![replacement_item]),
                 replaces_up_to_head_id: None,
             },
         });
@@ -562,5 +603,99 @@ mod tests {
         let transcript = build_transcript(&data);
 
         assert_eq!(transcript.len(), 4);
+    }
+
+    #[test]
+    fn test_get_parent_commit_id_empty() {
+        let file = NamedTempFile::new().unwrap();
+        let result = get_parent_commit_id(file.path());
+        assert!(result.is_err() || result.unwrap().is_none());
+    }
+
+    #[test]
+    fn test_get_parent_commit_id_single_commit() {
+        let session_id = Uuid::new_v4();
+        let turn_id = Uuid::new_v4();
+
+        let entries = vec![
+            make_session_header_entry(session_id),
+            make_turn_started_entry(session_id, turn_id),
+            make_turn_committed_entry(session_id, turn_id),
+        ];
+
+        let file = write_entries_to_file(&entries);
+        let parent = get_parent_commit_id(file.path()).unwrap();
+
+        // First commit has no parent
+        assert!(parent.is_none());
+    }
+
+    #[test]
+    fn test_get_parent_commit_id_two_commits() {
+        let session_id = Uuid::new_v4();
+        let turn1 = Uuid::new_v4();
+        let turn2 = Uuid::new_v4();
+
+        let committed1 = make_turn_committed_entry(session_id, turn1);
+        let committed1_id = committed1.id;
+
+        // Build committed2 with parent_id set to committed1.id
+        let mut committed2 = make_turn_committed_entry(session_id, turn2);
+        committed2.parent_id = Some(committed1_id);
+
+        let entries = vec![
+            make_session_header_entry(session_id),
+            make_turn_started_entry(session_id, turn1),
+            committed1,
+            make_turn_started_entry(session_id, turn2),
+            committed2,
+        ];
+
+        let file = write_entries_to_file(&entries);
+        let parent = get_parent_commit_id(file.path()).unwrap();
+
+        // Parent of current head (turn2) should be turn1's commit
+        assert_eq!(parent, Some(committed1_id));
+    }
+
+    #[test]
+    fn test_get_parent_commit_id_after_head_set() {
+        let session_id = Uuid::new_v4();
+        let turn1 = Uuid::new_v4();
+        let turn2 = Uuid::new_v4();
+
+        let committed1 = make_turn_committed_entry(session_id, turn1);
+        let committed1_id = committed1.id;
+
+        let mut committed2 = make_turn_committed_entry(session_id, turn2);
+        committed2.parent_id = Some(committed1_id);
+
+        let mut entries = vec![
+            make_session_header_entry(session_id),
+            make_turn_started_entry(session_id, turn1),
+            committed1,
+            make_turn_started_entry(session_id, turn2),
+            committed2,
+        ];
+
+        // Add HeadSet to revert to first commit
+        entries.push(LogEntry {
+            id: Uuid::new_v4(),
+            timestamp: "2025-01-14T12:00:10.000Z".to_string(),
+            session_id,
+            turn_id: None,
+            parent_id: None,
+            kind: EntryKind::HeadSet {
+                target_head_id: committed1_id,
+                reason: "undo".to_string(),
+                from_head_id: Some(committed1_id),
+            },
+        });
+
+        let file = write_entries_to_file(&entries);
+        let parent = get_parent_commit_id(file.path()).unwrap();
+
+        // After HeadSet to committed1, the parent of committed1 is None
+        assert!(parent.is_none());
     }
 }

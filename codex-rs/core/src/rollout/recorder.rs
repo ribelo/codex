@@ -11,7 +11,9 @@ use serde_json::Value;
 use time::OffsetDateTime;
 use time::format_description::FormatItem;
 use time::macros::format_description;
+use tokio::io::AsyncBufReadExt;
 use tokio::io::AsyncWriteExt;
+use tokio::io::BufReader;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::mpsc::{self};
 use tokio::sync::oneshot;
@@ -22,10 +24,13 @@ use super::SESSIONS_SUBDIR;
 use super::list::ConversationsPage;
 use super::list::Cursor;
 use super::list::get_conversations;
+use super::list::parse_cursor;
 use super::policy::is_persisted_response_item;
 use crate::config::Config;
 use crate::default_client::originator;
 use crate::git_info::collect_git_info;
+use crate::session_log::list_sessions_v2;
+use crate::session_log::parse_cursor_v2;
 use codex_protocol::protocol::InitialHistory;
 use codex_protocol::protocol::ResumedHistory;
 use codex_protocol::protocol::RolloutItem;
@@ -100,15 +105,59 @@ impl RolloutRecorder {
         model_providers: Option<&[String]>,
         default_provider: &str,
     ) -> std::io::Result<ConversationsPage> {
-        get_conversations(
+        // Prefer v2 session logs; fall back to legacy rollout listing when v2 scanning fails.
+        let cursor_v2 = cursor.and_then(|c| {
+            let token = serde_json::to_string(c).ok()?;
+            parse_cursor_v2(token.trim_matches('"'))
+        });
+
+        match list_sessions_v2(
             codex_home,
             page_size,
-            cursor,
+            cursor_v2.as_ref(),
             allowed_sources,
             model_providers,
             default_provider,
         )
         .await
+        {
+            Ok(page) => {
+                let mut items = Vec::with_capacity(page.items.len());
+                for it in page.items {
+                    let head = read_head_records_v2(&it.path, 10).await.unwrap_or_default();
+                    items.push(super::list::ConversationItem {
+                        path: it.path,
+                        head,
+                        created_at: it.created_at,
+                        updated_at: it.updated_at,
+                    });
+                }
+
+                let next_cursor = page.next_cursor.and_then(|c| {
+                    let token = serde_json::to_string(&c).ok()?;
+                    parse_cursor(token.trim_matches('"'))
+                });
+
+                Ok(ConversationsPage {
+                    items,
+                    next_cursor,
+                    num_scanned_files: page.num_scanned_files,
+                    reached_scan_cap: page.reached_scan_cap,
+                })
+            }
+            Err(e) => {
+                warn!("v2 session listing failed, falling back to legacy: {e}");
+                get_conversations(
+                    codex_home,
+                    page_size,
+                    cursor,
+                    allowed_sources,
+                    model_providers,
+                    default_provider,
+                )
+                .await
+            }
+        }
     }
 
     /// Attempt to create a new [`RolloutRecorder`]. If the sessions directory
@@ -212,7 +261,50 @@ impl RolloutRecorder {
     }
 
     pub async fn get_rollout_history(path: &Path) -> std::io::Result<InitialHistory> {
-        info!("Resuming rollout from {path:?}");
+        info!("Resuming session from {path:?}");
+
+        let path_buf = path.to_path_buf();
+        let v2 = tokio::task::spawn_blocking(move || crate::session_log::read_session(&path_buf))
+            .await
+            .map_err(|e| IoError::other(format!("failed waiting for v2 session parse: {e}")))?;
+
+        if let Ok(data) = v2 {
+            let conversation_id = data.header.meta.id;
+
+            let mut items: Vec<RolloutItem> = Vec::new();
+            items.push(RolloutItem::SessionMeta(data.header));
+
+            for entry in data.entries {
+                match entry.kind {
+                    codex_protocol::protocol::EntryKind::Event { msg } => {
+                        items.push(RolloutItem::EventMsg(msg));
+                    }
+                    codex_protocol::protocol::EntryKind::ResponseItem { item } => {
+                        items.push(RolloutItem::ResponseItem(item));
+                    }
+                    codex_protocol::protocol::EntryKind::CompactionApplied {
+                        replacement_history,
+                        ..
+                    } => {
+                        items.push(RolloutItem::Compacted(
+                            codex_protocol::protocol::CompactedItem {
+                                message: String::new(),
+                                replacement_history,
+                            },
+                        ));
+                    }
+                    _ => {}
+                }
+            }
+
+            return Ok(InitialHistory::Resumed(ResumedHistory {
+                conversation_id,
+                history: items,
+                rollout_path: path.to_path_buf(),
+            }));
+        }
+
+        // Legacy fallback for old rollout files.
         let text = tokio::fs::read_to_string(path).await?;
         if text.trim().is_empty() {
             return Err(IoError::other("empty session file"));
@@ -232,32 +324,19 @@ impl RolloutRecorder {
                 }
             };
 
-            // Parse the rollout line structure
             match serde_json::from_value::<RolloutLine>(v.clone()) {
                 Ok(rollout_line) => match rollout_line.item {
                     RolloutItem::SessionMeta(session_meta_line) => {
-                        // Use the FIRST SessionMeta encountered in the file as the canonical
-                        // conversation id and main session information. Keep all items intact.
                         if conversation_id.is_none() {
                             conversation_id = Some(session_meta_line.meta.id);
                         }
                         items.push(RolloutItem::SessionMeta(session_meta_line));
                     }
-                    RolloutItem::ResponseItem(item) => {
-                        items.push(RolloutItem::ResponseItem(item));
-                    }
-                    RolloutItem::Compacted(item) => {
-                        items.push(RolloutItem::Compacted(item));
-                    }
-                    RolloutItem::TurnContext(item) => {
-                        items.push(RolloutItem::TurnContext(item));
-                    }
-                    RolloutItem::EventMsg(_ev) => {
-                        items.push(RolloutItem::EventMsg(_ev));
-                    }
-                    RolloutItem::Handoff(item) => {
-                        items.push(RolloutItem::Handoff(item));
-                    }
+                    RolloutItem::ResponseItem(item) => items.push(RolloutItem::ResponseItem(item)),
+                    RolloutItem::Compacted(item) => items.push(RolloutItem::Compacted(item)),
+                    RolloutItem::TurnContext(item) => items.push(RolloutItem::TurnContext(item)),
+                    RolloutItem::EventMsg(ev) => items.push(RolloutItem::EventMsg(ev)),
+                    RolloutItem::Handoff(item) => items.push(RolloutItem::Handoff(item)),
                 },
                 Err(e) => {
                     warn!("failed to parse rollout line: {v:?}, error: {e}");
@@ -265,11 +344,6 @@ impl RolloutRecorder {
             }
         }
 
-        info!(
-            "Resumed rollout with {} items, conversation ID: {:?}",
-            items.len(),
-            conversation_id
-        );
         let conversation_id = conversation_id
             .ok_or_else(|| IoError::other("failed to parse conversation ID from rollout file"))?;
 
@@ -277,7 +351,6 @@ impl RolloutRecorder {
             return Ok(InitialHistory::New);
         }
 
-        info!("Resumed rollout successfully from {path:?}");
         Ok(InitialHistory::Resumed(ResumedHistory {
             conversation_id,
             history: items,
@@ -400,6 +473,25 @@ async fn rollout_writer(
     }
 
     Ok(())
+}
+
+async fn read_head_records_v2(path: &Path, max_lines: usize) -> std::io::Result<Vec<Value>> {
+    let file = tokio::fs::File::open(path).await?;
+    let mut lines = BufReader::new(file).lines();
+    let mut out = Vec::new();
+    while out.len() < max_lines {
+        let Some(line) = lines.next_line().await? else {
+            break;
+        };
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if let Ok(v) = serde_json::from_str::<Value>(trimmed) {
+            out.push(v);
+        }
+    }
+    Ok(out)
 }
 
 struct JsonlWriter {

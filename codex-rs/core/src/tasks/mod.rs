@@ -12,8 +12,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 use tokio::select;
 use tokio::sync::Notify;
+use tokio::task::AbortHandle;
 use tokio_util::sync::CancellationToken;
-use tokio_util::task::AbortOnDropHandle;
 use tracing::trace;
 use tracing::warn;
 
@@ -127,12 +127,12 @@ impl Session {
         let done = Arc::new(Notify::new());
 
         let done_clone = Arc::clone(&done);
-        let handle = {
+        let abort_handle: AbortHandle = {
             let session_ctx = Arc::new(SessionTaskContext::new(Arc::clone(self)));
             let ctx = Arc::clone(&turn_context);
             let task_for_run = Arc::clone(&task);
             let task_cancellation_token = cancellation_token.child_token();
-            tokio::spawn(async move {
+            let handle = tokio::spawn(async move {
                 let ctx_for_finish = Arc::clone(&ctx);
                 let last_agent_message = task_for_run
                     .run(
@@ -142,20 +142,25 @@ impl Session {
                         task_cancellation_token.child_token(),
                     )
                     .await;
+                trace!("task finished; flushing rollout");
                 session_ctx.clone_session().flush_rollout().await;
+                trace!("rollout flushed");
                 if !task_cancellation_token.is_cancelled() {
                     // Emit completion uniformly from spawn site so all tasks share the same lifecycle.
                     let sess = session_ctx.clone_session();
+                    trace!("emitting task complete");
                     sess.on_task_finished(ctx_for_finish, last_agent_message)
                         .await;
+                    trace!("task complete emitted");
                 }
                 done_clone.notify_waiters();
-            })
+            });
+            handle.abort_handle()
         };
 
         let running_task = RunningTask {
             done,
-            handle: Arc::new(AbortOnDropHandle::new(handle)),
+            handle: abort_handle,
             kind: task_kind,
             task,
             cancellation_token,

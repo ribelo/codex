@@ -382,6 +382,7 @@ async fn run_compact_task_inner(
                     .cloned()
                     .collect();
                 new_history.extend(ghost_snapshots);
+                let replacement_history_for_log = new_history.clone();
                 sess.replace_history(new_history).await;
                 sess.recompute_token_usage(&turn_context).await;
 
@@ -394,6 +395,15 @@ async fn run_compact_task_inner(
                 let tokens_before = tokens_before
                     .and_then(|tokens| i32::try_from(tokens).ok())
                     .unwrap_or(i32::MAX);
+
+                // Append CompactionApplied to session log with replacement history
+                sess.append_session_log_compaction(
+                    tokens_before,
+                    summary_suffix.clone(),
+                    Some(replacement_history_for_log),
+                )
+                .await;
+
                 let event = EventMsg::ContextCompacted(ContextCompactedEvent {
                     tokens_before,
                     summary: summary_suffix,

@@ -76,6 +76,12 @@ async fn run_remote_compact_task_inner_impl(
     sess.recompute_token_usage(turn_context).await;
 
     let summary_suffix = extract_summary_suffix(&new_history).unwrap_or_default();
+    sess.append_session_log_compaction(
+        tokens_before,
+        summary_suffix.clone(),
+        Some(new_history.clone()),
+    )
+    .await;
     let compacted_item = CompactedItem {
         message: String::new(),
         replacement_history: Some(new_history),

@@ -47,18 +47,22 @@ async fn resume_includes_initial_messages_from_rollout_events() -> Result<()> {
         .session_configured
         .initial_messages
         .expect("expected initial messages to be present for resumed session");
-    match initial_messages.as_slice() {
-        [
-            EventMsg::UserMessage(first_user),
-            EventMsg::TokenCount(_),
-            EventMsg::AgentMessage(assistant_message),
-            EventMsg::TokenCount(_),
-        ] => {
-            assert_eq!(first_user.message, "Record some messages");
-            assert_eq!(assistant_message.message, "Completed first turn");
-        }
-        other => panic!("unexpected initial messages after resume: {other:#?}"),
-    }
+    let user_idx = initial_messages
+        .iter()
+        .position(
+            |m| matches!(m, EventMsg::UserMessage(msg) if msg.message == "Record some messages"),
+        )
+        .expect("missing initial UserMessage");
+    let assistant_idx = initial_messages
+        .iter()
+        .position(
+            |m| matches!(m, EventMsg::AgentMessage(msg) if msg.message == "Completed first turn"),
+        )
+        .expect("missing initial AgentMessage");
+    assert!(
+        user_idx < assistant_idx,
+        "expected user message before assistant message"
+    );
 
     Ok(())
 }

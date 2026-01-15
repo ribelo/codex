@@ -12,9 +12,9 @@ use codex_core::config::Config;
 use codex_core::features::Feature;
 use codex_core::protocol::EventMsg;
 use codex_core::protocol::Op;
-use codex_core::protocol::RolloutItem;
-use codex_core::protocol::RolloutLine;
 use codex_core::protocol::WarningEvent;
+use codex_protocol::protocol::EntryKind;
+use codex_protocol::protocol::LogEntry;
 use codex_protocol::user_input::UserInput;
 use core_test_support::load_default_config_for_test;
 use core_test_support::responses::ev_reasoning_item;
@@ -326,36 +326,29 @@ async fn summarize_context_three_requests_and_instructions() {
             rollout_path.display()
         )
     });
-    let mut api_turn_count = 0usize;
-    let mut saw_compacted_summary = false;
-    for line in text.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let Ok(entry): Result<RolloutLine, _> = serde_json::from_str(trimmed) else {
-            continue;
-        };
-        match entry.item {
-            RolloutItem::TurnContext(_) => {
-                api_turn_count += 1;
-            }
-            RolloutItem::Compacted(ci) => {
-                if ci.message == expected_summary_message {
-                    saw_compacted_summary = true;
-                }
-            }
-            _ => {}
-        }
-    }
+    let entries: Vec<LogEntry> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(|line| serde_json::from_str::<LogEntry>(line).expect("log entry line"))
+        .collect();
 
+    let turn_started_count = entries
+        .iter()
+        .filter(|e| matches!(e.kind, EntryKind::TurnStarted { .. }))
+        .count();
+    assert_eq!(turn_started_count, 3);
+
+    let expected_summary_suffix = SUMMARY_TEXT;
+    let saw_compaction_applied = entries.iter().any(|entry| {
+        matches!(
+            &entry.kind,
+            EntryKind::CompactionApplied { summary, .. } if summary == expected_summary_suffix
+        )
+    });
     assert!(
-        api_turn_count == 3,
-        "expected three APITurn entries in rollout"
-    );
-    assert!(
-        saw_compacted_summary,
-        "expected a Compacted entry containing the summarizer output"
+        saw_compaction_applied,
+        "expected CompactionApplied to persist summarizer output"
     );
 }
 
@@ -1333,27 +1326,20 @@ async fn auto_compact_persists_rollout_entries() {
         )
     });
 
-    let mut turn_context_count = 0usize;
-    for line in text.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let Ok(entry): Result<RolloutLine, _> = serde_json::from_str(trimmed) else {
-            continue;
-        };
-        match entry.item {
-            RolloutItem::TurnContext(_) => {
-                turn_context_count += 1;
-            }
-            RolloutItem::Compacted(_) => {}
-            _ => {}
-        }
-    }
+    let entries: Vec<LogEntry> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(|line| serde_json::from_str::<LogEntry>(line).expect("log entry line"))
+        .collect();
 
+    let turn_started_count = entries
+        .iter()
+        .filter(|e| matches!(e.kind, EntryKind::TurnStarted { .. }))
+        .count();
     assert!(
-        turn_context_count >= 2,
-        "expected at least two turn context entries, got {turn_context_count}"
+        turn_started_count >= 2,
+        "expected at least two turns, got {turn_started_count}"
     );
 }
 

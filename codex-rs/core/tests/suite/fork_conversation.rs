@@ -6,9 +6,9 @@ use codex_core::built_in_model_providers;
 use codex_core::parse_turn_item;
 use codex_core::protocol::EventMsg;
 use codex_core::protocol::Op;
-use codex_core::protocol::RolloutItem;
-use codex_core::protocol::RolloutLine;
 use codex_protocol::items::TurnItem;
+use codex_protocol::protocol::EntryKind;
+use codex_protocol::protocol::LogEntry;
 use codex_protocol::user_input::UserInput;
 use core_test_support::load_default_config_for_test;
 use core_test_support::skip_if_no_network;
@@ -23,6 +23,20 @@ use wiremock::matchers::path;
 /// Build minimal SSE stream with completed marker using the JSON fixture.
 fn sse_completed(id: &str) -> String {
     core_test_support::load_sse_fixture_with_id("tests/fixtures/completed_template.json", id)
+}
+
+fn read_user_messages(path: &std::path::Path) -> Vec<String> {
+    let text = std::fs::read_to_string(path).expect("read session file");
+    let mut messages = Vec::new();
+    for line in text.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        let entry = serde_json::from_str::<LogEntry>(line).expect("log entry line");
+        if let EntryKind::ResponseItem { item } = entry.kind
+            && let Some(TurnItem::UserMessage(msg)) = parse_turn_item(&item)
+        {
+            messages.push(msg.message().to_string());
+        }
+    }
+    messages
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -84,47 +98,15 @@ async fn fork_conversation_twice_drops_to_first_message() {
     // Request history from the base conversation to obtain rollout path.
     let base_path = codex.rollout_path();
 
-    // GetHistory flushes before returning the path; no wait needed.
-
-    // Helper: read rollout items (excluding SessionMeta) from a JSONL path.
-    let read_items = |p: &std::path::Path| -> Vec<RolloutItem> {
-        let text = std::fs::read_to_string(p).expect("read rollout file");
-        let mut items: Vec<RolloutItem> = Vec::new();
-        for line in text.lines() {
-            if line.trim().is_empty() {
-                continue;
-            }
-            let v: serde_json::Value = serde_json::from_str(line).expect("jsonl line");
-            let rl: RolloutLine = serde_json::from_value(v).expect("rollout line");
-            match rl.item {
-                RolloutItem::SessionMeta(_) => {}
-                other => items.push(other),
-            }
-        }
-        items
-    };
-
-    // Compute expected prefixes after each fork by truncating base rollout
-    // strictly before the nth user input (0-based).
-    let base_items = read_items(&base_path);
-    let find_user_input_positions = |items: &[RolloutItem]| -> Vec<usize> {
-        let mut pos = Vec::new();
-        for (i, it) in items.iter().enumerate() {
-            if let RolloutItem::ResponseItem(response_item) = it
-                && let Some(TurnItem::UserMessage(_)) = parse_turn_item(response_item)
-            {
-                // Consider any user message as an input boundary; recorder stores both EventMsg and ResponseItem.
-                // We specifically look for input items, which are represented as ContentItem::InputText.
-                pos.push(i);
-            }
-        }
-        pos
-    };
-    let user_inputs = find_user_input_positions(&base_items);
-
-    // After cutting at nth user input (n=1 → second user message), cut strictly before that input.
-    let cut1 = user_inputs.get(1).copied().unwrap_or(0);
-    let expected_after_first: Vec<RolloutItem> = base_items[..cut1].to_vec();
+    let base_user_messages = read_user_messages(&base_path);
+    pretty_assertions::assert_eq!(
+        base_user_messages,
+        vec![
+            "first".to_string(),
+            "second".to_string(),
+            "third".to_string()
+        ]
+    );
 
     // After dropping again (n=1 on fork1), compute expected relative to fork1's rollout.
 
@@ -139,14 +121,10 @@ async fn fork_conversation_twice_drops_to_first_message() {
 
     let fork1_path = codex_fork1.rollout_path();
 
-    // GetHistory on fork1 flushed; the file is ready.
-    let fork1_items = read_items(&fork1_path);
-    pretty_assertions::assert_eq!(
-        serde_json::to_value(&fork1_items).unwrap(),
-        serde_json::to_value(&expected_after_first).unwrap()
-    );
+    let fork1_user_messages = read_user_messages(&fork1_path);
+    pretty_assertions::assert_eq!(fork1_user_messages, vec!["first".to_string()]);
 
-    // Fork again with n=0 → drops the (new) last user message, leaving only the first.
+    // Fork again with n=0 → drops the first user message, leaving none.
     let NewConversation {
         conversation: codex_fork2,
         ..
@@ -156,17 +134,9 @@ async fn fork_conversation_twice_drops_to_first_message() {
         .expect("fork 2");
 
     let fork2_path = codex_fork2.rollout_path();
-    // GetHistory on fork2 flushed; the file is ready.
-    let fork1_items = read_items(&fork1_path);
-    let fork1_user_inputs = find_user_input_positions(&fork1_items);
-    let cut_last_on_fork1 = fork1_user_inputs
-        .get(fork1_user_inputs.len().saturating_sub(1))
-        .copied()
-        .unwrap_or(0);
-    let expected_after_second: Vec<RolloutItem> = fork1_items[..cut_last_on_fork1].to_vec();
-    let fork2_items = read_items(&fork2_path);
-    pretty_assertions::assert_eq!(
-        serde_json::to_value(&fork2_items).unwrap(),
-        serde_json::to_value(&expected_after_second).unwrap()
+    let fork2_user_messages = read_user_messages(&fork2_path);
+    assert!(
+        fork2_user_messages.is_empty(),
+        "expected fork2 to have no user messages, got {fork2_user_messages:?}"
     );
 }

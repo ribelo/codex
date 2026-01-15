@@ -5,8 +5,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::sync::Notify;
+use tokio::task::AbortHandle;
 use tokio_util::sync::CancellationToken;
-use tokio_util::task::AbortOnDropHandle;
 
 use codex_protocol::models::ResponseInputItem;
 use tokio::sync::oneshot;
@@ -44,7 +44,7 @@ pub(crate) struct RunningTask {
     pub(crate) kind: TaskKind,
     pub(crate) task: Arc<dyn SessionTask>,
     pub(crate) cancellation_token: CancellationToken,
-    pub(crate) handle: Arc<AbortOnDropHandle<()>>,
+    pub(crate) handle: AbortHandle,
     pub(crate) turn_context: Arc<TurnContext>,
 }
 

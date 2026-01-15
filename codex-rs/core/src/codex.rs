@@ -64,6 +64,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::debug;
 use tracing::error;
 use tracing::info;
+use tracing::trace;
 use tracing::warn;
 use uuid::Uuid;
 
@@ -910,6 +911,7 @@ impl Session {
 
     /// Ensure all rollout writes are durably flushed.
     pub(crate) async fn flush_rollout(&self) {
+        trace!("flush_rollout start");
         let recorder = {
             let guard = self.services.rollout.lock().await;
             guard.clone()
@@ -919,6 +921,7 @@ impl Session {
         {
             warn!("failed to flush rollout recorder: {e}");
         }
+        trace!("flush_rollout end");
     }
 
     fn next_internal_sub_id(&self) -> String {
@@ -992,6 +995,26 @@ impl Session {
                     }
                 }
 
+                // Forked and handoff sessions start a brand-new v2 session log file. Persist the
+                // reconstructed initial history into the log so the session can be resumed later.
+                if persist && !reconstructed_history.is_empty() {
+                    for item in &reconstructed_history {
+                        let timestamp = time::OffsetDateTime::now_utc()
+                            .format(&time::format_description::well_known::Rfc3339)
+                            .unwrap_or_else(|_| String::new());
+                        let entry = LogEntry {
+                            id: Uuid::new_v4(),
+                            timestamp,
+                            session_id: self.conversation_id.as_uuid(),
+                            turn_id: Some(turn_context.turn_id),
+                            parent_id: None,
+                            kind: EntryKind::ResponseItem { item: item.clone() },
+                        };
+                        self.append_session_log_entry(entry).await;
+                    }
+                    self.commit_session_log_turn(turn_context.turn_id).await;
+                }
+
                 // If persisting, persist all rollout items as-is (recorder filters)
                 if persist && !rollout_items.is_empty() {
                     self.persist_rollout_items(&rollout_items).await;
@@ -1005,7 +1028,21 @@ impl Session {
     pub(crate) async fn update_settings(&self, updates: SessionSettingsUpdate) {
         let mut state = self.state.lock().await;
 
+        if updates.cwd.is_some()
+            || updates.approval_policy.is_some()
+            || updates.sandbox_policy.is_some()
+        {
+            state.env_context_refresh_pending = true;
+        }
+
         state.session_configuration = state.session_configuration.apply(&updates);
+    }
+
+    pub(crate) async fn take_env_context_refresh_pending(&self) -> bool {
+        let mut state = self.state.lock().await;
+        let pending = state.env_context_refresh_pending;
+        state.env_context_refresh_pending = false;
+        pending
     }
 
     pub(crate) async fn new_turn(&self, updates: SessionSettingsUpdate) -> Arc<TurnContext> {
@@ -1511,7 +1548,7 @@ impl Session {
             guard.clone()
         };
         if let Some(log) = log
-            && let Err(e) = log.append(entry).await
+            && let Err(e) = log.append(entry)
         {
             warn!("failed to append session log entry: {e:#}");
         }
@@ -1519,6 +1556,7 @@ impl Session {
 
     /// Commit a turn in the v2 session log (fsync durability).
     pub(crate) async fn commit_session_log_turn(&self, turn_id: Uuid) {
+        trace!(%turn_id, "commit_session_log_turn start");
         let log = {
             let guard = self.services.session_log.lock().await;
             guard.clone()
@@ -1528,6 +1566,66 @@ impl Session {
         {
             warn!("failed to commit session log turn: {e:#}");
         }
+        trace!(%turn_id, "commit_session_log_turn end");
+    }
+
+    /// Set the session log head to a target commit ID (for undo).
+    pub(crate) async fn set_session_log_head(
+        &self,
+        target_head_id: Uuid,
+        reason: String,
+    ) -> std::io::Result<()> {
+        let log = {
+            let guard = self.services.session_log.lock().await;
+            guard.clone()
+        };
+        if let Some(log) = log {
+            log.set_head(target_head_id, reason).await
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Get the current session log head ID.
+    pub(crate) async fn get_session_log_head_id(&self) -> Option<Uuid> {
+        let log = {
+            let guard = self.services.session_log.lock().await;
+            guard.clone()
+        };
+        if let Some(log) = log {
+            log.get_current_head_id().await.ok().flatten()
+        } else {
+            None
+        }
+    }
+
+    /// Append a compaction entry to the session log.
+    pub(crate) async fn append_session_log_compaction(
+        &self,
+        tokens_before: i32,
+        summary: String,
+        replacement_history: Option<Vec<codex_protocol::models::ResponseItem>>,
+    ) {
+        let log = {
+            let guard = self.services.session_log.lock().await;
+            guard.clone()
+        };
+        if let Some(log) = log
+            && let Err(e) = log
+                .append_compaction(tokens_before, summary, replacement_history)
+                .await
+        {
+            warn!("failed to append session log compaction: {e:#}");
+        }
+    }
+
+    /// Get the session log path.
+    pub(crate) async fn get_session_log_path(&self) -> Option<std::path::PathBuf> {
+        let log = {
+            let guard = self.services.session_log.lock().await;
+            guard.clone()
+        };
+        log.map(|l| l.log_path().to_path_buf())
     }
 
     /// Emit TurnStarted entry for this turn.
@@ -1842,9 +1940,7 @@ impl Session {
 }
 
 async fn submission_loop(sess: Arc<Session>, config: Arc<Config>, rx_sub: Receiver<Submission>) {
-    // Seed with context in case there is an OverrideTurnContext first.
-    let mut previous_context: Option<Arc<TurnContext>> =
-        Some(sess.new_turn(SessionSettingsUpdate::default()).await);
+    let mut previous_context: Option<Arc<TurnContext>> = None;
 
     // To break out of this loop, send Op::Shutdown.
     while let Ok(sub) = rx_sub.recv().await {
@@ -2049,7 +2145,33 @@ mod handlers {
 
         // Attempt to inject input into current task
         if let Err(items) = sess.inject_input(items).await {
-            if let Some(env_item) =
+            let force_env_context = sess.take_env_context_refresh_pending().await;
+            if force_env_context {
+                if let Some(env_item) =
+                    sess.build_environment_update_item(previous_context.as_ref(), &current_context)
+                {
+                    sess.record_conversation_items(
+                        &current_context,
+                        std::slice::from_ref(&env_item),
+                    )
+                    .await;
+                } else {
+                    let shell = sess.user_shell();
+                    let env_item = codex_protocol::models::ResponseItem::from(
+                        crate::environment_context::EnvironmentContext::new(
+                            Some(current_context.cwd.clone()),
+                            Some(current_context.approval_policy),
+                            Some(current_context.sandbox_policy.clone()),
+                            shell.as_ref().clone(),
+                        ),
+                    );
+                    sess.record_conversation_items(
+                        &current_context,
+                        std::slice::from_ref(&env_item),
+                    )
+                    .await;
+                }
+            } else if let Some(env_item) =
                 sess.build_environment_update_item(previous_context.as_ref(), &current_context)
             {
                 sess.record_conversation_items(&current_context, std::slice::from_ref(&env_item))
@@ -2633,15 +2755,21 @@ pub(crate) async fn run_task(
                     .auto_compact_token_limit();
                 let total_usage_tokens = sess.get_total_token_usage().await;
                 let token_limit_reached = total_usage_tokens >= limit;
+                trace!(
+                    needs_follow_up,
+                    token_limit_reached, total_usage_tokens, limit, "turn completed"
+                );
 
                 // as long as compaction works well in getting us way below the token limit, we shouldn't worry about being in an infinite loop.
                 if token_limit_reached {
+                    trace!("token limit reached; running compaction");
                     if should_use_remote_compact_task(&sess, turn_context.client.provider()) {
                         run_inline_remote_auto_compact_task(sess.clone(), turn_context.clone())
                             .await;
                     } else {
                         run_inline_auto_compact_task(sess.clone(), turn_context.clone()).await;
                     }
+                    trace!("compaction finished; continuing");
                     continue;
                 }
 
@@ -2655,8 +2783,10 @@ pub(crate) async fn run_task(
                             input_messages: turn_input_messages,
                             last_assistant_message: last_agent_message.clone(),
                         });
+                    trace!("task finished (no follow-up)");
                     break;
                 }
+                trace!("follow-up required; continuing");
                 continue;
             }
             Err(CodexErr::TurnAborted) => {
@@ -2971,6 +3101,7 @@ async fn try_run_turn(
                 response_id: _,
                 token_usage,
             } => {
+                trace!("response completed");
                 sess.update_token_usage_info(&turn_context, token_usage.as_ref())
                     .await;
                 should_emit_turn_diff = true;

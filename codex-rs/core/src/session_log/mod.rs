@@ -21,6 +21,7 @@ pub use reader::ReadError;
 pub use reader::SessionLogData;
 pub use reader::build_model_context;
 pub use reader::build_transcript;
+pub use reader::get_parent_commit_id;
 pub use reader::read_session;
 pub use writer::SessionLog;
 pub use writer::SessionLogParams;

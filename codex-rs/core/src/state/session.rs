@@ -15,6 +15,7 @@ pub(crate) struct SessionState {
     pub(crate) session_configuration: SessionConfiguration,
     pub(crate) history: ContextManager,
     pub(crate) latest_rate_limits: Option<RateLimitSnapshot>,
+    pub(crate) env_context_refresh_pending: bool,
 }
 
 impl SessionState {
@@ -25,6 +26,7 @@ impl SessionState {
             session_configuration,
             history,
             latest_rate_limits: None,
+            env_context_refresh_pending: false,
         }
     }
 

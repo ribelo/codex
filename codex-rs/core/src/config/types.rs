@@ -1113,7 +1113,7 @@ mod tests {
         // This is what the fixed code checks: sub_level < parent_level
         // Should be false when levels are equal
         assert!(
-            !(sub_level < parent_level),
+            (sub_level >= parent_level),
             "equal levels should not trigger override"
         );
     }
