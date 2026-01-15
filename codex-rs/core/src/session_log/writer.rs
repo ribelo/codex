@@ -231,10 +231,7 @@ impl SessionLog {
 ///
 /// Path: `{codex_home}/sessions/v2/YYYY/MM/DD/session-{timestamp}-{session_id}.jsonl`
 fn create_log_file(codex_home: &Path, session_id: Uuid) -> std::io::Result<PathBuf> {
-    let timestamp = OffsetDateTime::now_local().unwrap_or_else(|e| {
-        warn!("failed to resolve local time: {e}; falling back to UTC");
-        OffsetDateTime::now_utc()
-    });
+    let timestamp = OffsetDateTime::now_utc();
 
     // Build directory: ~/.codex/sessions/v2/YYYY/MM/DD/
     let mut dir = codex_home.to_path_buf();
@@ -258,11 +255,15 @@ fn create_log_file(codex_home: &Path, session_id: Uuid) -> std::io::Result<PathB
 
     let path = dir.join(filename);
 
-    // Create the file (will fail if already exists, which is desired)
     std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(&path)?;
+
+    // Fsync the directory to ensure the file entry is durable.
+    // Without this, a power loss could drop the entire file on some filesystems.
+    let dir_file = std::fs::File::open(&dir)?;
+    dir_file.sync_all()?;
 
     Ok(path)
 }
