@@ -7,9 +7,16 @@
 //! - Power-outage safe for completed turns
 //! - Reader with uncommitted-data handling
 
+pub mod list;
 pub mod reader;
 mod writer;
 
+pub use list::CursorV2;
+pub use list::SessionV2Item;
+pub use list::SessionsV2Page;
+pub use list::list_session_children_v2;
+pub use list::list_sessions_v2;
+pub use list::parse_cursor_v2;
 pub use reader::ReadError;
 pub use reader::SessionLogData;
 pub use reader::build_model_context;

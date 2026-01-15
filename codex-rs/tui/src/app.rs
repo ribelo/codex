@@ -147,16 +147,41 @@ pub(crate) struct App {
     /// stopping a conversation (e.g., before starting a new one).
     suppress_shutdown_complete: bool,
 
+    /// Exit after receiving ShutdownComplete when the user requests exit.
+    exit_on_shutdown_complete: bool,
+
     // One-shot suppression of the next world-writable scan after user confirmation.
     skip_world_writable_scan_once: bool,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum ShutdownCurrentConversationMode {
+    ReplaceConversation,
+    Exit,
+}
+
 impl App {
-    async fn shutdown_current_conversation(&mut self) {
+    async fn shutdown_current_conversation(&mut self, mode: ShutdownCurrentConversationMode) {
         if let Some(conversation_id) = self.chat_widget.conversation_id() {
-            self.suppress_shutdown_complete = true;
-            self.chat_widget.submit_op(Op::Shutdown);
-            self.server.remove_conversation(&conversation_id).await;
+            match mode {
+                ShutdownCurrentConversationMode::ReplaceConversation => {
+                    self.suppress_shutdown_complete = true;
+                    self.chat_widget.submit_op(Op::Shutdown);
+                    self.server.remove_conversation(&conversation_id).await;
+                }
+                ShutdownCurrentConversationMode::Exit => {
+                    if self.exit_on_shutdown_complete {
+                        return;
+                    }
+                    self.exit_on_shutdown_complete = true;
+                    self.chat_widget.submit_op(Op::Shutdown);
+                    let tx = self.app_event_tx.clone();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(Duration::from_secs(10)).await;
+                        tx.send(AppEvent::ExitTimeout);
+                    });
+                }
+            }
         }
     }
 
@@ -297,6 +322,7 @@ impl App {
             feedback: feedback.clone(),
             pending_update_action: None,
             suppress_shutdown_complete: false,
+            exit_on_shutdown_complete: false,
             skip_world_writable_scan_once: false,
         };
 
@@ -358,6 +384,7 @@ impl App {
         })
     }
 
+    /// Returns `true` to keep the main run loop alive, and `false` to exit.
     pub(crate) async fn handle_tui_event(
         &mut self,
         tui: &mut tui::Tui,
@@ -401,6 +428,7 @@ impl App {
         Ok(true)
     }
 
+    /// Returns `true` to keep the main run loop alive, and `false` to exit.
     async fn handle_event(&mut self, tui: &mut tui::Tui, event: AppEvent) -> Result<bool> {
         let model_family = self
             .server
@@ -414,7 +442,10 @@ impl App {
                     self.chat_widget.conversation_id(),
                     self.active_profile.clone(),
                 );
-                self.shutdown_current_conversation().await;
+                self.shutdown_current_conversation(
+                    ShutdownCurrentConversationMode::ReplaceConversation,
+                )
+                .await;
                 let init = crate::chatwidget::ChatWidgetInit {
                     config: self.config.clone(),
                     frame_requester: tui.frame_requester(),
@@ -462,7 +493,10 @@ impl App {
                             self.chat_widget.conversation_id(),
                             self.active_profile.clone(),
                         );
-                        self.shutdown_current_conversation().await;
+                        self.shutdown_current_conversation(
+                            ShutdownCurrentConversationMode::ReplaceConversation,
+                        )
+                        .await;
 
                         self.config = new_config;
                         self.active_profile = Some(profile_name.clone());
@@ -545,7 +579,10 @@ impl App {
                             .await
                         {
                             Ok(resumed) => {
-                                self.shutdown_current_conversation().await;
+                                self.shutdown_current_conversation(
+                                    ShutdownCurrentConversationMode::ReplaceConversation,
+                                )
+                                .await;
                                 let init = crate::chatwidget::ChatWidgetInit {
                                     config: self.config.clone(),
                                     frame_requester: tui.frame_requester(),
@@ -687,7 +724,17 @@ impl App {
             AppEvent::CommitTick => {
                 self.chat_widget.on_commit_tick();
             }
+            AppEvent::ExitTimeout => {
+                if self.exit_on_shutdown_complete {
+                    tracing::warn!("Graceful shutdown timed out; exiting anyway");
+                    return Ok(false);
+                }
+            }
             AppEvent::CodexEvent(event) => {
+                if self.exit_on_shutdown_complete && matches!(event.msg, EventMsg::ShutdownComplete)
+                {
+                    return Ok(false);
+                }
                 if self.suppress_shutdown_complete
                     && matches!(event.msg, EventMsg::ShutdownComplete)
                 {
@@ -768,7 +815,10 @@ impl App {
                                     );
 
                                     // Shutdown current conversation
-                                    self.shutdown_current_conversation().await;
+                                    self.shutdown_current_conversation(
+                                        ShutdownCurrentConversationMode::ReplaceConversation,
+                                    )
+                                    .await;
 
                                     // Create new ChatWidget with the handoff conversation
                                     let init = crate::chatwidget::ChatWidgetInit {
@@ -834,8 +884,11 @@ impl App {
                     let errors = skill_errors_from_outcome(outcome);
                     match run_skill_error_prompt(tui, &errors).await {
                         SkillErrorPromptOutcome::Exit => {
-                            self.chat_widget.submit_op(Op::Shutdown);
-                            return Ok(false);
+                            self.shutdown_current_conversation(
+                                ShutdownCurrentConversationMode::Exit,
+                            )
+                            .await;
+                            return Ok(true);
                         }
                         SkillErrorPromptOutcome::Continue => {}
                     }
@@ -846,6 +899,11 @@ impl App {
                 self.on_conversation_history_for_backtrack(tui, ev).await?;
             }
             AppEvent::ExitRequest => {
+                if self.chat_widget.conversation_id().is_some() {
+                    self.shutdown_current_conversation(ShutdownCurrentConversationMode::Exit)
+                        .await;
+                    return Ok(true);
+                }
                 return Ok(false);
             }
             AppEvent::CodexOp(op) => self.chat_widget.submit_op(op),
@@ -1350,6 +1408,7 @@ mod tests {
             feedback: codex_feedback::CodexFeedback::new(),
             pending_update_action: None,
             suppress_shutdown_complete: false,
+            exit_on_shutdown_complete: false,
             skip_world_writable_scan_once: false,
         }
     }
@@ -1395,6 +1454,7 @@ mod tests {
                 feedback: codex_feedback::CodexFeedback::new(),
                 pending_update_action: None,
                 suppress_shutdown_complete: false,
+                exit_on_shutdown_complete: false,
                 skip_world_writable_scan_once: false,
             },
             rx,
@@ -1518,7 +1578,8 @@ mod tests {
         while app_event_rx.try_recv().is_ok() {}
         while op_rx.try_recv().is_ok() {}
 
-        app.shutdown_current_conversation().await;
+        app.shutdown_current_conversation(ShutdownCurrentConversationMode::ReplaceConversation)
+            .await;
 
         match op_rx.try_recv() {
             Ok(Op::Shutdown) => {}

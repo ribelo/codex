@@ -2409,6 +2409,18 @@ mod handlers {
         };
         sess.append_session_log_entry(entry).await;
 
+        let end_entry = codex_protocol::protocol::LogEntry {
+            id: uuid::Uuid::new_v4(),
+            timestamp: time::OffsetDateTime::now_utc()
+                .format(&time::format_description::well_known::Rfc3339)
+                .unwrap_or_else(|_| String::new()),
+            session_id: sess.conversation_id.as_uuid(),
+            turn_id: None,
+            parent_id: None,
+            kind: codex_protocol::protocol::EntryKind::SessionEnd,
+        };
+        sess.append_session_log_entry(end_entry).await;
+
         // Gracefully flush and shutdown v2 session log
         let session_log_opt = {
             let mut guard = sess.services.session_log.lock().await;

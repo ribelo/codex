@@ -37,6 +37,9 @@ pub(crate) enum AppEvent {
     /// Request to exit the application gracefully.
     ExitRequest,
 
+    /// Fired when a graceful shutdown times out.
+    ExitTimeout,
+
     /// Forward an `Op` to the Agent. Using an `AppEvent` for this avoids
     /// bubbling channels through layers of widgets.
     CodexOp(codex_core::protocol::Op),

@@ -5,12 +5,15 @@ use std::sync::Arc;
 
 use chrono::DateTime;
 use chrono::Utc;
-use codex_core::ConversationItem;
-use codex_core::ConversationsPage;
-use codex_core::Cursor;
+use codex_core::CursorV2;
 use codex_core::INTERACTIVE_SESSION_SOURCES;
-use codex_core::RolloutRecorder;
-use codex_protocol::items::TurnItem;
+use codex_core::SessionV2Item;
+use codex_core::SessionsV2Page;
+use codex_core::list_session_children_v2;
+use codex_core::list_sessions_v2;
+use codex_core::session_log::build_transcript;
+use codex_core::session_log::read_session;
+use codex_protocol::protocol::EntryKind;
 use codex_protocol::protocol::SubAgentKind;
 use color_eyre::eyre::Result;
 use crossterm::event::KeyCode;
@@ -33,12 +36,10 @@ use crate::text_formatting::truncate_text;
 use crate::tui::FrameRequester;
 use crate::tui::Tui;
 use crate::tui::TuiEvent;
-use codex_core::list_session_children;
 use codex_protocol::ConversationId;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
-use codex_protocol::protocol::RolloutItem;
-use codex_protocol::protocol::SessionMetaLine;
+use codex_protocol::protocol::EventMsg;
 
 use crate::history_cell::AgentMessageCell;
 use crate::history_cell::HistoryCell;
@@ -67,7 +68,7 @@ pub enum ResumeSelection {
 #[derive(Clone)]
 struct PageLoadRequest {
     codex_home: PathBuf,
-    cursor: Option<Cursor>,
+    cursor: Option<CursorV2>,
     request_token: usize,
     search_token: Option<usize>,
     default_provider: String,
@@ -80,7 +81,7 @@ enum BackgroundEvent {
     PageLoaded {
         request_token: usize,
         search_token: Option<usize>,
-        page: std::io::Result<ConversationsPage>,
+        page: std::io::Result<SessionsV2Page>,
     },
 }
 
@@ -111,7 +112,7 @@ pub async fn run_resume_picker(
             let page = match &request.mode {
                 PickerMode::Resume { .. } => {
                     let provider_filter = vec![request.default_provider.clone()];
-                    RolloutRecorder::list_conversations(
+                    list_sessions_v2(
                         &request.codex_home,
                         PAGE_SIZE,
                         request.cursor.as_ref(),
@@ -122,16 +123,13 @@ pub async fn run_resume_picker(
                     .await
                 }
                 PickerMode::Children { parent_id } => {
-                    // Use list_session_children - returns Vec, we wrap in ConversationsPage
-                    match list_session_children(&request.codex_home, *parent_id).await {
-                        Ok(items) => Ok(ConversationsPage {
-                            items,
-                            next_cursor: None, // No pagination for children
-                            num_scanned_files: 0,
-                            reached_scan_cap: false,
-                        }),
-                        Err(e) => Err(e),
-                    }
+                    list_session_children_v2(
+                        &request.codex_home,
+                        *parent_id,
+                        PAGE_SIZE,
+                        request.cursor.as_ref(),
+                    )
+                    .await
                 }
             };
             let _ = tx.send(BackgroundEvent::PageLoaded {
@@ -233,7 +231,7 @@ struct PickerState {
 }
 
 struct PaginationState {
-    next_cursor: Option<Cursor>,
+    next_cursor: Option<CursorV2>,
     num_scanned_files: usize,
     reached_scan_cap: bool,
     loading: LoadingState,
@@ -360,7 +358,7 @@ impl PickerState {
                     && let Some(row) = self.filtered_rows.get(self.selected)
                 {
                     // Extract conversation_id from the selected row's path
-                    if let Some(conversation_id) = extract_conversation_id_from_path(&row.path) {
+                    if let Some(conversation_id) = extract_conversation_id_from_v2_path(&row.path) {
                         let label = row.preview.chars().take(20).collect::<String>();
                         self.breadcrumbs.push((
                             match &self.mode {
@@ -482,7 +480,7 @@ impl PickerState {
         self.load_page_at_cursor(None, LoadTrigger::Scroll);
     }
 
-    fn load_page_at_cursor(&mut self, cursor: Option<Cursor>, trigger: LoadTrigger) {
+    fn load_page_at_cursor(&mut self, cursor: Option<CursorV2>, trigger: LoadTrigger) {
         if self.pagination.loading.is_pending() {
             return;
         }
@@ -539,7 +537,7 @@ impl PickerState {
         self.pagination.loading = LoadingState::Idle;
     }
 
-    fn ingest_page(&mut self, page: ConversationsPage) {
+    fn ingest_page(&mut self, page: SessionsV2Page) {
         if let Some(cursor) = page.next_cursor.clone() {
             self.pagination.next_cursor = Some(cursor);
         } else {
@@ -553,7 +551,7 @@ impl PickerState {
             self.pagination.reached_scan_cap = true;
         }
 
-        let rows = rows_from_items(page.items);
+        let rows = rows_from_v2_items(page.items);
         for row in rows {
             if self.seen_paths.insert(row.path.clone()) {
                 self.all_rows.push(row);
@@ -752,47 +750,34 @@ impl PickerState {
     }
 }
 
-fn rows_from_items(items: Vec<ConversationItem>) -> Vec<Row> {
-    items.into_iter().map(|item| head_to_row(&item)).collect()
+fn rows_from_v2_items(items: Vec<SessionV2Item>) -> Vec<Row> {
+    items
+        .into_iter()
+        .map(|item| v2_item_to_row(&item))
+        .collect()
 }
 
-fn head_to_row(item: &ConversationItem) -> Row {
-    let created_at = item
-        .created_at
-        .as_deref()
-        .and_then(parse_timestamp_str)
-        .or_else(|| item.head.first().and_then(extract_timestamp));
+fn v2_item_to_row(item: &SessionV2Item) -> Row {
+    let created_at = item.created_at.as_deref().and_then(parse_timestamp_str);
     let updated_at = item
         .updated_at
         .as_deref()
         .and_then(parse_timestamp_str)
         .or(created_at);
-
-    let (cwd, git_branch) = extract_session_meta_from_head(&item.head);
-    let preview = preview_from_head(&item.head)
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| String::from("(no message yet)"));
+    let preview = if item.preview.is_empty() {
+        "(no message yet)".to_string()
+    } else {
+        item.preview.clone()
+    };
 
     Row {
         path: item.path.clone(),
         preview,
         created_at,
         updated_at,
-        cwd,
-        git_branch,
+        cwd: item.cwd.clone(),
+        git_branch: item.git_branch.clone(),
     }
-}
-
-fn extract_session_meta_from_head(head: &[serde_json::Value]) -> (Option<PathBuf>, Option<String>) {
-    for value in head {
-        if let Ok(meta_line) = serde_json::from_value::<SessionMetaLine>(value.clone()) {
-            let cwd = Some(meta_line.meta.cwd);
-            let git_branch = meta_line.git.and_then(|git| git.branch);
-            return (cwd, git_branch);
-        }
-    }
-    (None, None)
 }
 
 fn paths_match(a: &Path, b: &Path) -> bool {
@@ -808,28 +793,11 @@ fn parse_timestamp_str(ts: &str) -> Option<DateTime<Utc>> {
         .ok()
 }
 
-fn extract_timestamp(value: &serde_json::Value) -> Option<DateTime<Utc>> {
-    value
-        .get("timestamp")
-        .and_then(|v| v.as_str())
-        .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
-        .map(|dt| dt.with_timezone(&Utc))
-}
-
-fn preview_from_head(head: &[serde_json::Value]) -> Option<String> {
-    head.iter()
-        .filter_map(|value| serde_json::from_value::<ResponseItem>(value.clone()).ok())
-        .find_map(|item| match codex_core::parse_turn_item(&item) {
-            Some(TurnItem::UserMessage(user)) => Some(user.message()),
-            _ => None,
-        })
-}
-
-/// Extract ConversationId from a rollout file path.
-/// Path format: .../rollout-YYYY-MM-DDThh-mm-ss-<uuid>.jsonl
-fn extract_conversation_id_from_path(path: &Path) -> Option<ConversationId> {
+/// Extract ConversationId from a v2 session file path.
+/// Path format: .../session-YYYY-MM-DDThh-mm-ss-<uuid>.jsonl
+fn extract_conversation_id_from_v2_path(path: &Path) -> Option<ConversationId> {
     let file_name = path.file_name()?.to_str()?;
-    let core = file_name.strip_prefix("rollout-")?.strip_suffix(".jsonl")?;
+    let core = file_name.strip_prefix("session-")?.strip_suffix(".jsonl")?;
     // Scan from the right for a '-' such that the suffix parses as a UUID.
     // UUIDs contain hyphens, so we try each dash position until we find a valid UUID.
     core.match_indices('-').rev().find_map(|(i, _)| {
@@ -1038,22 +1006,33 @@ fn render_empty_state_line(state: &PickerState) -> Line<'static> {
 }
 
 /// Load a rollout file and convert to displayable HistoryCell items.
-/// Only handles text messages for simplicity.
+/// Uses v2 session log reader. Handles text messages, warnings, errors, and tool results.
 pub(crate) async fn rollout_to_cells(
     path: &std::path::Path,
 ) -> std::io::Result<Vec<Arc<dyn HistoryCell>>> {
-    let history = RolloutRecorder::get_rollout_history(path).await?;
-    let items = history.get_rollout_items();
+    let path = path.to_path_buf();
+    let data = tokio::task::spawn_blocking(move || read_session(&path))
+        .await
+        .map_err(|e| std::io::Error::other(format!("{e}")))?
+        .map_err(|e| std::io::Error::other(format!("{e}")))?;
+    let entries = build_transcript(&data);
 
     let mut cells: Vec<Arc<dyn HistoryCell>> = Vec::new();
     let mut is_first_assistant = true;
 
-    for item in items {
-        match item {
-            RolloutItem::ResponseItem(resp_item) => {
-                if let ResponseItem::Message { role, content, .. } = resp_item {
+    for entry in entries {
+        match &entry.kind {
+            EntryKind::Event { msg } => {
+                if let EventMsg::UserMessage(user_msg) = msg {
+                    let text = user_msg.message.clone();
+                    if !text.is_empty() {
+                        cells.push(Arc::new(UserHistoryCell { message: text }));
+                    }
+                }
+            }
+            EntryKind::ResponseItem { item } => {
+                if let ResponseItem::Message { role, content, .. } = item {
                     if role == "user" {
-                        // Extract text from content items
                         let text: String = content
                             .iter()
                             .filter_map(|c| match c {
@@ -1066,7 +1045,6 @@ pub(crate) async fn rollout_to_cells(
                             cells.push(Arc::new(UserHistoryCell { message: text }));
                         }
                     } else if role == "assistant" {
-                        // Extract text from content items
                         let text: String = content
                             .iter()
                             .filter_map(|c| match c {
@@ -1084,9 +1062,7 @@ pub(crate) async fn rollout_to_cells(
                     }
                 }
             }
-            _ => {
-                // Skip other items (SessionMeta, EventMsg, etc.)
-            }
+            _ => {}
         }
     }
 
@@ -1251,47 +1227,39 @@ mod tests {
     use crossterm::event::KeyEvent;
     use crossterm::event::KeyModifiers;
     use insta::assert_snapshot;
-    use serde_json::json;
     use std::future::Future;
     use std::path::PathBuf;
     use std::sync::Arc;
     use std::sync::Mutex;
+    use uuid::Uuid;
 
-    fn head_with_ts_and_user_text(ts: &str, texts: &[&str]) -> Vec<serde_json::Value> {
-        vec![
-            json!({ "timestamp": ts }),
-            json!({
-                "type": "message",
-                "role": "user",
-                "content": texts
-                    .iter()
-                    .map(|t| json!({ "type": "input_text", "text": *t }))
-                    .collect::<Vec<_>>()
-            }),
-        ]
-    }
-
-    fn make_item(path: &str, ts: &str, preview: &str) -> ConversationItem {
-        ConversationItem {
+    fn make_v2_item(path: &str, ts: &str, preview: &str) -> SessionV2Item {
+        SessionV2Item {
             path: PathBuf::from(path),
-            head: head_with_ts_and_user_text(ts, &[preview]),
+            session_id: Uuid::new_v4(),
+            preview: preview.to_string(),
+            cwd: None,
+            git_branch: None,
+            source: None,
+            parent_id: None,
+            model_provider: Some("openai".to_string()),
             created_at: Some(ts.to_string()),
             updated_at: Some(ts.to_string()),
         }
     }
 
-    fn cursor_from_str(repr: &str) -> Cursor {
-        serde_json::from_str::<Cursor>(&format!("\"{repr}\""))
+    fn cursor_from_str(repr: &str) -> CursorV2 {
+        serde_json::from_str::<CursorV2>(&format!("\"{repr}\""))
             .expect("cursor format should deserialize")
     }
 
     fn page(
-        items: Vec<ConversationItem>,
-        next_cursor: Option<Cursor>,
+        items: Vec<SessionV2Item>,
+        next_cursor: Option<CursorV2>,
         num_scanned_files: usize,
         reached_scan_cap: bool,
-    ) -> ConversationsPage {
-        ConversationsPage {
+    ) -> SessionsV2Page {
+        SessionsV2Page {
             items,
             next_cursor,
             num_scanned_files,
@@ -1308,57 +1276,10 @@ mod tests {
     }
 
     #[test]
-    fn preview_uses_first_message_input_text() {
-        let head = vec![
-            json!({ "timestamp": "2025-01-01T00:00:00Z" }),
-            json!({
-                "type": "message",
-                "role": "user",
-                "content": [
-                    { "type": "input_text", "text": "# AGENTS.md instructions for project\n\n<INSTRUCTIONS>\nhi\n</INSTRUCTIONS>" },
-                ]
-            }),
-            json!({
-                "type": "message",
-                "role": "user",
-                "content": [
-                    { "type": "input_text", "text": "<environment_context>...</environment_context>" },
-                ]
-            }),
-            json!({
-                "type": "message",
-                "role": "user",
-                "content": [
-                    { "type": "input_text", "text": "real question" },
-                    { "type": "input_image", "image_url": "ignored" }
-                ]
-            }),
-            json!({
-                "type": "message",
-                "role": "user",
-                "content": [ { "type": "input_text", "text": "later text" } ]
-            }),
-        ];
-        let preview = preview_from_head(&head);
-        assert_eq!(preview.as_deref(), Some("real question"));
-    }
-
-    #[test]
-    fn rows_from_items_preserves_backend_order() {
-        // Construct two items with different timestamps and real user text.
-        let a = ConversationItem {
-            path: PathBuf::from("/tmp/a.jsonl"),
-            head: head_with_ts_and_user_text("2025-01-01T00:00:00Z", &["A"]),
-            created_at: Some("2025-01-01T00:00:00Z".into()),
-            updated_at: Some("2025-01-01T00:00:00Z".into()),
-        };
-        let b = ConversationItem {
-            path: PathBuf::from("/tmp/b.jsonl"),
-            head: head_with_ts_and_user_text("2025-01-02T00:00:00Z", &["B"]),
-            created_at: Some("2025-01-02T00:00:00Z".into()),
-            updated_at: Some("2025-01-02T00:00:00Z".into()),
-        };
-        let rows = rows_from_items(vec![a, b]);
+    fn rows_from_v2_items_preserves_backend_order() {
+        let a = make_v2_item("/tmp/a.jsonl", "2025-01-01T00:00:00Z", "A");
+        let b = make_v2_item("/tmp/b.jsonl", "2025-01-02T00:00:00Z", "B");
+        let rows = rows_from_v2_items(vec![a, b]);
         assert_eq!(rows.len(), 2);
         // Preserve the given order even if timestamps differ; backend already provides newest-first.
         assert!(rows[0].preview.contains('A'));
@@ -1366,16 +1287,11 @@ mod tests {
     }
 
     #[test]
-    fn row_uses_tail_timestamp_for_updated_at() {
-        let head = head_with_ts_and_user_text("2025-01-01T00:00:00Z", &["Hello"]);
-        let item = ConversationItem {
-            path: PathBuf::from("/tmp/a.jsonl"),
-            head,
-            created_at: Some("2025-01-01T00:00:00Z".into()),
-            updated_at: Some("2025-01-01T01:00:00Z".into()),
-        };
+    fn v2_item_to_row_uses_timestamps() {
+        let mut item = make_v2_item("/tmp/a.jsonl", "2025-01-01T00:00:00Z", "Hello");
+        item.updated_at = Some("2025-01-01T01:00:00Z".into());
 
-        let row = head_to_row(&item);
+        let row = v2_item_to_row(&item);
         let expected_created = chrono::DateTime::parse_from_rfc3339("2025-01-01T00:00:00Z")
             .unwrap()
             .with_timezone(&Utc);
@@ -1464,84 +1380,28 @@ mod tests {
     fn resume_picker_screen_snapshot() {
         use crate::custom_terminal::Terminal;
         use crate::test_backend::VT100Backend;
-        use uuid::Uuid;
-
-        // Create real rollout files so the snapshot uses the actual listing pipeline.
-        let tempdir = tempfile::tempdir().expect("tempdir");
-        let sessions_root = tempdir.path().join("sessions");
-        std::fs::create_dir_all(&sessions_root).expect("mkdir sessions root");
 
         let now = Utc::now();
 
-        // Helper to write a rollout file with minimal meta + one user message.
-        let write_rollout = |ts: DateTime<Utc>, cwd: &str, branch: &str, preview: &str| {
-            let dir = sessions_root
-                .join(ts.format("%Y").to_string())
-                .join(ts.format("%m").to_string())
-                .join(ts.format("%d").to_string());
-            std::fs::create_dir_all(&dir).expect("mkdir date dirs");
-            let filename = format!(
-                "rollout-{}-{}.jsonl",
-                ts.format("%Y-%m-%dT%H-%M-%S"),
-                Uuid::new_v4()
-            );
-            let path = dir.join(filename);
-            let meta = serde_json::json!({
-                "timestamp": ts.to_rfc3339(),
-                "item": {
-                    "SessionMeta": {
-                        "meta": {
-                            "id": Uuid::new_v4(),
-                            "timestamp": ts.to_rfc3339(),
-                            "cwd": cwd,
-                            "originator": "user",
-                            "cli_version": "0.0.0",
-                            "instructions": null,
-                            "source": "Cli",
-                            "model": "openai/gpt-5.1-codex-mini",
-                        }
-                    }
-                }
-            });
-            let user = serde_json::json!({
-                "timestamp": ts.to_rfc3339(),
-                "item": {
-                    "EventMsg": {
-                        "UserMessage": {
-                            "message": preview,
-                            "images": null
-                        }
-                    }
-                }
-            });
-            let branch_meta = serde_json::json!({
-                "timestamp": ts.to_rfc3339(),
-                "item": {
-                    "EventMsg": {
-                        "SessionMeta": {
-                            "meta": {
-                                "git_branch": branch
-                            }
-                        }
-                    }
-                }
-            });
-            std::fs::write(&path, format!("{meta}\n{user}\n{branch_meta}\n"))
-                .expect("write rollout");
-        };
-
-        write_rollout(
-            now - Duration::seconds(42),
-            "/tmp/project",
-            "feature/resume",
-            "Fix resume picker timestamps",
-        );
-        write_rollout(
-            now - Duration::minutes(35),
-            "/tmp/other",
-            "main",
-            "Investigate lazy pagination cap",
-        );
+        // Create mock Row data directly (similar to resume_table_snapshot)
+        let rows = vec![
+            Row {
+                path: PathBuf::from("/tmp/a.jsonl"),
+                preview: String::from("Fix resume picker timestamps"),
+                created_at: Some(now - Duration::seconds(42)),
+                updated_at: Some(now - Duration::seconds(42)),
+                cwd: Some(PathBuf::from("/tmp/project")),
+                git_branch: Some("feature/resume".to_string()),
+            },
+            Row {
+                path: PathBuf::from("/tmp/b.jsonl"),
+                preview: String::from("Investigate lazy pagination cap"),
+                created_at: Some(now - Duration::minutes(35)),
+                updated_at: Some(now - Duration::minutes(35)),
+                cwd: Some(PathBuf::from("/tmp/other")),
+                git_branch: Some("main".to_string()),
+            },
+        ];
 
         let loader: PageLoader = Arc::new(|_| {});
         let mut state = PickerState::new(
@@ -1553,17 +1413,6 @@ mod tests {
             None,
         );
 
-        let page = block_on_future(RolloutRecorder::list_conversations(
-            &state.codex_home,
-            PAGE_SIZE,
-            None,
-            INTERACTIVE_SESSION_SOURCES,
-            Some(&[String::from("openai")]),
-            "openai",
-        ))
-        .expect("list conversations");
-
-        let rows = rows_from_items(page.items);
         state.all_rows = rows.clone();
         state.filtered_rows = rows;
         state.view_rows = Some(4);
@@ -1635,8 +1484,8 @@ mod tests {
         state.reset_pagination();
         state.ingest_page(page(
             vec![
-                make_item("/tmp/a.jsonl", "2025-01-03T00:00:00Z", "third"),
-                make_item("/tmp/b.jsonl", "2025-01-02T00:00:00Z", "second"),
+                make_v2_item("/tmp/a.jsonl", "2025-01-03T00:00:00Z", "third"),
+                make_v2_item("/tmp/b.jsonl", "2025-01-02T00:00:00Z", "second"),
             ],
             Some(cursor_from_str(
                 "2025-01-02T00-00-00|00000000-0000-0000-0000-000000000000",
@@ -1647,8 +1496,8 @@ mod tests {
 
         state.ingest_page(page(
             vec![
-                make_item("/tmp/a.jsonl", "2025-01-03T00:00:00Z", "duplicate"),
-                make_item("/tmp/c.jsonl", "2025-01-01T00:00:00Z", "first"),
+                make_v2_item("/tmp/a.jsonl", "2025-01-03T00:00:00Z", "duplicate"),
+                make_v2_item("/tmp/c.jsonl", "2025-01-01T00:00:00Z", "first"),
             ],
             Some(cursor_from_str(
                 "2025-01-01T00-00-00|00000000-0000-0000-0000-000000000001",
@@ -1658,7 +1507,7 @@ mod tests {
         ));
 
         state.ingest_page(page(
-            vec![make_item(
+            vec![make_v2_item(
                 "/tmp/d.jsonl",
                 "2024-12-31T23:00:00Z",
                 "very old",
@@ -1702,8 +1551,8 @@ mod tests {
         state.reset_pagination();
         state.ingest_page(page(
             vec![
-                make_item("/tmp/a.jsonl", "2025-01-01T00:00:00Z", "one"),
-                make_item("/tmp/b.jsonl", "2025-01-02T00:00:00Z", "two"),
+                make_v2_item("/tmp/a.jsonl", "2025-01-01T00:00:00Z", "one"),
+                make_v2_item("/tmp/b.jsonl", "2025-01-02T00:00:00Z", "two"),
             ],
             Some(cursor_from_str(
                 "2025-01-03T00-00-00|00000000-0000-0000-0000-000000000000",
@@ -1736,7 +1585,7 @@ mod tests {
             let ts = format!("2025-01-{:02}T00:00:00Z", idx + 1);
             let preview = format!("item-{idx}");
             let path = format!("/tmp/item-{idx}.jsonl");
-            items.push(make_item(&path, &ts, &preview));
+            items.push(make_v2_item(&path, &ts, &preview));
         }
 
         state.reset_pagination();
@@ -1786,7 +1635,7 @@ mod tests {
             let ts = format!("2025-02-{:02}T00:00:00Z", idx + 1);
             let preview = format!("item-{idx}");
             let path = format!("/tmp/item-{idx}.jsonl");
-            items.push(make_item(&path, &ts, &preview));
+            items.push(make_v2_item(&path, &ts, &preview));
         }
 
         state.reset_pagination();
@@ -1828,7 +1677,7 @@ mod tests {
         );
         state.reset_pagination();
         state.ingest_page(page(
-            vec![make_item(
+            vec![make_v2_item(
                 "/tmp/start.jsonl",
                 "2025-01-01T00:00:00Z",
                 "alpha",
@@ -1853,7 +1702,11 @@ mod tests {
                 request_token: first_request.request_token,
                 search_token: first_request.search_token,
                 page: Ok(page(
-                    vec![make_item("/tmp/beta.jsonl", "2025-01-02T00:00:00Z", "beta")],
+                    vec![make_v2_item(
+                        "/tmp/beta.jsonl",
+                        "2025-01-02T00:00:00Z",
+                        "beta",
+                    )],
                     Some(cursor_from_str(
                         "2025-01-03T00-00-00|00000000-0000-0000-0000-000000000001",
                     )),
@@ -1876,7 +1729,7 @@ mod tests {
                 request_token: second_request.request_token,
                 search_token: second_request.search_token,
                 page: Ok(page(
-                    vec![make_item(
+                    vec![make_v2_item(
                         "/tmp/match.jsonl",
                         "2025-01-03T00:00:00Z",
                         "target log",
