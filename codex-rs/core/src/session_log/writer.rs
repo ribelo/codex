@@ -551,7 +551,7 @@ mod tests {
         let reader = std::io::BufReader::new(file);
         let entries: Vec<LogEntry> = reader
             .lines()
-            .filter_map(|line| line.ok())
+            .filter_map(std::result::Result::ok)
             .filter_map(|line| serde_json::from_str(&line).ok())
             .collect();
 
@@ -628,7 +628,7 @@ mod tests {
         let reader = std::io::BufReader::new(file);
         let entries: Vec<LogEntry> = reader
             .lines()
-            .filter_map(|line| line.ok())
+            .filter_map(std::result::Result::ok)
             .filter_map(|line| serde_json::from_str(&line).ok())
             .collect();
 
@@ -683,7 +683,7 @@ mod tests {
         let reader = std::io::BufReader::new(file);
         let entries: Vec<LogEntry> = reader
             .lines()
-            .filter_map(|line| line.ok())
+            .filter_map(std::result::Result::ok)
             .filter_map(|line| serde_json::from_str(&line).ok())
             .collect();
 
@@ -747,7 +747,7 @@ mod tests {
         let reader = std::io::BufReader::new(file);
         let entries: Vec<LogEntry> = reader
             .lines()
-            .filter_map(|line| line.ok())
+            .filter_map(std::result::Result::ok)
             .filter_map(|line| serde_json::from_str(&line).ok())
             .collect();
 

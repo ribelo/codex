@@ -86,6 +86,8 @@ fn make_chatwidget_manual() -> (ChatWidget, tokio::sync::mpsc::UnboundedReceiver
         available_agents: Vec::new(),
         subagent_states: HashMap::new(),
         active_subagent_cells: HashMap::new(),
+        pending_replay_calls: HashMap::new(),
+        pending_replay_call_seq: 0,
     };
     (widget, rx)
 }

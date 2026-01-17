@@ -1861,6 +1861,81 @@ pub(crate) fn new_web_search_call(query: String) -> PlainHistoryCell {
     PlainHistoryCell { lines }
 }
 
+#[derive(Debug)]
+pub(crate) struct ReplayedToolInteractionCell {
+    name: String,
+    arguments: String,
+    output: String,
+}
+
+const REPLAY_TOOL_OUTPUT_MAX_LINES: usize = 50;
+
+impl HistoryCell for ReplayedToolInteractionCell {
+    fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
+        let mut out = Vec::new();
+        let wrap_width = (width as usize).max(1);
+
+        // Tool call header
+        let header = Line::from(vec![
+            "↳ ".dim(),
+            self.name.clone().bold(),
+            " ".into(),
+            self.arguments.clone().dim(),
+        ]);
+        let header_wrapped = word_wrap_line(&header, RtOptions::new(wrap_width));
+        push_owned_lines(&header_wrapped, &mut out);
+
+        // Tool output
+        let output_text = if self.output.is_empty() {
+            "(no output)".to_string()
+        } else {
+            format_and_truncate_tool_result(&self.output, REPLAY_TOOL_OUTPUT_MAX_LINES, wrap_width)
+        };
+        let output_lines: Vec<Line<'static>> = output_text
+            .lines()
+            .map(|line| Line::from(line.to_string().dim()))
+            .collect();
+
+        let output_wrapped = word_wrap_lines(
+            output_lines,
+            RtOptions::new(wrap_width)
+                .initial_indent(Line::from("  └ ".dim()))
+                .subsequent_indent(Line::from("    ".dim())),
+        );
+        out.extend(output_wrapped);
+
+        out
+    }
+
+    fn desired_height(&self, width: u16) -> u16 {
+        self.display_lines(width).len() as u16
+    }
+}
+
+pub(crate) fn new_replayed_tool_interaction(
+    name: String,
+    arguments: String,
+    output: String,
+) -> ReplayedToolInteractionCell {
+    ReplayedToolInteractionCell {
+        name,
+        arguments,
+        output,
+    }
+}
+
+pub(crate) fn new_replayed_tool_call(name: String, arguments: String) -> PlainHistoryCell {
+    let line = Line::from(vec![
+        "↳ ".dim(),
+        name.bold(),
+        " ".into(),
+        arguments.dim(),
+        " ".into(),
+        "(no output recorded)".italic().dim(),
+    ]);
+    PlainHistoryCell::new(vec![line])
+}
+
 /// If the first content is an image, return a new cell with the image.
 /// TODO(rgwood-dd): Handle images properly even if they're not the first result.
 fn try_new_completed_mcp_tool_call_with_image_output(

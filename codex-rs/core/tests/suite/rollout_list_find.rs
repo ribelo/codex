@@ -83,3 +83,61 @@ async fn find_ignores_granular_gitignore_rules() {
 
     assert_eq!(found, Some(expected));
 }
+
+/// Create sessions/v2/YYYY/MM/DD and write a minimal v2 session log file.
+fn write_minimal_v2_session_with_id(codex_home: &Path, id: Uuid) -> PathBuf {
+    let sessions = codex_home.join("sessions/v2/2026/01/15");
+    std::fs::create_dir_all(&sessions).unwrap();
+
+    let file = sessions.join(format!("session-2026-01-15T12-00-00-{id}.jsonl"));
+    let mut f = std::fs::File::create(&file).unwrap();
+    writeln!(
+        f,
+        "{}",
+        serde_json::json!({
+            "id": Uuid::new_v4(),
+            "timestamp": "2026-01-15T12:00:00.000Z",
+            "session_id": id,
+            "kind": "session_header",
+            "meta": {
+                "id": id,
+                "timestamp": "2026-01-15T12:00:00.000Z",
+                "cwd": ".",
+                "originator": "test",
+                "cli_version": "test",
+                "source": "cli",
+                "model": "test-model"
+            }
+        })
+    )
+    .unwrap();
+
+    file
+}
+
+#[tokio::test]
+async fn find_locates_v2_session_file_by_id() {
+    let home = TempDir::new().unwrap();
+    let id = Uuid::new_v4();
+    let expected = write_minimal_v2_session_with_id(home.path(), id);
+
+    let found = find_conversation_path_by_id_str(home.path(), &id.to_string())
+        .await
+        .unwrap();
+
+    assert_eq!(found, Some(expected));
+}
+
+#[tokio::test]
+async fn find_prefers_v2_over_v1_when_both_exist() {
+    let home = TempDir::new().unwrap();
+    let id = Uuid::new_v4();
+    let _v1_path = write_minimal_rollout_with_id(home.path(), id);
+    let v2_path = write_minimal_v2_session_with_id(home.path(), id);
+
+    let found = find_conversation_path_by_id_str(home.path(), &id.to_string())
+        .await
+        .unwrap();
+
+    assert_eq!(found, Some(v2_path));
+}

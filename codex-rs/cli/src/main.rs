@@ -318,7 +318,7 @@ fn format_exit_messages(exit_info: AppExitInfo, color_enabled: bool) -> Vec<Stri
         ..
     } = exit_info;
 
-    if token_usage.is_zero() {
+    if token_usage.is_zero() && conversation_id.is_none() {
         return Vec::new();
     }
 
@@ -995,7 +995,7 @@ mod tests {
     }
 
     #[test]
-    fn format_exit_messages_skips_zero_usage() {
+    fn format_exit_messages_skips_zero_usage_without_conversation() {
         let exit_info = AppExitInfo {
             token_usage: TokenUsage::default(),
             conversation_id: None,
@@ -1004,6 +1004,27 @@ mod tests {
         };
         let lines = format_exit_messages(exit_info, false);
         assert!(lines.is_empty());
+    }
+
+    #[test]
+    fn format_exit_messages_includes_resume_hint_even_with_zero_usage() {
+        let exit_info = AppExitInfo {
+            token_usage: TokenUsage::default(),
+            conversation_id: Some(
+                ConversationId::from_string("123e4567-e89b-12d3-a456-426614174000").unwrap(),
+            ),
+            update_action: None,
+            profile: None,
+        };
+        let lines = format_exit_messages(exit_info, false);
+        assert_eq!(
+            lines,
+            vec![
+                "Token usage: total=0 input=0 output=0".to_string(),
+                "To continue this session, run codex resume 123e4567-e89b-12d3-a456-426614174000"
+                    .to_string(),
+            ]
+        );
     }
 
     #[test]

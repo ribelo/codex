@@ -572,10 +572,20 @@ pub async fn find_conversation_path_by_id_str(
     id_str: &str,
 ) -> io::Result<Option<PathBuf>> {
     // Validate UUID format early.
-    if Uuid::parse_str(id_str).is_err() {
+    let Ok(id) = Uuid::parse_str(id_str) else {
         return Ok(None);
+    };
+
+    // Try v2 format first (current format).
+    match crate::session_log::find_session_log_v2_by_id(codex_home, id).await {
+        Ok(Some(path)) => return Ok(Some(path)),
+        Ok(None) => {}
+        Err(err) => {
+            tracing::warn!("failed to search v2 session logs: {err}");
+        }
     }
 
+    // Fall back to v1 (legacy rollout files).
     let mut root = codex_home.to_path_buf();
     root.push(SESSIONS_SUBDIR);
     if !root.exists() {

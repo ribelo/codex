@@ -51,6 +51,7 @@ use codex_core::protocol::ViewImageToolCallEvent;
 use codex_core::protocol::WarningEvent;
 use codex_protocol::ConversationId;
 use codex_protocol::account::PlanType;
+use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::openai_models::ReasoningEffortPreset;
 use codex_protocol::parse_command::ParsedCommand;
@@ -102,6 +103,73 @@ fn snapshot(percent: f64) -> RateLimitSnapshot {
         antigravity: None,
         gemini: None,
     }
+}
+
+#[test]
+fn replay_tool_interaction_snapshot() {
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(None);
+
+    let conversation_id = ConversationId::new();
+    let rollout_file = NamedTempFile::new().unwrap();
+    let configured = codex_core::protocol::SessionConfiguredEvent {
+        session_id: conversation_id,
+        model: "test-model".to_string(),
+        model_provider_id: "test-provider".to_string(),
+        approval_policy: codex_core::protocol::AskForApproval::Never,
+        sandbox_policy: codex_core::protocol::SandboxPolicy::DangerFullAccess,
+        cwd: PathBuf::from("/home/user/project"),
+        reasoning_effort: None,
+        history_log_id: 0,
+        history_entry_count: 0,
+        initial_messages: Some(vec![
+            EventMsg::RawResponseItem(codex_core::protocol::RawResponseItemEvent {
+                item: ResponseItem::FunctionCall {
+                    id: None,
+                    name: "read_file".to_string(),
+                    arguments: "{\"path\": \"src/lib.rs\"}".to_string(),
+                    call_id: "call_1".to_string(),
+                },
+            }),
+            EventMsg::RawResponseItem(codex_core::protocol::RawResponseItemEvent {
+                item: ResponseItem::FunctionCallOutput {
+                    call_id: "call_1".to_string(),
+                    output: codex_protocol::models::FunctionCallOutputPayload {
+                        content: "fn main() {}".to_string(),
+                        content_items: None,
+                        success: Some(true),
+                    },
+                },
+            }),
+        ]),
+        skill_load_outcome: None,
+        rollout_path: rollout_file.path().to_path_buf(),
+    };
+
+    chat.handle_codex_event(Event {
+        id: "initial".into(),
+        msg: EventMsg::SessionConfigured(configured),
+    });
+
+    let cells = drain_insert_history(&mut rx);
+    let mut rendered = Vec::new();
+    for lines in cells {
+        rendered.push(lines_to_single_string(&lines));
+    }
+    let text_blob = rendered.join("\n");
+
+    assert!(
+        text_blob.contains("read_file"),
+        "expected replayed tool name"
+    );
+    assert!(
+        text_blob.contains("src/lib.rs"),
+        "expected replayed tool args"
+    );
+    assert!(
+        text_blob.contains("fn main() {}"),
+        "expected replayed tool output"
+    );
+    assert_snapshot!(text_blob);
 }
 
 #[test]
@@ -158,6 +226,52 @@ fn resumed_initial_messages_render_history() {
         text_blob.contains("assistant reply"),
         "expected replayed agent message",
     );
+}
+
+#[test]
+fn shutdown_complete_requests_exit_and_keeps_conversation_id() {
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(None);
+
+    let conversation_id = ConversationId::new();
+    let rollout_file = NamedTempFile::new().unwrap();
+    let configured = codex_core::protocol::SessionConfiguredEvent {
+        session_id: conversation_id,
+        model: "test-model".to_string(),
+        model_provider_id: "test-provider".to_string(),
+        approval_policy: AskForApproval::Never,
+        sandbox_policy: SandboxPolicy::ReadOnly,
+        cwd: PathBuf::from("/home/user/project"),
+        reasoning_effort: Some(ReasoningEffortConfig::default()),
+        history_log_id: 0,
+        history_entry_count: 0,
+        initial_messages: None,
+        skill_load_outcome: None,
+        rollout_path: rollout_file.path().to_path_buf(),
+    };
+
+    chat.handle_codex_event(Event {
+        id: "configured".into(),
+        msg: EventMsg::SessionConfigured(configured),
+    });
+
+    assert!(chat.conversation_id().is_some(), "expected conversation id");
+    while rx.try_recv().is_ok() {}
+
+    chat.handle_codex_event(Event {
+        id: "shutdown".into(),
+        msg: EventMsg::ShutdownComplete,
+    });
+
+    assert!(chat.conversation_id().is_some());
+
+    let mut saw_exit = false;
+    while let Ok(ev) = rx.try_recv() {
+        if matches!(ev, AppEvent::ExitRequest) {
+            saw_exit = true;
+            break;
+        }
+    }
+    assert!(saw_exit, "expected ExitRequest");
 }
 
 /// Entering review mode uses the hint provided by the review request.
@@ -469,6 +583,8 @@ fn make_chatwidget_manual(
         available_agents: Vec::new(),
         subagent_states: HashMap::new(),
         active_subagent_cells: HashMap::new(),
+        pending_replay_calls: HashMap::new(),
+        pending_replay_call_seq: 0,
     };
     (widget, rx, op_rx)
 }
@@ -3491,4 +3607,52 @@ fn slash_review_with_args_delegates_to_review_agent() {
         }
         other => panic!("expected AppEvent::CodexOp(Op::DelegateSubagent), got {other:?}"),
     }
+}
+
+#[test]
+fn resumed_shutdown_complete_does_not_exit() {
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(None);
+
+    let conversation_id = ConversationId::new();
+    let rollout_file = NamedTempFile::new().unwrap();
+    let configured = codex_core::protocol::SessionConfiguredEvent {
+        session_id: conversation_id,
+        model: "test-model".to_string(),
+        model_provider_id: "test-provider".to_string(),
+        approval_policy: AskForApproval::Never,
+        sandbox_policy: SandboxPolicy::ReadOnly,
+        cwd: PathBuf::from("/home/user/project"),
+        reasoning_effort: Some(ReasoningEffortConfig::default()),
+        history_log_id: 0,
+        history_entry_count: 0,
+        initial_messages: Some(vec![
+            EventMsg::UserMessage(UserMessageEvent {
+                message: "hello from user".to_string(),
+                images: None,
+            }),
+            EventMsg::AgentMessage(AgentMessageEvent {
+                message: "assistant reply".to_string(),
+            }),
+            EventMsg::ShutdownComplete,
+        ]),
+        skill_load_outcome: None,
+        rollout_path: rollout_file.path().to_path_buf(),
+    };
+
+    chat.handle_codex_event(Event {
+        id: "initial".into(),
+        msg: EventMsg::SessionConfigured(configured),
+    });
+
+    // Drain all events and verify no ExitRequest was emitted
+    let mut events = Vec::new();
+    while let Ok(ev) = rx.try_recv() {
+        events.push(ev);
+    }
+
+    let has_exit_request = events.iter().any(|ev| matches!(ev, AppEvent::ExitRequest));
+    assert!(
+        !has_exit_request,
+        "ShutdownComplete in initial_messages should not trigger exit; got: {events:?}"
+    );
 }

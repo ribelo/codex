@@ -28,6 +28,7 @@ use codex_core::config::ConfigOverrides;
 use codex_core::config::edit::ConfigEditsBuilder;
 #[cfg(target_os = "windows")]
 use codex_core::features::Feature;
+use codex_core::protocol::Event;
 use codex_core::protocol::EventMsg;
 use codex_core::protocol::FinalOutput;
 use codex_core::protocol::Op;
@@ -47,6 +48,7 @@ use ratatui::style::Stylize;
 use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Wrap;
+use std::ops::ControlFlow;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -161,6 +163,23 @@ enum ShutdownCurrentConversationMode {
 }
 
 impl App {
+    fn handle_shutdown_complete_event(&mut self, event: Event) -> ControlFlow<bool, Event> {
+        if matches!(&event.msg, EventMsg::ShutdownComplete) {
+            if self.exit_on_shutdown_complete {
+                self.exit_on_shutdown_complete = false;
+                self.chat_widget.handle_codex_event(event);
+                return ControlFlow::Break(false);
+            }
+
+            if self.suppress_shutdown_complete {
+                self.suppress_shutdown_complete = false;
+                return ControlFlow::Break(true);
+            }
+        }
+
+        ControlFlow::Continue(event)
+    }
+
     async fn shutdown_current_conversation(&mut self, mode: ShutdownCurrentConversationMode) {
         if let Some(conversation_id) = self.chat_widget.conversation_id() {
             match mode {
@@ -731,16 +750,10 @@ impl App {
                 }
             }
             AppEvent::CodexEvent(event) => {
-                if self.exit_on_shutdown_complete && matches!(event.msg, EventMsg::ShutdownComplete)
-                {
-                    return Ok(false);
-                }
-                if self.suppress_shutdown_complete
-                    && matches!(event.msg, EventMsg::ShutdownComplete)
-                {
-                    self.suppress_shutdown_complete = false;
-                    return Ok(true);
-                }
+                let event = match self.handle_shutdown_complete_event(event) {
+                    ControlFlow::Break(keep_running) => return Ok(keep_running),
+                    ControlFlow::Continue(event) => event,
+                };
                 if let EventMsg::HandoffDraft(event) = &event.msg {
                     // Create the draft and run the review prompt
                     let draft = codex_protocol::protocol::HandoffDraft {
@@ -1591,6 +1604,44 @@ mod tests {
             Ok(other) => panic!("expected Op::Shutdown, got {other:?}"),
             Err(_) => panic!("expected shutdown op to be sent"),
         }
+    }
+
+    #[test]
+    fn shutdown_complete_exits_immediately_when_requested() {
+        let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels();
+
+        let conversation_id = ConversationId::new();
+        let event = SessionConfiguredEvent {
+            session_id: conversation_id,
+            model: "gpt-test".to_string(),
+            model_provider_id: "test-provider".to_string(),
+            approval_policy: AskForApproval::Never,
+            sandbox_policy: SandboxPolicy::ReadOnly,
+            cwd: PathBuf::from("/home/user/project"),
+            reasoning_effort: None,
+            history_log_id: 0,
+            history_entry_count: 0,
+            initial_messages: None,
+            skill_load_outcome: None,
+            rollout_path: PathBuf::new(),
+        };
+
+        app.chat_widget.handle_codex_event(Event {
+            id: String::new(),
+            msg: EventMsg::SessionConfigured(event),
+        });
+
+        while app_event_rx.try_recv().is_ok() {}
+        app.exit_on_shutdown_complete = true;
+
+        let flow = app.handle_shutdown_complete_event(Event {
+            id: String::new(),
+            msg: EventMsg::ShutdownComplete,
+        });
+
+        assert!(matches!(flow, std::ops::ControlFlow::Break(false)));
+        assert!(!app.exit_on_shutdown_complete);
+        assert!(app.chat_widget.conversation_id().is_some());
     }
 
     #[test]

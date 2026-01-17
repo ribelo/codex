@@ -17,7 +17,6 @@ pub(crate) use error::map_session_init_error;
 pub use list::find_conversation_path_by_id_str;
 pub use list::list_session_children;
 pub use recorder::RolloutRecorder;
-pub use recorder::RolloutRecorderParams;
 
 #[cfg(test)]
 pub mod tests;

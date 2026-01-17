@@ -191,7 +191,7 @@ For all of testing, running, building, and formatting, do not attempt to fix unr
 
 You have the ability to call tools in parallel by responding with multiple tool blocks in a single message. When you need to run multiple tools, run them in parallel ONLY if they are independent operations that are safe to run in parallel. If the tool calls must be run in sequence because there are logical dependencies between the operations, wait for the result of the tool that is a dependency before calling any dependent tools.
 
-In general, it is safe and encouraged to run read-only tools in parallel, including (but not limited to) `rg`, `cat`, `head`, `tail`, `ls`, and `git show`. Do not make multiple edits to the same file in parallel.
+In general, it is safe and encouraged to run read-only tools in parallel, including (but not limited to) `rg`, `rg --files`, `cat`, `head`, `tail`, `sed -n`, `nl`, `wc`, `ls`, `find`, `git status`, `git diff`, `git log`, and `git show`. Do not make multiple edits to the same file in parallel.
 
 ## Shell commands
 

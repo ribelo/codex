@@ -70,6 +70,8 @@ use codex_core::skills::model::SkillMetadata;
 use codex_protocol::ConversationId;
 use codex_protocol::account::PlanType;
 use codex_protocol::approvals::ElicitationRequestEvent;
+use codex_protocol::models::FunctionCallOutputContentItem;
+use codex_protocol::models::ResponseItem;
 use codex_protocol::parse_command::ParsedCommand;
 use codex_protocol::user_input::UserInput;
 use crossterm::event::KeyCode;
@@ -152,6 +154,13 @@ struct RunningCommand {
     command: Vec<String>,
     parsed_cmd: Vec<ParsedCommand>,
     source: ExecCommandSource,
+}
+
+/// Information about a function call stashed during replay, waiting for output.
+struct PendingReplayCall {
+    seq: i64,
+    name: String,
+    input: String,
 }
 
 struct UnifiedExecSessionSummary {
@@ -359,6 +368,9 @@ pub(crate) struct ChatWidget {
     subagent_states: HashMap<String, Arc<std::sync::Mutex<history_cell::SubagentState>>>,
     // Active worker cells that should be rendered dynamically (not flushed to history until complete)
     active_subagent_cells: HashMap<String, SubagentTaskCell>,
+    // Pending function calls during replay, waiting for output
+    pending_replay_calls: HashMap<String, PendingReplayCall>,
+    pending_replay_call_seq: i64,
 }
 
 struct UserMessage {
@@ -393,6 +405,91 @@ fn create_initial_user_message(text: String, image_paths: Vec<PathBuf>) -> Optio
 }
 
 impl ChatWidget {
+    fn on_raw_response_item_replay(&mut self, item: ResponseItem) {
+        match item {
+            ResponseItem::FunctionCall {
+                name,
+                arguments,
+                call_id,
+                ..
+            } => {
+                let seq = self.pending_replay_call_seq;
+                self.pending_replay_call_seq += 1;
+                self.pending_replay_calls.insert(
+                    call_id,
+                    PendingReplayCall {
+                        seq,
+                        name,
+                        input: arguments,
+                    },
+                );
+            }
+            ResponseItem::CustomToolCall {
+                call_id,
+                name,
+                input,
+                ..
+            } => {
+                let seq = self.pending_replay_call_seq;
+                self.pending_replay_call_seq += 1;
+                self.pending_replay_calls
+                    .insert(call_id, PendingReplayCall { seq, name, input });
+            }
+            ResponseItem::FunctionCallOutput { call_id, output } => {
+                if let Some(call) = self.pending_replay_calls.remove(&call_id) {
+                    self.add_to_history(history_cell::new_replayed_tool_interaction(
+                        call.name,
+                        call.input,
+                        Self::format_replayed_tool_output(&output),
+                    ));
+                } else {
+                    // Orphaned output
+                    self.add_to_history(history_cell::new_replayed_tool_interaction(
+                        "unknown_tool".to_string(),
+                        "{}".to_string(),
+                        Self::format_replayed_tool_output(&output),
+                    ));
+                }
+            }
+            ResponseItem::CustomToolCallOutput { call_id, output } => {
+                if let Some(call) = self.pending_replay_calls.remove(&call_id) {
+                    self.add_to_history(history_cell::new_replayed_tool_interaction(
+                        call.name, call.input, output,
+                    ));
+                } else {
+                    self.add_to_history(history_cell::new_replayed_tool_interaction(
+                        "unknown_tool".to_string(),
+                        "{}".to_string(),
+                        output,
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn format_replayed_tool_output(
+        output: &codex_protocol::models::FunctionCallOutputPayload,
+    ) -> String {
+        if !output.content.is_empty() {
+            return output.content.clone();
+        }
+        let Some(items) = &output.content_items else {
+            return String::new();
+        };
+        let mut out = String::new();
+        for (idx, item) in items.iter().enumerate() {
+            if idx > 0 {
+                out.push('\n');
+            }
+            match item {
+                FunctionCallOutputContentItem::InputText { text } => out.push_str(text),
+                FunctionCallOutputContentItem::InputImage { .. } => out.push_str("<image output>"),
+            }
+        }
+        out
+    }
+
     fn flush_answer_stream_with_separator(&mut self) {
         if let Some(mut controller) = self.stream_controller.take()
             && let Some(cell) = controller.finalize()
@@ -1560,6 +1657,8 @@ impl ChatWidget {
             available_agents,
             subagent_states: HashMap::new(),
             active_subagent_cells: HashMap::new(),
+            pending_replay_calls: HashMap::new(),
+            pending_replay_call_seq: 0,
         };
 
         widget.prefetch_rate_limits();
@@ -1614,6 +1713,8 @@ impl ChatWidget {
             active_cell: None,
             subagent_states: HashMap::new(),
             active_subagent_cells: HashMap::new(),
+            pending_replay_calls: HashMap::new(),
+            pending_replay_call_seq: 0,
             config,
             model_family,
             auth_manager,
@@ -2201,6 +2302,17 @@ impl ChatWidget {
             // `id: None` indicates a synthetic/fake id coming from replay.
             self.dispatch_event_msg(None, msg, true);
         }
+
+        if self.pending_replay_calls.is_empty() {
+            return;
+        }
+
+        let mut pending: Vec<PendingReplayCall> =
+            self.pending_replay_calls.drain().map(|(_, v)| v).collect();
+        pending.sort_by_key(|call| call.seq);
+        for call in pending {
+            self.add_to_history(history_cell::new_replayed_tool_call(call.name, call.input));
+        }
     }
 
     pub(crate) fn handle_codex_event(&mut self, event: Event) {
@@ -2294,7 +2406,11 @@ impl ChatWidget {
             EventMsg::GetHistoryEntryResponse(ev) => self.on_get_history_entry_response(ev),
             EventMsg::McpListToolsResponse(ev) => self.on_list_mcp_tools(ev),
             EventMsg::ListCustomPromptsResponse(ev) => self.on_list_custom_prompts(ev),
-            EventMsg::ShutdownComplete => self.on_shutdown_complete(),
+            EventMsg::ShutdownComplete => {
+                if !from_replay {
+                    self.on_shutdown_complete();
+                }
+            }
             EventMsg::TurnDiff(TurnDiffEvent { unified_diff }) => self.on_turn_diff(unified_diff),
             EventMsg::DeprecationNotice(ev) => self.on_deprecation_notice(ev),
             EventMsg::BackgroundEvent(BackgroundEventEvent { message }) => {
@@ -2318,7 +2434,11 @@ impl ChatWidget {
                 let tokens_before = ev.tokens_before;
                 self.on_agent_message(format!("Context compacted (was {tokens_before} tokens)"))
             }
-            EventMsg::RawResponseItem(_) => {}
+            EventMsg::RawResponseItem(ev) => {
+                if from_replay {
+                    self.on_raw_response_item_replay(ev.item);
+                }
+            }
             EventMsg::SubagentEvent(payload) => self.on_subagent_event(payload),
             EventMsg::HandoffDraft(_) | EventMsg::HandoffCompleted(_) => {}
         }

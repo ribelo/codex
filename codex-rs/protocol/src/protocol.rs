@@ -1183,37 +1183,76 @@ impl InitialHistory {
     }
 
     pub fn get_event_msgs(&self) -> Option<Vec<EventMsg>> {
-        match self {
-            InitialHistory::New => None,
-            InitialHistory::Resumed(resumed) => Some(
-                resumed
-                    .history
-                    .iter()
-                    .filter_map(|ri| match ri {
-                        RolloutItem::EventMsg(ev) => Some(ev.clone()),
-                        _ => None,
-                    })
-                    .collect(),
-            ),
-            InitialHistory::Forked(items) => Some(
-                items
-                    .iter()
-                    .filter_map(|ri| match ri {
-                        RolloutItem::EventMsg(ev) => Some(ev.clone()),
-                        _ => None,
-                    })
-                    .collect(),
-            ),
-            InitialHistory::Handoff { context, .. } => Some(
-                context
-                    .iter()
-                    .filter_map(|ri| match ri {
-                        RolloutItem::EventMsg(ev) => Some(ev.clone()),
-                        _ => None,
-                    })
-                    .collect(),
-            ),
+        let items = match self {
+            InitialHistory::New => return None,
+            InitialHistory::Resumed(resumed) => &resumed.history,
+            InitialHistory::Forked(items) => items,
+            InitialHistory::Handoff { context, .. } => context,
+        };
+
+        #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+        enum RawToolItemKind {
+            FunctionCall,
+            FunctionCallOutput,
+            CustomToolCall,
+            CustomToolCallOutput,
         }
+
+        #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+        struct RawToolItemKey {
+            kind: RawToolItemKind,
+            call_id: String,
+        }
+
+        fn raw_tool_item_key(item: &ResponseItem) -> Option<RawToolItemKey> {
+            match item {
+                ResponseItem::FunctionCall { call_id, .. } => Some(RawToolItemKey {
+                    kind: RawToolItemKind::FunctionCall,
+                    call_id: call_id.clone(),
+                }),
+                ResponseItem::FunctionCallOutput { call_id, .. } => Some(RawToolItemKey {
+                    kind: RawToolItemKind::FunctionCallOutput,
+                    call_id: call_id.clone(),
+                }),
+                ResponseItem::CustomToolCall { call_id, .. } => Some(RawToolItemKey {
+                    kind: RawToolItemKind::CustomToolCall,
+                    call_id: call_id.clone(),
+                }),
+                ResponseItem::CustomToolCallOutput { call_id, .. } => Some(RawToolItemKey {
+                    kind: RawToolItemKind::CustomToolCallOutput,
+                    call_id: call_id.clone(),
+                }),
+                _ => None,
+            }
+        }
+
+        let mut raw_tool_items: std::collections::HashSet<RawToolItemKey> =
+            std::collections::HashSet::new();
+        for rollout_item in items {
+            if let RolloutItem::EventMsg(EventMsg::RawResponseItem(raw)) = rollout_item
+                && let Some(key) = raw_tool_item_key(&raw.item)
+            {
+                raw_tool_items.insert(key);
+            }
+        }
+
+        let mut events = Vec::new();
+        for item in items {
+            match item {
+                RolloutItem::EventMsg(ev) => events.push(ev.clone()),
+                RolloutItem::ResponseItem(item) => {
+                    if let Some(key) = raw_tool_item_key(item)
+                        && !raw_tool_items.contains(&key)
+                    {
+                        events.push(EventMsg::RawResponseItem(RawResponseItemEvent {
+                            item: item.clone(),
+                        }));
+                    }
+                }
+                _ => {}
+            }
+        }
+        Some(events)
     }
 }
 
@@ -1984,10 +2023,70 @@ pub enum EntryKind {
 mod tests {
     use super::*;
 
+    use crate::models::FunctionCallOutputPayload;
     use anyhow::Result;
     use pretty_assertions::assert_eq;
     use serde_json::json;
     use tempfile::NamedTempFile;
+
+    #[test]
+    fn initial_history_does_not_duplicate_raw_tool_items() {
+        let call_id = "call-1".to_string();
+        let call = ResponseItem::FunctionCall {
+            id: None,
+            name: "shell_command".to_string(),
+            arguments: r#"{"command":"ls"}"#.to_string(),
+            call_id: call_id.clone(),
+        };
+        let output = ResponseItem::FunctionCallOutput {
+            call_id: call_id.clone(),
+            output: FunctionCallOutputPayload {
+                content: "ok".to_string(),
+                ..Default::default()
+            },
+        };
+
+        let history = InitialHistory::Forked(vec![
+            RolloutItem::ResponseItem(call.clone()),
+            RolloutItem::EventMsg(EventMsg::RawResponseItem(RawResponseItemEvent {
+                item: call,
+            })),
+            RolloutItem::ResponseItem(output.clone()),
+            RolloutItem::EventMsg(EventMsg::RawResponseItem(RawResponseItemEvent {
+                item: output,
+            })),
+        ]);
+
+        let events = history.get_event_msgs().unwrap();
+        assert_eq!(events.len(), 2);
+
+        match &events[0] {
+            EventMsg::RawResponseItem(RawResponseItemEvent {
+                item:
+                    ResponseItem::FunctionCall {
+                        name,
+                        arguments,
+                        call_id: got_call_id,
+                        ..
+                    },
+            }) => {
+                assert_eq!(name, "shell_command");
+                assert_eq!(arguments, r#"{"command":"ls"}"#);
+                assert_eq!(got_call_id, &call_id);
+            }
+            other => panic!("expected FunctionCall raw response item, got: {other:?}"),
+        }
+
+        match &events[1] {
+            EventMsg::RawResponseItem(RawResponseItemEvent {
+                item: ResponseItem::FunctionCallOutput { call_id, output },
+            }) => {
+                assert_eq!(call_id, "call-1");
+                assert_eq!(output.content, "ok");
+            }
+            other => panic!("expected FunctionCallOutput raw response item, got: {other:?}"),
+        }
+    }
 
     /// Serialize Event to verify that its JSON representation has the expected
     /// amount of nesting.
