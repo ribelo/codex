@@ -125,12 +125,9 @@
 //! - If repeated space events are seen before timeout, we proceed with hold-to-talk.
 //! - While recording, repeated space events keep the recording alive; if they stop for a short
 //!   window, we stop and transcribe.
-use crate::bottom_pane::footer::mode_indicator_line;
 use crate::key_hint;
 use crate::key_hint::KeyBinding;
 use crate::key_hint::has_ctrl_or_alt;
-use crate::line_truncation::truncate_line_with_ellipsis_if_overflow;
-use crate::ui_consts::FOOTER_INDENT_COLS;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
@@ -157,24 +154,13 @@ use super::file_search_popup::FileSearchPopup;
 use super::footer::CollaborationModeIndicator;
 use super::footer::FooterMode;
 use super::footer::FooterProps;
-use super::footer::SummaryLeft;
-use super::footer::can_show_left_with_context;
-use super::footer::context_window_line;
 use super::footer::esc_hint_mode;
 use super::footer::footer_height;
-use super::footer::footer_hint_items_width;
-use super::footer::footer_line_width;
 use super::footer::inset_footer_hint_area;
-use super::footer::max_left_width_for_right;
-use super::footer::passive_footer_status_line;
-use super::footer::render_context_right;
-use super::footer::render_footer_from_props;
+use super::footer::render_footer;
 use super::footer::render_footer_hint_items;
-use super::footer::render_footer_line;
 use super::footer::reset_mode_after_activity;
-use super::footer::single_line_footer_layout;
 use super::footer::toggle_shortcut_mode;
-use super::footer::uses_passive_footer_status_layout;
 use super::paste_burst::CharDecision;
 use super::paste_burst::PasteBurst;
 use super::skill_popup::MentionItem;
@@ -196,6 +182,7 @@ use crate::style::user_message_style;
 use codex_protocol::custom_prompts::CustomPrompt;
 use codex_protocol::custom_prompts::PROMPTS_CMD_PREFIX;
 use codex_protocol::models::local_image_label_text;
+use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::user_input::ByteRange;
 use codex_protocol::user_input::MAX_USER_INPUT_TEXT_CHARS;
 use codex_protocol::user_input::TextElement;
@@ -393,6 +380,9 @@ pub(crate) struct ChatComposer {
     #[cfg(not(target_os = "linux"))]
     next_element_id: u64,
     context_window_used_tokens: Option<i64>,
+    model: Option<String>,
+    reasoning_effort: Option<String>,
+    sandbox_policy: SandboxPolicy,
     skills: Option<Vec<SkillMetadata>>,
     plugins: Option<Vec<PluginCapabilitySummary>>,
     connectors_snapshot: Option<ConnectorsSnapshot>,
@@ -515,6 +505,9 @@ impl ChatComposer {
             #[cfg(not(target_os = "linux"))]
             next_element_id: 0,
             context_window_used_tokens: None,
+            model: None,
+            reasoning_effort: None,
+            sandbox_policy: SandboxPolicy::new_read_only_policy(),
             skills: None,
             plugins: None,
             connectors_snapshot: None,
@@ -3198,6 +3191,9 @@ impl ChatComposer {
             collaboration_modes_enabled: self.collaboration_modes_enabled,
             is_wsl,
             context_window_percent: self.context_window_percent,
+            model: self.model.clone(),
+            reasoning_effort: self.reasoning_effort.clone(),
+            sandbox_policy: self.sandbox_policy.clone(),
             context_window_used_tokens: self.context_window_used_tokens,
             status_line_value: self.status_line_value.clone(),
             status_line_enabled: self.status_line_enabled,
@@ -3723,6 +3719,18 @@ impl ChatComposer {
         self.context_window_used_tokens = used_tokens;
     }
 
+    pub(crate) fn set_model(&mut self, model: Option<String>) {
+        self.model = model;
+    }
+
+    pub(crate) fn set_reasoning_effort(&mut self, effort: Option<String>) {
+        self.reasoning_effort = effort;
+    }
+
+    pub(crate) fn set_sandbox_policy(&mut self, policy: SandboxPolicy) {
+        self.sandbox_policy = policy;
+    }
+
     pub(crate) fn set_esc_backtrack_hint(&mut self, show: bool) {
         self.esc_backtrack_hint = show;
         if show {
@@ -4187,22 +4195,6 @@ impl ChatComposer {
             }
             ActivePopup::None => {
                 let footer_props = self.footer_props();
-                let show_cycle_hint =
-                    !footer_props.is_task_running && self.collaboration_mode_indicator.is_some();
-                let show_shortcuts_hint = match footer_props.mode {
-                    FooterMode::ComposerEmpty => !self.is_in_paste_burst(),
-                    FooterMode::ComposerHasDraft => false,
-                    FooterMode::QuitShortcutReminder
-                    | FooterMode::ShortcutOverlay
-                    | FooterMode::EscHint => false,
-                };
-                let show_queue_hint = match footer_props.mode {
-                    FooterMode::ComposerHasDraft => footer_props.is_task_running,
-                    FooterMode::QuitShortcutReminder
-                    | FooterMode::ComposerEmpty
-                    | FooterMode::ShortcutOverlay
-                    | FooterMode::EscHint => false,
-                };
                 let custom_height = self.custom_footer_height();
                 let footer_hint_height =
                     custom_height.unwrap_or_else(|| footer_height(&footer_props));
@@ -4369,24 +4361,8 @@ impl ChatComposer {
                     }
                 } else if let Some(items) = self.footer_hint_override.as_ref() {
                     render_footer_hint_items(hint_rect, buf, items);
-                } else if status_line_active {
-                    if let Some(line) = truncated_status_line {
-                        render_footer_line(hint_rect, buf, line);
-                    }
                 } else {
-                    render_footer_from_props(
-                        hint_rect,
-                        buf,
-                        &footer_props,
-                        self.collaboration_mode_indicator,
-                        show_cycle_hint,
-                        show_shortcuts_hint,
-                        show_queue_hint,
-                    );
-                }
-
-                if show_right && let Some(line) = &right_line {
-                    render_context_right(hint_rect, buf, line);
+                    render_footer(hint_rect, buf, footer_props);
                 }
             }
         }
@@ -4743,181 +4719,6 @@ mod tests {
         snapshot_composer_state("footer_mode_hidden_while_typing", true, |composer| {
             type_chars_humanlike(composer, &['h']);
         });
-    }
-
-    #[test]
-    fn footer_collapse_snapshots() {
-        fn setup_collab_footer(
-            composer: &mut ChatComposer,
-            context_percent: i64,
-            indicator: Option<CollaborationModeIndicator>,
-        ) {
-            composer.set_collaboration_modes_enabled(true);
-            composer.set_collaboration_mode_indicator(indicator);
-            composer.set_context_window(Some(context_percent), None);
-        }
-
-        // Empty textarea, agent idle: shortcuts hint can show, and cycle hint is hidden.
-        snapshot_composer_state_with_width("footer_collapse_empty_full", 120, true, |composer| {
-            setup_collab_footer(composer, 100, None);
-        });
-        snapshot_composer_state_with_width(
-            "footer_collapse_empty_mode_cycle_with_context",
-            60,
-            true,
-            |composer| {
-                setup_collab_footer(composer, 100, None);
-            },
-        );
-        snapshot_composer_state_with_width(
-            "footer_collapse_empty_mode_cycle_without_context",
-            44,
-            true,
-            |composer| {
-                setup_collab_footer(composer, 100, None);
-            },
-        );
-        snapshot_composer_state_with_width(
-            "footer_collapse_empty_mode_only",
-            26,
-            true,
-            |composer| {
-                setup_collab_footer(composer, 100, None);
-            },
-        );
-
-        // Empty textarea, plan mode idle: shortcuts hint and cycle hint are available.
-        snapshot_composer_state_with_width(
-            "footer_collapse_plan_empty_full",
-            120,
-            true,
-            |composer| {
-                setup_collab_footer(composer, 100, Some(CollaborationModeIndicator::Plan));
-            },
-        );
-        snapshot_composer_state_with_width(
-            "footer_collapse_plan_empty_mode_cycle_with_context",
-            60,
-            true,
-            |composer| {
-                setup_collab_footer(composer, 100, Some(CollaborationModeIndicator::Plan));
-            },
-        );
-        snapshot_composer_state_with_width(
-            "footer_collapse_plan_empty_mode_cycle_without_context",
-            44,
-            true,
-            |composer| {
-                setup_collab_footer(composer, 100, Some(CollaborationModeIndicator::Plan));
-            },
-        );
-        snapshot_composer_state_with_width(
-            "footer_collapse_plan_empty_mode_only",
-            26,
-            true,
-            |composer| {
-                setup_collab_footer(composer, 100, Some(CollaborationModeIndicator::Plan));
-            },
-        );
-
-        // Textarea has content, agent running: queue hint is shown.
-        snapshot_composer_state_with_width("footer_collapse_queue_full", 120, true, |composer| {
-            setup_collab_footer(composer, 98, None);
-            composer.set_task_running(true);
-            composer.set_text_content("Test".to_string(), Vec::new(), Vec::new());
-        });
-        snapshot_composer_state_with_width(
-            "footer_collapse_queue_short_with_context",
-            50,
-            true,
-            |composer| {
-                setup_collab_footer(composer, 98, None);
-                composer.set_task_running(true);
-                composer.set_text_content("Test".to_string(), Vec::new(), Vec::new());
-            },
-        );
-        snapshot_composer_state_with_width(
-            "footer_collapse_queue_message_without_context",
-            40,
-            true,
-            |composer| {
-                setup_collab_footer(composer, 98, None);
-                composer.set_task_running(true);
-                composer.set_text_content("Test".to_string(), Vec::new(), Vec::new());
-            },
-        );
-        snapshot_composer_state_with_width(
-            "footer_collapse_queue_short_without_context",
-            30,
-            true,
-            |composer| {
-                setup_collab_footer(composer, 98, None);
-                composer.set_task_running(true);
-                composer.set_text_content("Test".to_string(), Vec::new(), Vec::new());
-            },
-        );
-        snapshot_composer_state_with_width(
-            "footer_collapse_queue_mode_only",
-            20,
-            true,
-            |composer| {
-                setup_collab_footer(composer, 98, None);
-                composer.set_task_running(true);
-                composer.set_text_content("Test".to_string(), Vec::new(), Vec::new());
-            },
-        );
-
-        // Textarea has content, plan mode active, agent running: queue hint + mode.
-        snapshot_composer_state_with_width(
-            "footer_collapse_plan_queue_full",
-            120,
-            true,
-            |composer| {
-                setup_collab_footer(composer, 98, Some(CollaborationModeIndicator::Plan));
-                composer.set_task_running(true);
-                composer.set_text_content("Test".to_string(), Vec::new(), Vec::new());
-            },
-        );
-        snapshot_composer_state_with_width(
-            "footer_collapse_plan_queue_short_with_context",
-            50,
-            true,
-            |composer| {
-                setup_collab_footer(composer, 98, Some(CollaborationModeIndicator::Plan));
-                composer.set_task_running(true);
-                composer.set_text_content("Test".to_string(), Vec::new(), Vec::new());
-            },
-        );
-        snapshot_composer_state_with_width(
-            "footer_collapse_plan_queue_message_without_context",
-            40,
-            true,
-            |composer| {
-                setup_collab_footer(composer, 98, Some(CollaborationModeIndicator::Plan));
-                composer.set_task_running(true);
-                composer.set_text_content("Test".to_string(), Vec::new(), Vec::new());
-            },
-        );
-        snapshot_composer_state_with_width(
-            "footer_collapse_plan_queue_short_without_context",
-            30,
-            true,
-            |composer| {
-                setup_collab_footer(composer, 98, Some(CollaborationModeIndicator::Plan));
-                composer.set_task_running(true);
-                composer.set_text_content("Test".to_string(), Vec::new(), Vec::new());
-            },
-        );
-        snapshot_composer_state_with_width(
-            "footer_collapse_plan_queue_mode_only",
-            20,
-            true,
-            |composer| {
-                setup_collab_footer(composer, 98, Some(CollaborationModeIndicator::Plan));
-                composer.set_task_running(true);
-                composer.set_text_content("Test".to_string(), Vec::new(), Vec::new());
-            },
-        );
     }
 
     #[test]

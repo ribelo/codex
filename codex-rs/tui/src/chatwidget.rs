@@ -3754,6 +3754,7 @@ impl ChatWidget {
         widget
             .bottom_pane
             .set_connectors_enabled(widget.connectors_enabled());
+        widget.sync_bottom_pane_footer_state();
 
         widget.refresh_terminal_title();
 
@@ -3944,7 +3945,7 @@ impl ChatWidget {
         widget
             .bottom_pane
             .set_connectors_enabled(widget.connectors_enabled());
-        widget.refresh_terminal_title();
+        widget.sync_bottom_pane_footer_state();
         widget.refresh_terminal_title();
 
         widget
@@ -4145,7 +4146,7 @@ impl ChatWidget {
         widget
             .bottom_pane
             .set_connectors_enabled(widget.connectors_enabled());
-        widget.refresh_terminal_title();
+        widget.sync_bottom_pane_footer_state();
         widget.refresh_terminal_title();
 
         widget
@@ -7775,6 +7776,7 @@ impl ChatWidget {
     #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     pub(crate) fn set_sandbox_policy(&mut self, policy: SandboxPolicy) -> ConstraintResult<()> {
         self.config.permissions.sandbox_policy.set(policy)?;
+        self.sync_bottom_pane_footer_state();
         Ok(())
     }
 
@@ -7904,6 +7906,7 @@ impl ChatWidget {
             // Plan reasoning is controlled by the Plan preset and Plan-only override updates.
             mask.reasoning_effort = Some(effort);
         }
+        self.sync_bottom_pane_footer_state();
     }
 
     /// Set the personality in the widget's config copy.
@@ -8134,9 +8137,27 @@ impl ChatWidget {
     fn refresh_model_display(&mut self) {
         let effective = self.effective_collaboration_mode();
         self.session_header.set_model(effective.model());
+        self.sync_bottom_pane_footer_state();
         // Keep composer paste affordances aligned with the currently effective model.
         self.sync_image_paste_enabled();
         self.refresh_terminal_title();
+    }
+
+    fn sync_bottom_pane_footer_state(&mut self) {
+        let current_model = self.current_model();
+        let model = (!current_model.is_empty())
+            .then(|| format!("{}/{current_model}", self.config.model_provider_id));
+        let reasoning_effort = if current_model.starts_with("codex-auto-") {
+            None
+        } else {
+            self.effective_reasoning_effort()
+                .map(|effort| effort.to_string())
+        };
+
+        self.bottom_pane.set_model(model);
+        self.bottom_pane.set_reasoning_effort(reasoning_effort);
+        self.bottom_pane
+            .set_sandbox_policy(self.config.permissions.sandbox_policy.get().clone());
     }
 
     fn model_display_name(&self) -> &str {
