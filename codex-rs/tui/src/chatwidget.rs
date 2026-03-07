@@ -3183,9 +3183,13 @@ impl ChatWidget {
         widget
             .bottom_pane
             .set_audio_device_selection_enabled(widget.realtime_audio_device_selection_enabled());
-        widget
-            .bottom_pane
-            .set_status_line_enabled(!widget.configured_status_line_items().is_empty());
+        widget.bottom_pane.set_status_line_enabled(
+            widget
+                .config
+                .tui_status_line
+                .as_ref()
+                .is_some_and(|items| !items.is_empty()),
+        );
         widget.bottom_pane.set_collaboration_modes_enabled(true);
         widget.sync_fast_command_enabled();
         widget.sync_personality_command_enabled();
@@ -3205,6 +3209,7 @@ impl ChatWidget {
         widget
             .bottom_pane
             .set_connectors_enabled(widget.config.features.enabled(Feature::Apps));
+        widget.sync_bottom_pane_footer_state();
 
         widget
     }
@@ -3365,9 +3370,13 @@ impl ChatWidget {
         widget
             .bottom_pane
             .set_audio_device_selection_enabled(widget.realtime_audio_device_selection_enabled());
-        widget
-            .bottom_pane
-            .set_status_line_enabled(!widget.configured_status_line_items().is_empty());
+        widget.bottom_pane.set_status_line_enabled(
+            widget
+                .config
+                .tui_status_line
+                .as_ref()
+                .is_some_and(|items| !items.is_empty()),
+        );
         widget.bottom_pane.set_collaboration_modes_enabled(true);
         widget.sync_fast_command_enabled();
         widget.sync_personality_command_enabled();
@@ -3377,6 +3386,7 @@ impl ChatWidget {
         widget
             .bottom_pane
             .set_connectors_enabled(widget.config.features.enabled(Feature::Apps));
+        widget.sync_bottom_pane_footer_state();
 
         widget
     }
@@ -3539,9 +3549,13 @@ impl ChatWidget {
         widget
             .bottom_pane
             .set_audio_device_selection_enabled(widget.realtime_audio_device_selection_enabled());
-        widget
-            .bottom_pane
-            .set_status_line_enabled(!widget.configured_status_line_items().is_empty());
+        widget.bottom_pane.set_status_line_enabled(
+            widget
+                .config
+                .tui_status_line
+                .as_ref()
+                .is_some_and(|items| !items.is_empty()),
+        );
         widget.bottom_pane.set_collaboration_modes_enabled(true);
         widget.sync_fast_command_enabled();
         widget.sync_personality_command_enabled();
@@ -3560,6 +3574,7 @@ impl ChatWidget {
         widget
             .bottom_pane
             .set_connectors_enabled(widget.config.features.enabled(Feature::Apps));
+        widget.sync_bottom_pane_footer_state();
 
         widget
     }
@@ -7133,6 +7148,7 @@ impl ChatWidget {
     #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     pub(crate) fn set_sandbox_policy(&mut self, policy: SandboxPolicy) -> ConstraintResult<()> {
         self.config.permissions.sandbox_policy.set(policy)?;
+        self.sync_bottom_pane_footer_state();
         Ok(())
     }
 
@@ -7257,6 +7273,7 @@ impl ChatWidget {
             // Plan reasoning is controlled by the Plan preset and Plan-only override updates.
             mask.reasoning_effort = Some(effort);
         }
+        self.sync_bottom_pane_footer_state();
     }
 
     /// Set the personality in the widget's config copy.
@@ -7479,8 +7496,26 @@ impl ChatWidget {
     fn refresh_model_display(&mut self) {
         let effective = self.effective_collaboration_mode();
         self.session_header.set_model(effective.model());
+        self.sync_bottom_pane_footer_state();
         // Keep composer paste affordances aligned with the currently effective model.
         self.sync_image_paste_enabled();
+    }
+
+    fn sync_bottom_pane_footer_state(&mut self) {
+        let current_model = self.current_model();
+        let model = (!current_model.is_empty())
+            .then(|| format!("{}/{current_model}", self.config.model_provider_id));
+        let reasoning_effort = if current_model.starts_with("codex-auto-") {
+            None
+        } else {
+            self.effective_reasoning_effort()
+                .map(|effort| effort.to_string())
+        };
+
+        self.bottom_pane.set_model(model);
+        self.bottom_pane.set_reasoning_effort(reasoning_effort);
+        self.bottom_pane
+            .set_sandbox_policy(self.config.permissions.sandbox_policy.get().clone());
     }
 
     fn model_display_name(&self) -> &str {

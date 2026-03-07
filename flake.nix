@@ -59,6 +59,9 @@
             inherit system;
             overlays = [ rust-overlay.overlays.default ];
           };
+          shellPkgConfigDeps =
+            [ pkgs.openssl ]
+            ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.libcap ];
           rust = pkgs.rust-bin.stable.latest.default.override {
             extensions = [ "rust-src" "rust-analyzer" ];
           };
@@ -72,8 +75,9 @@
               pkgs.cmake
               pkgs.llvmPackages.clang
               pkgs.llvmPackages.libclang.lib
-            ];
-            PKG_CONFIG_PATH = "${pkgs.openssl.dev}/lib/pkgconfig";
+            ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.libcap ];
+            PKG_CONFIG_PATH =
+              pkgs.lib.makeSearchPathOutput "dev" "lib/pkgconfig" shellPkgConfigDeps;
             LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
             # Use clang for BoringSSL compilation (avoids GCC 15 warnings-as-errors)
             shellHook = ''
