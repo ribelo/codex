@@ -1,5 +1,87 @@
 # Rust/codex-rs
 
+## Reference Code
+
+- Canonical upstream reference: `upstream/main` from `openai/codex`.
+- When reconciling fork behavior, prefer upstream implementations unless this repo's instructions or user requirements explicitly override them.
+- Before introducing a new pattern, check the neighboring crate or module for the established local convention and follow it.
+
+## Issue Tracking (bd)
+
+- Significant work requires a `bd` issue. Trivial typo, formatting, or minor documentation-only fixes do not.
+- `bd` is the single source of truth for tasks, bugs, and follow-up work. Do not use markdown TODO lists or external trackers.
+- Run `bd prime` at session start when you need the current workflow context, or install hooks with `bd hooks install` for auto-injection.
+- Keep issue status current while working: claim with `in_progress`, close with a reason when complete.
+
+### Task Sizing
+
+- Keep tasks small enough to finish in a few hours of focused work.
+- Split oversized work before implementation; do not hide multiple deliverables inside one issue.
+- Prefer epics with child tasks when the scope will span multiple sessions or areas.
+
+### Definition of Ready (DoR)
+
+Before an issue moves to `in_progress`:
+
+1. The user-visible problem or outcome is clear.
+2. Blockers, dependencies, and missing context are resolved.
+3. The implementation boundary is understood well enough to avoid blind churn.
+4. The acceptance criteria are concrete enough to verify.
+
+### Definition of Done (DoD)
+
+Work is done only when:
+
+1. The implementation follows repo conventions and keeps the code in its final form.
+2. The relevant tests and checks pass for the touched area.
+3. Documentation and snapshots are updated when behavior changes.
+4. Follow-up work is captured in `bd` instead of left as TODOs.
+5. The work is committed, synced, and reflected honestly in the issue state.
+
+### Saying "Done"
+
+- Do not claim work is done until the relevant quality checks for the touched area have passed.
+- If a check fails because of your changes, fix it before handoff.
+- If a check fails for a pre-existing reason, stop, tell the user, and record the problem in `bd`.
+
+### Handling Discoveries
+
+1. If new work is discovered and it blocks the current task, stop and isolate it.
+2. Create a `bd` issue for the blocker and link it to the current work.
+3. Finish the blocker first, then resume the original task.
+4. If it is not a blocker, record it in `bd` and keep the current task focused.
+
+## Workflow Phases
+
+### Planning Phase
+
+- Default to low autonomy. Clarify requirements before making irreversible decisions.
+- Challenge weak assumptions early and prefer concrete tradeoffs over vague plans.
+- Update `docs/qa.md` when project decisions are made or clarified.
+
+### Implementation Phase
+
+- Default to high autonomy once scope and acceptance criteria are clear.
+- Follow existing repo conventions instead of inventing new structure.
+- Stop and ask only when behavior is unspecified, risky, or conflicts with existing instructions.
+
+## Build, Test, and Development Commands
+
+- There is no single repo-wide gate command. Use the relevant commands for the area you touched and do not claim completion until they pass.
+- Rust format: `cd codex-rs && just fmt`
+- Rust targeted lint autofix for substantial changes: `cd codex-rs && just fix -p <project>`
+- Rust targeted tests: `cd codex-rs && cargo test -p codex-<crate>`
+- Shared-crate/full-suite run: `cd codex-rs && cargo test` after asking the user when the change touches `common`, `core`, or `protocol`
+- Config schema refresh: `cd codex-rs && just write-config-schema`
+- App-server schema refresh: `cd codex-rs && just write-app-server-schema`
+
+## Commit Guidelines
+
+- Commit coherent slices. Use WIP commits only when the state is intentionally checkpointed and tracked.
+- Prefer Conventional Commit prefixes like `feat:`, `fix:`, `docs:`, and `chore:`.
+- Never use `git add -A`; stage only the files that belong to the current change.
+- Default to the shared `main` branch unless the user explicitly asks for a feature or backup branch.
+
 In the codex-rs folder where the rust code lives:
 
 - Crate names are prefixed with `codex-`. For example, the `core` folder's crate is named `codex-core`
@@ -195,3 +277,29 @@ These guidelines apply to app-server protocol work in `codex-rs`, especially:
 - Validate with `cargo test -p codex-app-server-protocol`.
 - Avoid boilerplate tests that only assert experimental field markers for individual
   request fields in `common.rs`; rely on schema generation/tests and behavioral coverage instead.
+
+## Landing the Plane (Session Completion)
+
+**When ending a work session**, you MUST complete ALL steps below. Work is NOT complete until `git push` succeeds.
+
+**MANDATORY WORKFLOW:**
+
+1. **File issues for remaining work** - Create issues for anything that needs follow-up
+2. **Run quality gates** (if code changed) - Tests, linters, builds
+3. **Update issue status** - Close finished work, update in-progress items
+4. **PUSH TO REMOTE** - This is MANDATORY:
+   ```bash
+   git pull --rebase
+   bd sync
+   git push
+   git status  # MUST show "up to date with origin"
+   ```
+5. **Clean up** - Clear stashes, prune remote branches
+6. **Verify** - All changes committed AND pushed
+7. **Hand off** - Provide context for next session
+
+**CRITICAL RULES:**
+- Work is NOT complete until `git push` succeeds
+- NEVER stop before pushing - that leaves work stranded locally
+- NEVER say "ready to push when you are" - YOU must push
+- If push fails, resolve and retry until it succeeds
