@@ -356,8 +356,8 @@ pub struct Config {
 
     /// Ordered list of status line item identifiers for the TUI.
     ///
-    /// When unset, the TUI defaults to: `model-with-reasoning`, `context-remaining`, and
-    /// `current-dir`.
+    /// When set, the TUI renders the selected items as a custom status line override.
+    /// When unset, the TUI uses the built-in footer summary instead.
     pub tui_status_line: Option<Vec<String>>,
 
     /// Ordered list of terminal title item identifiers for the TUI.

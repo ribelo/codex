@@ -472,10 +472,11 @@ pub(crate) enum AppEvent {
     /// Launch the external editor after a normal draw has completed.
     LaunchExternalEditor,
 
-    /// Async update of the current git branch for status line rendering.
+    /// Async update of the current git branch and diff stats for footer/status-line rendering.
     StatusLineBranchUpdated {
         cwd: PathBuf,
         branch: Option<String>,
+        diff_stats: Option<codex_core::git_info::GitDiffStats>,
     },
     /// Apply a user-confirmed status-line item ordering/selection.
     StatusLineSetup {

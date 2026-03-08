@@ -1,0 +1,5 @@
+---
+source: tui/src/chatwidget/tests.rs
+expression: "render_chat_footer_row(&mut chat, 56)"
+---
+  • extremely-long-repository-name-for-foot… 100% left

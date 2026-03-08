@@ -152,15 +152,30 @@ use super::command_popup::CommandPopup;
 use super::command_popup::CommandPopupFlags;
 use super::file_search_popup::FileSearchPopup;
 use super::footer::CollaborationModeIndicator;
+use super::footer::DefaultFooterSummary;
 use super::footer::FooterMode;
 use super::footer::FooterProps;
+use super::footer::SummaryLeft;
+use super::footer::can_show_left_with_context;
+use super::footer::context_window_line;
+use super::footer::default_summary_line;
 use super::footer::esc_hint_mode;
 use super::footer::footer_height;
+use super::footer::footer_hint_items_width;
+use super::footer::footer_line_width;
 use super::footer::inset_footer_hint_area;
+use super::footer::max_left_width_for_right;
+use super::footer::mode_indicator_line;
+use super::footer::passive_footer_status_line;
+use super::footer::render_context_right;
+use super::footer::render_footer_from_props;
 use super::footer::render_footer;
 use super::footer::render_footer_hint_items;
+use super::footer::render_footer_line;
 use super::footer::reset_mode_after_activity;
+use super::footer::single_line_footer_layout;
 use super::footer::toggle_shortcut_mode;
+use super::footer::uses_passive_footer_status_layout;
 use super::paste_burst::CharDecision;
 use super::paste_burst::PasteBurst;
 use super::skill_popup::MentionItem;
@@ -402,6 +417,7 @@ pub(crate) struct ChatComposer {
     status_line_enabled: bool,
     // Agent label injected into the footer's contextual row when multi-agent mode is active.
     active_agent_label: Option<String>,
+    default_footer_summary: DefaultFooterSummary,
 }
 
 #[derive(Clone, Debug)]
@@ -526,6 +542,7 @@ impl ChatComposer {
             status_line_value: None,
             status_line_enabled: false,
             active_agent_label: None,
+            default_footer_summary: DefaultFooterSummary::default(),
         };
         // Apply configuration via the setter to keep side-effects centralized.
         this.set_disable_paste_burst(disable_paste_burst);
@@ -3198,6 +3215,7 @@ impl ChatComposer {
             status_line_value: self.status_line_value.clone(),
             status_line_enabled: self.status_line_enabled,
             active_agent_label: self.active_agent_label.clone(),
+            default_summary: self.default_footer_summary.clone(),
         }
     }
 
@@ -3794,6 +3812,14 @@ impl ChatComposer {
         self.active_agent_label = active_agent_label;
         true
     }
+
+    pub(crate) fn set_default_footer_summary(&mut self, summary: DefaultFooterSummary) -> bool {
+        if self.default_footer_summary == summary {
+            return false;
+        }
+        self.default_footer_summary = summary;
+        true
+    }
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -4224,6 +4250,25 @@ impl ChatComposer {
                 } else {
                     None
                 };
+                let default_summary_candidate = !footer_props.status_line_enabled
+                    && footer_props.active_agent_label.is_none()
+                    && match footer_props.mode {
+                        FooterMode::ComposerEmpty => true,
+                        FooterMode::ComposerHasDraft => !footer_props.is_task_running,
+                        FooterMode::QuitShortcutReminder
+                        | FooterMode::ShortcutOverlay
+                        | FooterMode::EscHint => false,
+                    };
+                let default_summary = if default_summary_candidate {
+                    default_summary_line(
+                        &footer_props.default_summary,
+                        &footer_props.sandbox_policy,
+                    )
+                } else {
+                    None
+                };
+                let mut truncated_default_summary = default_summary.clone();
+                let default_summary_active = truncated_default_summary.is_some();
                 let left_mode_indicator = if status_line_active {
                     None
                 } else {
@@ -4238,6 +4283,11 @@ impl ChatComposer {
                     footer_hint_items_width(items)
                 } else if status_line_active {
                     truncated_status_line
+                        .as_ref()
+                        .map(|line| line.width() as u16)
+                        .unwrap_or(0)
+                } else if default_summary_active {
+                    truncated_default_summary
                         .as_ref()
                         .map(|line| line.width() as u16)
                         .unwrap_or(0)
@@ -4269,22 +4319,36 @@ impl ChatComposer {
                         footer_props.context_window_used_tokens,
                     ))
                 };
-                let right_width = right_line.as_ref().map(|l| l.width() as u16).unwrap_or(0);
-                if status_line_active
-                    && let Some(max_left) = max_left_width_for_right(hint_rect, right_width)
-                    && left_width > max_left
-                    && let Some(line) = combined_status_line.as_ref().map(|line| {
-                        truncate_line_with_ellipsis_if_overflow(line.clone(), max_left as usize)
-                    })
-                {
-                    left_width = line.width() as u16;
-                    truncated_status_line = Some(line);
+                let right_width = right_line
+                    .as_ref()
+                    .map(|line| line.width() as u16)
+                    .unwrap_or(0);
+                if let Some(max_left) = max_left_width_for_right(hint_rect, right_width) {
+                    if status_line_active
+                        && left_width > max_left
+                        && let Some(line) = combined_status_line.as_ref().map(|line| {
+                            truncate_line_with_ellipsis_if_overflow(line.clone(), max_left as usize)
+                        })
+                    {
+                        left_width = line.width() as u16;
+                        truncated_status_line = Some(line);
+                    } else if default_summary_active
+                        && left_width > max_left
+                        && let Some(line) = default_summary.as_ref().map(|line| {
+                            truncate_line_with_ellipsis_if_overflow(line.clone(), max_left as usize)
+                        })
+                    {
+                        left_width = line.width() as u16;
+                        truncated_default_summary = Some(line);
+                    }
                 }
                 let can_show_left_and_context =
                     can_show_left_with_context(hint_rect, left_width, right_width);
                 let has_override =
                     self.footer_flash_visible() || self.footer_hint_override.is_some();
                 let single_line_layout = if has_override || status_line_active {
+                    None
+                } else if default_summary_active {
                     None
                 } else {
                     match footer_props.mode {
@@ -4324,31 +4388,15 @@ impl ChatComposer {
                 if let Some((summary_left, _)) = single_line_layout {
                     match summary_left {
                         SummaryLeft::Default => {
-                            if status_line_active {
-                                if let Some(line) = truncated_status_line.clone() {
-                                    render_footer_line(hint_rect, buf, line);
-                                } else {
-                                    render_footer_from_props(
-                                        hint_rect,
-                                        buf,
-                                        &footer_props,
-                                        left_mode_indicator,
-                                        show_cycle_hint,
-                                        show_shortcuts_hint,
-                                        show_queue_hint,
-                                    );
-                                }
-                            } else {
-                                render_footer_from_props(
-                                    hint_rect,
-                                    buf,
-                                    &footer_props,
-                                    left_mode_indicator,
-                                    show_cycle_hint,
-                                    show_shortcuts_hint,
-                                    show_queue_hint,
-                                );
-                            }
+                            render_footer_from_props(
+                                hint_rect,
+                                buf,
+                                &footer_props,
+                                left_mode_indicator,
+                                show_cycle_hint,
+                                show_shortcuts_hint,
+                                show_queue_hint,
+                            );
                         }
                         SummaryLeft::Custom(line) => {
                             render_footer_line(hint_rect, buf, line);
@@ -4361,8 +4409,18 @@ impl ChatComposer {
                     }
                 } else if let Some(items) = self.footer_hint_override.as_ref() {
                     render_footer_hint_items(hint_rect, buf, items);
+                } else if status_line_active {
+                    if let Some(line) = truncated_status_line {
+                        render_footer_line(hint_rect, buf, line);
+                    }
+                } else if let Some(line) = truncated_default_summary {
+                    render_footer_line(hint_rect, buf, line);
                 } else {
                     render_footer(hint_rect, buf, footer_props);
+                }
+
+                if show_right && let Some(line) = &right_line {
+                    render_context_right(hint_rect, buf, line);
                 }
             }
         }

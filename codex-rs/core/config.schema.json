@@ -1664,7 +1664,7 @@
         },
         "status_line": {
           "default": null,
-          "description": "Ordered list of status line item identifiers.\n\nWhen set, the TUI renders the selected items as the status line. When unset, the TUI defaults to: `model-with-reasoning`, `context-remaining`, and `current-dir`.",
+          "description": "Ordered list of status line item identifiers.\n\nWhen set, the TUI renders the selected items as a custom status line override. When unset, the TUI uses the built-in footer summary instead.",
           "items": {
             "type": "string"
           },

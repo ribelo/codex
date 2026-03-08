@@ -44,6 +44,12 @@ pub struct GitDiffToRemote {
     pub diff: String,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct GitDiffStats {
+    pub added: usize,
+    pub removed: usize,
+}
+
 /// Collect git repository information from the given working directory using command-line git.
 /// Returns None if no git repository is found or if git operations fail.
 /// Uses timeouts to prevent freezing on large repositories.
@@ -149,6 +155,67 @@ pub async fn get_has_changes(cwd: &Path) -> Option<bool> {
     }
 
     Some(!output.stdout.is_empty())
+}
+
+pub async fn working_tree_diff_stats(cwd: &Path) -> Option<GitDiffStats> {
+    let output = run_git_command_with_timeout(&["rev-parse", "--git-dir"], cwd).await?;
+    if !output.status.success() {
+        return None;
+    }
+
+    if let Some(output) = run_git_command_with_timeout(&["diff", "--numstat", "HEAD"], cwd).await
+        && output.status.success()
+    {
+        return parse_git_diff_numstat(&output.stdout);
+    }
+
+    let (cached, unstaged) = tokio::join!(
+        run_git_command_with_timeout(&["diff", "--cached", "--numstat"], cwd),
+        run_git_command_with_timeout(&["diff", "--numstat"], cwd),
+    );
+
+    let mut stats = GitDiffStats::default();
+    let mut saw_success = false;
+
+    if let Some(output) = cached
+        && output.status.success()
+    {
+        saw_success = true;
+        apply_git_diff_numstat(&output.stdout, &mut stats)?;
+    }
+
+    if let Some(output) = unstaged
+        && output.status.success()
+    {
+        saw_success = true;
+        apply_git_diff_numstat(&output.stdout, &mut stats)?;
+    }
+
+    saw_success.then_some(stats)
+}
+
+fn parse_git_diff_numstat(stdout: &[u8]) -> Option<GitDiffStats> {
+    let mut stats = GitDiffStats::default();
+    apply_git_diff_numstat(stdout, &mut stats)?;
+    Some(stats)
+}
+
+fn apply_git_diff_numstat(stdout: &[u8], stats: &mut GitDiffStats) -> Option<()> {
+    let stdout = String::from_utf8(stdout.to_vec()).ok()?;
+    for line in stdout.lines() {
+        let mut parts = line.split('\t');
+        let added = parts.next()?;
+        let removed = parts.next()?;
+        let Some(added) = added.parse::<usize>().ok() else {
+            continue;
+        };
+        let Some(removed) = removed.parse::<usize>().ok() else {
+            continue;
+        };
+        stats.added += added;
+        stats.removed += removed;
+    }
+    Some(())
 }
 
 fn parse_git_remote_urls(stdout: &str) -> Option<BTreeMap<String, String>> {
