@@ -3357,8 +3357,13 @@ impl App {
                     }
                 }
             }
-            AppEvent::StatusLineBranchUpdated { cwd, branch } => {
-                self.chat_widget.set_status_line_branch(cwd, branch);
+            AppEvent::StatusLineBranchUpdated {
+                cwd,
+                branch,
+                diff_stats,
+            } => {
+                self.chat_widget
+                    .set_status_line_branch(cwd, branch, diff_stats);
                 self.refresh_status_line();
             }
             AppEvent::StatusLineSetupCancelled => {

@@ -152,14 +152,28 @@ use super::command_popup::CommandPopup;
 use super::command_popup::CommandPopupFlags;
 use super::file_search_popup::FileSearchPopup;
 use super::footer::CollaborationModeIndicator;
+use super::footer::DefaultFooterSummary;
 use super::footer::FooterMode;
 use super::footer::FooterProps;
+use super::footer::SummaryLeft;
+use super::footer::can_show_left_with_context;
+use super::footer::context_window_line;
+use super::footer::default_summary_line;
 use super::footer::esc_hint_mode;
 use super::footer::footer_height;
+use super::footer::footer_hint_items_width;
+use super::footer::footer_line_width;
 use super::footer::inset_footer_hint_area;
+use super::footer::max_left_width_for_right;
+use super::footer::mode_indicator_line;
+use super::footer::passive_footer_status_line;
+use super::footer::render_context_right;
 use super::footer::render_footer;
+use super::footer::render_footer_from_props;
 use super::footer::render_footer_hint_items;
+use super::footer::render_footer_line;
 use super::footer::reset_mode_after_activity;
+use super::footer::single_line_footer_layout;
 use super::footer::toggle_shortcut_mode;
 use super::paste_burst::CharDecision;
 use super::paste_burst::PasteBurst;
@@ -174,6 +188,7 @@ use crate::bottom_pane::prompt_args::parse_slash_name;
 use crate::bottom_pane::prompt_args::prompt_argument_names;
 use crate::bottom_pane::prompt_args::prompt_command_with_arg_placeholders;
 use crate::bottom_pane::prompt_args::prompt_has_numeric_placeholders;
+use crate::line_truncation::truncate_line_with_ellipsis_if_overflow;
 use crate::render::Insets;
 use crate::render::RectExt;
 use crate::render::renderable::Renderable;
@@ -402,6 +417,7 @@ pub(crate) struct ChatComposer {
     status_line_enabled: bool,
     // Agent label injected into the footer's contextual row when multi-agent mode is active.
     active_agent_label: Option<String>,
+    default_footer_summary: DefaultFooterSummary,
 }
 
 #[derive(Clone, Debug)]
@@ -526,6 +542,7 @@ impl ChatComposer {
             status_line_value: None,
             status_line_enabled: false,
             active_agent_label: None,
+            default_footer_summary: DefaultFooterSummary::default(),
         };
         // Apply configuration via the setter to keep side-effects centralized.
         this.set_disable_paste_burst(disable_paste_burst);
@@ -3191,6 +3208,7 @@ impl ChatComposer {
             status_line_value: self.status_line_value.clone(),
             status_line_enabled: self.status_line_enabled,
             active_agent_label: self.active_agent_label.clone(),
+            default_summary: self.default_footer_summary.clone(),
         }
     }
 
@@ -3787,6 +3805,14 @@ impl ChatComposer {
         self.active_agent_label = active_agent_label;
         true
     }
+
+    pub(crate) fn set_default_footer_summary(&mut self, summary: DefaultFooterSummary) -> bool {
+        if self.default_footer_summary == summary {
+            return false;
+        }
+        self.default_footer_summary = summary;
+        true
+    }
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -4188,6 +4214,22 @@ impl ChatComposer {
             }
             ActivePopup::None => {
                 let footer_props = self.footer_props();
+                let show_cycle_hint =
+                    !footer_props.is_task_running && self.collaboration_mode_indicator.is_some();
+                let show_shortcuts_hint = match footer_props.mode {
+                    FooterMode::ComposerEmpty => !self.is_in_paste_burst(),
+                    FooterMode::ComposerHasDraft => false,
+                    FooterMode::QuitShortcutReminder
+                    | FooterMode::ShortcutOverlay
+                    | FooterMode::EscHint => false,
+                };
+                let show_queue_hint = match footer_props.mode {
+                    FooterMode::ComposerHasDraft => footer_props.is_task_running,
+                    FooterMode::QuitShortcutReminder
+                    | FooterMode::ComposerEmpty
+                    | FooterMode::ShortcutOverlay
+                    | FooterMode::EscHint => false,
+                };
                 let custom_height = self.custom_footer_height();
                 let footer_hint_height =
                     custom_height.unwrap_or_else(|| footer_height(&footer_props));
@@ -4202,14 +4244,194 @@ impl ChatComposer {
                 } else {
                     popup_rect
                 };
-                if self.footer_flash_visible() {
+
+                let available_width = hint_rect
+                    .width
+                    .saturating_sub(crate::ui_consts::FOOTER_INDENT_COLS as u16)
+                    as usize;
+                let status_line =
+                    passive_footer_status_line(&footer_props).map(ratatui::prelude::Stylize::dim);
+                let status_line_candidate = footer_props.status_line_enabled
+                    && match footer_props.mode {
+                        FooterMode::ComposerEmpty => true,
+                        FooterMode::ComposerHasDraft => !footer_props.is_task_running,
+                        FooterMode::QuitShortcutReminder
+                        | FooterMode::ShortcutOverlay
+                        | FooterMode::EscHint => false,
+                    };
+                let mut truncated_status_line = if status_line_candidate {
+                    status_line.as_ref().map(|line| {
+                        truncate_line_with_ellipsis_if_overflow(line.clone(), available_width)
+                    })
+                } else {
+                    None
+                };
+                let status_line_active = status_line_candidate && truncated_status_line.is_some();
+
+                let default_summary_candidate = !footer_props.status_line_enabled
+                    && footer_props.active_agent_label.is_none()
+                    && match footer_props.mode {
+                        FooterMode::ComposerEmpty => true,
+                        FooterMode::ComposerHasDraft => !footer_props.is_task_running,
+                        FooterMode::QuitShortcutReminder
+                        | FooterMode::ShortcutOverlay
+                        | FooterMode::EscHint => false,
+                    };
+                let default_summary = if default_summary_candidate {
+                    default_summary_line(
+                        &footer_props.default_summary,
+                        &footer_props.sandbox_policy,
+                    )
+                } else {
+                    None
+                };
+                let mut truncated_default_summary = default_summary.clone();
+                let default_summary_active = truncated_default_summary.is_some();
+
+                let left_mode_indicator = if status_line_active {
+                    None
+                } else {
+                    self.collaboration_mode_indicator
+                };
+                let mut left_width = if self.footer_flash_visible() {
+                    self.footer_flash
+                        .as_ref()
+                        .map(|flash| flash.line.width() as u16)
+                        .unwrap_or(0)
+                } else if let Some(items) = self.footer_hint_override.as_ref() {
+                    footer_hint_items_width(items)
+                } else if status_line_active {
+                    truncated_status_line
+                        .as_ref()
+                        .map(|line| line.width() as u16)
+                        .unwrap_or(0)
+                } else if default_summary_active {
+                    truncated_default_summary
+                        .as_ref()
+                        .map(|line| line.width() as u16)
+                        .unwrap_or(0)
+                } else {
+                    footer_line_width(
+                        &footer_props,
+                        left_mode_indicator,
+                        show_cycle_hint,
+                        show_shortcuts_hint,
+                        show_queue_hint,
+                    )
+                };
+                let right_line = if status_line_active {
+                    let full =
+                        mode_indicator_line(self.collaboration_mode_indicator, show_cycle_hint);
+                    let compact = mode_indicator_line(self.collaboration_mode_indicator, false);
+                    let full_width = full.as_ref().map(|line| line.width() as u16).unwrap_or(0);
+                    if can_show_left_with_context(hint_rect, left_width, full_width) {
+                        full
+                    } else {
+                        compact
+                    }
+                } else {
+                    Some(context_window_line(
+                        footer_props.context_window_percent,
+                        footer_props.context_window_used_tokens,
+                    ))
+                };
+                let right_width = right_line
+                    .as_ref()
+                    .map(|line| line.width() as u16)
+                    .unwrap_or(0);
+                if let Some(max_left) = max_left_width_for_right(hint_rect, right_width) {
+                    if status_line_active
+                        && left_width > max_left
+                        && let Some(line) = status_line.as_ref().map(|line| {
+                            truncate_line_with_ellipsis_if_overflow(line.clone(), max_left as usize)
+                        })
+                    {
+                        left_width = line.width() as u16;
+                        truncated_status_line = Some(line);
+                    } else if default_summary_active
+                        && left_width > max_left
+                        && let Some(line) = default_summary.as_ref().map(|line| {
+                            truncate_line_with_ellipsis_if_overflow(line.clone(), max_left as usize)
+                        })
+                    {
+                        left_width = line.width() as u16;
+                        truncated_default_summary = Some(line);
+                    }
+                }
+                let can_show_left_and_context =
+                    can_show_left_with_context(hint_rect, left_width, right_width);
+                let has_override =
+                    self.footer_flash_visible() || self.footer_hint_override.is_some();
+                let single_line_layout =
+                    if has_override || status_line_active || default_summary_active {
+                        None
+                    } else {
+                        match footer_props.mode {
+                            FooterMode::ComposerEmpty | FooterMode::ComposerHasDraft => {
+                                Some(single_line_footer_layout(
+                                    hint_rect,
+                                    right_width,
+                                    left_mode_indicator,
+                                    show_cycle_hint,
+                                    show_shortcuts_hint,
+                                    show_queue_hint,
+                                ))
+                            }
+                            FooterMode::EscHint
+                            | FooterMode::QuitShortcutReminder
+                            | FooterMode::ShortcutOverlay => None,
+                        }
+                    };
+                let show_right = if matches!(
+                    footer_props.mode,
+                    FooterMode::EscHint
+                        | FooterMode::QuitShortcutReminder
+                        | FooterMode::ShortcutOverlay
+                ) {
+                    false
+                } else {
+                    single_line_layout
+                        .as_ref()
+                        .map(|(_, show_context)| *show_context)
+                        .unwrap_or(can_show_left_and_context)
+                };
+
+                if let Some((summary_left, _)) = single_line_layout {
+                    match summary_left {
+                        SummaryLeft::Default => {
+                            render_footer_from_props(
+                                hint_rect,
+                                buf,
+                                &footer_props,
+                                left_mode_indicator,
+                                show_cycle_hint,
+                                show_shortcuts_hint,
+                                show_queue_hint,
+                            );
+                        }
+                        SummaryLeft::Custom(line) => {
+                            render_footer_line(hint_rect, buf, line);
+                        }
+                        SummaryLeft::None => {}
+                    }
+                } else if self.footer_flash_visible() {
                     if let Some(flash) = self.footer_flash.as_ref() {
                         flash.line.render(inset_footer_hint_area(hint_rect), buf);
                     }
                 } else if let Some(items) = self.footer_hint_override.as_ref() {
                     render_footer_hint_items(hint_rect, buf, items);
+                } else if status_line_active {
+                    if let Some(line) = truncated_status_line {
+                        render_footer_line(hint_rect, buf, line);
+                    }
+                } else if let Some(line) = truncated_default_summary {
+                    render_footer_line(hint_rect, buf, line);
                 } else {
                     render_footer(hint_rect, buf, footer_props);
+                }
+
+                if show_right && let Some(line) = &right_line {
+                    render_context_right(hint_rect, buf, line);
                 }
             }
         }

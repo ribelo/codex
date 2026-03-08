@@ -52,6 +52,7 @@ pub(crate) use app_link_view::AppLinkViewParams;
 pub(crate) use approval_overlay::ApprovalOverlay;
 pub(crate) use approval_overlay::ApprovalRequest;
 pub(crate) use approval_overlay::format_additional_permissions_rule;
+pub(crate) use footer::DefaultFooterSummary;
 pub(crate) use mcp_server_elicitation::McpServerElicitationFormRequest;
 pub(crate) use mcp_server_elicitation::McpServerElicitationOverlay;
 pub(crate) use request_user_input::RequestUserInputOverlay;
@@ -1147,6 +1148,12 @@ impl BottomPane {
     /// the label several times while the visible thread settles.
     pub(crate) fn set_active_agent_label(&mut self, active_agent_label: Option<String>) {
         if self.composer.set_active_agent_label(active_agent_label) {
+            self.request_redraw();
+        }
+    }
+
+    pub(crate) fn set_default_footer_summary(&mut self, summary: DefaultFooterSummary) {
+        if self.composer.set_default_footer_summary(summary) {
             self.request_redraw();
         }
     }

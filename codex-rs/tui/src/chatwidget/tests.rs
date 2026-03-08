@@ -28,6 +28,7 @@ use codex_core::config::types::WindowsSandboxModeToml;
 use codex_core::config_loader::RequirementSource;
 use codex_core::features::FEATURES;
 use codex_core::features::Feature;
+use codex_core::git_info::GitDiffStats;
 use codex_core::models_manager::collaboration_mode_presets::CollaborationModesConfig;
 use codex_core::models_manager::manager::ModelsManager;
 use codex_core::skills::model::SkillMetadata;
@@ -1895,6 +1896,7 @@ async fn make_chatwidget_manual(
         session_network_proxy: None,
         status_line_invalid_items_warned: Arc::new(AtomicBool::new(false)),
         status_line_branch: None,
+        status_line_diff_stats: None,
         status_line_branch_cwd: None,
         status_line_branch_pending: false,
         status_line_branch_lookup_complete: false,
@@ -1904,6 +1906,61 @@ async fn make_chatwidget_manual(
     };
     widget.set_model(&resolved_model);
     (widget, rx, op_rx)
+}
+
+fn render_chat_footer_row(chat: &mut ChatWidget, width: u16) -> String {
+    let height = chat.desired_height(width).max(1);
+    let backend = VT100Backend::new(width, height);
+    let mut term = crate::custom_terminal::Terminal::with_options(backend).expect("terminal");
+    term.set_viewport_area(Rect::new(0, 0, width, height));
+    term.draw(|f| {
+        chat.render(f.area(), f.buffer_mut());
+    })
+    .expect("render chat");
+
+    term.backend()
+        .vt100()
+        .screen()
+        .contents()
+        .split_terminator('\n')
+        .next_back()
+        .unwrap_or_default()
+        .trim_end()
+        .to_string()
+}
+
+fn create_footer_test_repo(repo_name: &str) -> (tempfile::TempDir, PathBuf) {
+    let temp_dir = tempdir().expect("tempdir");
+    let repo_path = temp_dir.path().join(repo_name);
+    std::fs::create_dir(&repo_path).expect("create repo dir");
+
+    let run_git = |args: &[&str]| {
+        let output = std::process::Command::new("git")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .args(args)
+            .current_dir(&repo_path)
+            .output()
+            .expect("run git");
+        assert!(
+            output.status.success(),
+            "git {:?} failed: stdout={} stderr={}",
+            args,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    };
+
+    run_git(&["init"]);
+    run_git(&["branch", "-m", "main"]);
+    run_git(&["config", "user.name", "Test User"]);
+    run_git(&["config", "user.email", "test@example.com"]);
+
+    std::fs::write(repo_path.join("tracked.txt"), "one\n").expect("write tracked file");
+    run_git(&["add", "tracked.txt"]);
+    run_git(&["commit", "-m", "Initial commit"]);
+
+    (temp_dir, repo_path)
 }
 
 // ChatWidget may emit other `Op`s (e.g. history/logging updates) on the same channel; this helper
@@ -9706,18 +9763,128 @@ async fn status_line_invalid_items_warn_once() {
 }
 
 #[tokio::test]
-async fn status_line_branch_state_resets_when_git_branch_disabled() {
+async fn refresh_status_line_preserves_git_cache_without_git_branch_item() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
     chat.status_line_branch = Some("main".to_string());
-    chat.status_line_branch_pending = true;
+    chat.status_line_diff_stats = Some(GitDiffStats {
+        added: 1,
+        removed: 2,
+    });
+    chat.status_line_branch_cwd = Some(chat.config.cwd.clone());
+    chat.status_line_branch_pending = false;
     chat.status_line_branch_lookup_complete = true;
-    chat.config.tui_status_line = Some(vec!["model_name".to_string()]);
+    chat.config.tui_status_line = Some(vec!["model-name".to_string()]);
 
     chat.refresh_status_line();
 
-    assert_eq!(chat.status_line_branch, None);
+    assert_eq!(chat.status_line_branch.as_deref(), Some("main"));
+    assert_eq!(
+        chat.status_line_diff_stats,
+        Some(GitDiffStats {
+            added: 1,
+            removed: 2,
+        })
+    );
     assert!(!chat.status_line_branch_pending);
-    assert!(!chat.status_line_branch_lookup_complete);
+    assert!(chat.status_line_branch_lookup_complete);
+}
+
+#[tokio::test]
+async fn idle_footer_default_summary_snapshot() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+    let cwd = tempdir().expect("tempdir");
+    chat.current_cwd = Some(cwd.path().to_path_buf());
+    chat.set_reasoning_effort(Some(ReasoningEffortConfig::High));
+    chat.sync_bottom_pane_footer_state();
+
+    assert_snapshot!(
+        "idle_footer_default_summary",
+        render_chat_footer_row(&mut chat, 80)
+    );
+}
+
+#[tokio::test]
+async fn idle_footer_plan_summary_snapshot() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+    let cwd = tempdir().expect("tempdir");
+    chat.current_cwd = Some(cwd.path().to_path_buf());
+    chat.set_feature_enabled(Feature::CollaborationModes, true);
+    let plan_mask =
+        collaboration_modes::mask_for_kind(chat.models_manager.as_ref(), ModeKind::Plan)
+            .expect("plan collaboration mode");
+    chat.set_collaboration_mask(plan_mask);
+    chat.set_plan_mode_reasoning_effort(Some(ReasoningEffortConfig::High));
+    chat.sync_bottom_pane_footer_state();
+
+    assert_snapshot!(
+        "idle_footer_plan_summary",
+        render_chat_footer_row(&mut chat, 80)
+    );
+}
+
+#[tokio::test]
+async fn idle_footer_git_summary_snapshot() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+    let (_repo_guard, repo_path) = create_footer_test_repo("codex");
+    chat.current_cwd = Some(repo_path);
+    chat.status_line_branch = Some("main".to_string());
+    chat.status_line_diff_stats = Some(GitDiffStats {
+        added: 0,
+        removed: 0,
+    });
+    chat.set_reasoning_effort(Some(ReasoningEffortConfig::High));
+    chat.sync_bottom_pane_footer_state();
+
+    assert_snapshot!(
+        "idle_footer_git_summary",
+        render_chat_footer_row(&mut chat, 80)
+    );
+}
+
+#[tokio::test]
+async fn idle_footer_git_summary_truncates_before_context_snapshot() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+    let (_repo_guard, repo_path) =
+        create_footer_test_repo("extremely-long-repository-name-for-footer");
+    chat.current_cwd = Some(repo_path);
+    chat.status_line_branch = Some("feature/super-long-branch-name-for-truncation".to_string());
+    chat.status_line_diff_stats = Some(GitDiffStats {
+        added: 12,
+        removed: 34,
+    });
+    chat.set_reasoning_effort(Some(ReasoningEffortConfig::High));
+    chat.sync_bottom_pane_footer_state();
+
+    assert_snapshot!(
+        "idle_footer_git_summary_truncates_before_context",
+        render_chat_footer_row(&mut chat, 56)
+    );
+}
+
+#[tokio::test]
+async fn configured_status_line_override_snapshot() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+    chat.config.tui_status_line = Some(vec![
+        "model-name".to_string(),
+        "context-remaining".to_string(),
+    ]);
+    chat.refresh_status_line();
+
+    assert_snapshot!(
+        "configured_status_line_override",
+        render_chat_footer_row(&mut chat, 80)
+    );
+}
+
+#[tokio::test]
+async fn empty_configured_status_line_does_not_fall_back_to_default_summary() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+    let cwd = tempdir().expect("tempdir");
+    chat.current_cwd = Some(cwd.path().to_path_buf());
+    chat.config.tui_status_line = Some(vec!["git-branch".to_string()]);
+    chat.refresh_status_line();
+
+    assert_eq!(render_chat_footer_row(&mut chat, 80).trim(), "");
 }
 
 #[tokio::test]

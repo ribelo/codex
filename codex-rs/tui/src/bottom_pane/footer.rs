@@ -90,6 +90,13 @@ pub(crate) struct FooterProps {
     /// When both this label and the configured status line are available, they are rendered on the
     /// same row separated by ` · `.
     pub(crate) active_agent_label: Option<String>,
+    pub(crate) default_summary: DefaultFooterSummary,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct DefaultFooterSummary {
+    pub(crate) git: Option<String>,
+    pub(crate) identity: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -845,7 +852,7 @@ fn build_columns(entries: Vec<Line<'static>>) -> Vec<Line<'static>> {
 pub(crate) fn context_window_line(percent: Option<i64>, used_tokens: Option<i64>) -> Line<'static> {
     if let Some(percent) = percent {
         let percent = percent.clamp(0, 100);
-        return Line::from(vec![Span::from(format!("{percent}% context left")).dim()]);
+        return Line::from(vec![Span::from(format!("{percent}% left")).dim()]);
     }
 
     if let Some(tokens) = used_tokens {
@@ -853,7 +860,7 @@ pub(crate) fn context_window_line(percent: Option<i64>, used_tokens: Option<i64>
         return Line::from(vec![Span::from(format!("{used_fmt} used")).dim()]);
     }
 
-    Line::from(vec![Span::from("100% context left").dim()])
+    Line::from(vec![Span::from("100% left").dim()])
 }
 
 fn context_only_line(props: &FooterProps) -> Line<'static> {
@@ -891,16 +898,33 @@ fn footer_context_line(
     }
 
     let context_text = if let Some(percent) = percent {
-        format!("{}% context left", percent.clamp(0, 100))
+        format!("{}% left", percent.clamp(0, 100))
     } else if let Some(tokens) = used_tokens {
         let used_fmt = format_tokens_compact(tokens);
         format!("{used_fmt} used")
     } else {
-        "100% context left".to_string()
+        "100% left".to_string()
     };
     parts.push(context_text);
     spans.push(parts.join(" ").dim());
     Line::from(spans)
+}
+
+pub(crate) fn default_summary_line(
+    summary: &DefaultFooterSummary,
+    sandbox_policy: &SandboxPolicy,
+) -> Option<Line<'static>> {
+    if summary.identity.is_empty() {
+        return None;
+    }
+
+    let mut spans = vec![mode_dot(sandbox_policy), " ".into()];
+    if let Some(git) = &summary.git {
+        spans.push(git.clone().dim());
+        spans.push("  ".into());
+    }
+    spans.push(summary.identity.join(" • ").dim());
+    Some(Line::from(spans))
 }
 
 fn mode_dot(policy: &SandboxPolicy) -> Span<'static> {
@@ -1133,6 +1157,7 @@ mod tests {
             context_window_used_tokens: None,
             status_line_value: None,
             status_line_enabled: false,
+            default_summary: DefaultFooterSummary::default(),
         }
     }
 

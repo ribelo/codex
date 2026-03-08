@@ -41,6 +41,7 @@ use self::realtime::PendingSteerCompareKey;
 use crate::app_event::RealtimeAudioDeviceKind;
 #[cfg(all(not(target_os = "linux"), feature = "voice-input"))]
 use crate::audio_device::list_realtime_audio_device_names;
+use crate::bottom_pane::DefaultFooterSummary;
 use crate::bottom_pane::StatusLineItem;
 use crate::bottom_pane::StatusLinePreviewData;
 use crate::bottom_pane::StatusLineSetupView;
@@ -62,9 +63,11 @@ use codex_core::config_loader::ConfigLayerStackOrdering;
 use codex_core::features::FEATURES;
 use codex_core::features::Feature;
 use codex_core::find_thread_name_by_id;
+use codex_core::git_info::GitDiffStats;
 use codex_core::git_info::current_branch_name;
 use codex_core::git_info::get_git_repo_root;
 use codex_core::git_info::local_git_branches;
+use codex_core::git_info::working_tree_diff_stats;
 use codex_core::mcp::McpManager;
 use codex_core::models_manager::manager::ModelsManager;
 use codex_core::plugins::PluginsManager;
@@ -699,6 +702,8 @@ pub(crate) struct ChatWidget {
     status_line_invalid_items_warned: Arc<AtomicBool>,
     // Cached git branch name for the status line (None if unknown).
     status_line_branch: Option<String>,
+    // Cached git tracked-line diff stats for the footer/status line (None if unknown).
+    status_line_diff_stats: Option<GitDiffStats>,
     // CWD used to resolve the cached branch; change resets branch state.
     status_line_branch_cwd: Option<PathBuf>,
     // True while an async branch lookup is in flight.
@@ -1092,6 +1097,10 @@ impl ChatWidget {
         self.bottom_pane.set_active_agent_label(active_agent_label);
     }
 
+    fn set_default_footer_summary(&mut self, summary: DefaultFooterSummary) {
+        self.bottom_pane.set_default_footer_summary(summary);
+    }
+
     /// Recomputes footer status-line content from config and current runtime state.
     ///
     /// This method is the status-line orchestrator: it parses configured item identifiers,
@@ -1122,20 +1131,24 @@ impl ChatWidget {
             );
             self.on_warning(message);
         }
-        if !items.contains(&StatusLineItem::GitBranch) {
-            self.status_line_branch = None;
-            self.status_line_branch_pending = false;
-            self.status_line_branch_lookup_complete = false;
+
+        let cwd = self.status_line_cwd().to_path_buf();
+        self.sync_status_line_branch_state(&cwd);
+        if !self.status_line_branch_lookup_complete {
+            self.request_status_line_branch(cwd.clone());
         }
-        let enabled = !items.is_empty();
+        self.set_default_footer_summary(self.default_footer_summary());
+
+        let enabled = self
+            .config
+            .tui_status_line
+            .as_ref()
+            .is_some_and(|configured| !configured.is_empty());
         self.bottom_pane.set_status_line_enabled(enabled);
         if !enabled {
             self.set_status_line(None);
             return;
         }
-
-        let cwd = self.status_line_cwd().to_path_buf();
-        self.sync_status_line_branch_state(&cwd);
 
         if items.contains(&StatusLineItem::GitBranch) && !self.status_line_branch_lookup_complete {
             self.request_status_line_branch(cwd);
@@ -1174,26 +1187,28 @@ impl ChatWidget {
         self.refresh_status_line();
     }
 
-    /// Stores async git-branch lookup results for the current status-line cwd.
+    /// Stores async git-branch lookup results for the current footer/status-line cwd.
     ///
     /// Results are dropped when they target an out-of-date cwd to avoid rendering stale branch
     /// names after directory changes.
-    pub(crate) fn set_status_line_branch(&mut self, cwd: PathBuf, branch: Option<String>) {
+    pub(crate) fn set_status_line_branch(
+        &mut self,
+        cwd: PathBuf,
+        branch: Option<String>,
+        diff_stats: Option<GitDiffStats>,
+    ) {
         if self.status_line_branch_cwd.as_ref() != Some(&cwd) {
             self.status_line_branch_pending = false;
             return;
         }
         self.status_line_branch = branch;
+        self.status_line_diff_stats = diff_stats;
         self.status_line_branch_pending = false;
         self.status_line_branch_lookup_complete = true;
     }
 
-    /// Forces a new git-branch lookup when `GitBranch` is part of the configured status line.
+    /// Forces a new git lookup so footer/status-line git metadata stays fresh after turn changes.
     fn request_status_line_branch_refresh(&mut self) {
-        let (items, _) = self.status_line_items_with_invalids();
-        if items.is_empty() || !items.contains(&StatusLineItem::GitBranch) {
-            return;
-        }
         let cwd = self.status_line_cwd().to_path_buf();
         self.sync_status_line_branch_state(&cwd);
         self.request_status_line_branch(cwd);
@@ -3308,6 +3323,7 @@ impl ChatWidget {
             session_network_proxy: None,
             status_line_invalid_items_warned,
             status_line_branch: None,
+            status_line_diff_stats: None,
             status_line_branch_cwd: None,
             status_line_branch_pending: false,
             status_line_branch_lookup_complete: false,
@@ -3498,6 +3514,7 @@ impl ChatWidget {
             session_network_proxy: None,
             status_line_invalid_items_warned,
             status_line_branch: None,
+            status_line_diff_stats: None,
             status_line_branch_cwd: None,
             status_line_branch_pending: false,
             status_line_branch_lookup_complete: false,
@@ -3680,6 +3697,7 @@ impl ChatWidget {
             session_network_proxy: None,
             status_line_invalid_items_warned,
             status_line_branch: None,
+            status_line_diff_stats: None,
             status_line_branch_cwd: None,
             status_line_branch_pending: false,
             status_line_branch_lookup_complete: false,
@@ -5425,6 +5443,43 @@ impl ChatWidget {
         })
     }
 
+    fn default_footer_summary(&self) -> DefaultFooterSummary {
+        let mut identity = Vec::new();
+        if !self.config.model_provider_id.is_empty() {
+            identity.push(self.config.model_provider_id.clone());
+        }
+        identity.push(self.model_display_name().to_string());
+        if !self.current_model().starts_with("codex-auto-") {
+            identity.push(
+                Self::status_line_reasoning_effort_label(self.effective_reasoning_effort())
+                    .to_string(),
+            );
+        }
+        if self.active_mode_kind() == ModeKind::Plan {
+            identity.push("plan".to_string());
+        }
+
+        DefaultFooterSummary {
+            git: self.default_footer_git_label(),
+            identity,
+        }
+    }
+
+    fn default_footer_git_label(&self) -> Option<String> {
+        let repo_root = get_git_repo_root(self.status_line_cwd())?;
+        let repo_name = repo_root
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_else(|| format_directory_display(&repo_root, None));
+        let branch = self.status_line_branch.as_ref()?;
+
+        let mut label = format!("{repo_name}:{branch}");
+        if let Some(diff_stats) = self.status_line_diff_stats {
+            label.push_str(&format!(" +{}/-{}", diff_stats.added, diff_stats.removed));
+        }
+        Some(label)
+    }
+
     fn status_line_cwd(&self) -> &Path {
         self.current_cwd.as_ref().unwrap_or(&self.config.cwd)
     }
@@ -5469,6 +5524,7 @@ impl ChatWidget {
         }
         self.status_line_branch_cwd = Some(cwd.to_path_buf());
         self.status_line_branch = None;
+        self.status_line_diff_stats = None;
         self.status_line_branch_pending = false;
         self.status_line_branch_lookup_complete = false;
     }
@@ -5484,8 +5540,13 @@ impl ChatWidget {
         self.status_line_branch_pending = true;
         let tx = self.app_event_tx.clone();
         tokio::spawn(async move {
-            let branch = current_branch_name(&cwd).await;
-            tx.send(AppEvent::StatusLineBranchUpdated { cwd, branch });
+            let (branch, diff_stats) =
+                tokio::join!(current_branch_name(&cwd), working_tree_diff_stats(&cwd));
+            tx.send(AppEvent::StatusLineBranchUpdated {
+                cwd,
+                branch,
+                diff_stats,
+            });
         });
     }
 
@@ -7729,6 +7790,8 @@ impl ChatWidget {
         self.bottom_pane.set_reasoning_effort(reasoning_effort);
         self.bottom_pane
             .set_sandbox_policy(self.config.permissions.sandbox_policy.get().clone());
+        self.bottom_pane
+            .set_default_footer_summary(self.default_footer_summary());
     }
 
     fn model_display_name(&self) -> &str {

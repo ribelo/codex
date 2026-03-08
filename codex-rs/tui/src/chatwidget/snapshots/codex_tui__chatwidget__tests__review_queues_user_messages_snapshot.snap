@@ -10,4 +10,4 @@ expression: term.backend().vt100().screen().contents()
 
 › Ask Codex to do anything
 
-  • openai/gpt-5.3-codex 100% context left · ? for shortcuts
+  • openai • gpt-5.3-codex                                           100% left

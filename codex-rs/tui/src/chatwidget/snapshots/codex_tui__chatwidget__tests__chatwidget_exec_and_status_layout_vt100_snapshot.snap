@@ -14,4 +14,4 @@ expression: term.backend().vt100().screen().contents()
 
 › Summarize recent commits
 
-  • openai/gpt-5.3-codex 100% context left
+  • openai • gpt-5.3-codex                                           100% left
