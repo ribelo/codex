@@ -8,6 +8,7 @@ use crate::default_client::build_reqwest_client;
 use crate::error::CodexErr;
 use crate::error::Result as CoreResult;
 use crate::model_provider_info::ModelProviderInfo;
+use crate::model_provider_info::WireApi;
 use crate::models_manager::collaboration_mode_presets::CollaborationModesConfig;
 use crate::models_manager::collaboration_mode_presets::builtin_collaboration_mode_presets;
 use crate::models_manager::model_info;
@@ -74,6 +75,7 @@ impl ModelsManager {
         auth_manager: Arc<AuthManager>,
         model_catalog: Option<ModelsResponse>,
         collaboration_modes_config: CollaborationModesConfig,
+        provider: ModelProviderInfo,
     ) -> Self {
         let cache_path = codex_home.join(MODEL_CACHE_FILE);
         let cache_manager = ModelsCacheManager::new(cache_path, DEFAULT_MODEL_CACHE_TTL);
@@ -85,6 +87,9 @@ impl ModelsManager {
         let remote_models = model_catalog
             .map(|catalog| catalog.models)
             .unwrap_or_else(|| {
+                if provider.wire_api != WireApi::Responses {
+                    return Vec::new();
+                }
                 Self::load_remote_models_from_file()
                     .unwrap_or_else(|err| panic!("failed to load bundled models.json: {err}"))
             });
@@ -95,7 +100,7 @@ impl ModelsManager {
             auth_manager,
             etag: RwLock::new(None),
             cache_manager,
-            provider: ModelProviderInfo::create_openai_provider(),
+            provider,
         }
     }
 
@@ -217,7 +222,7 @@ impl ModelsManager {
                 ..remote
             }
         } else {
-            model_info::model_info_from_slug(model)
+            model_info::model_info_from_slug_for_provider(model, config.model_provider.wire_api)
         };
         model_info::with_config_overrides(model_info, config)
     }
@@ -242,6 +247,9 @@ impl ModelsManager {
     async fn refresh_available_models(&self, refresh_strategy: RefreshStrategy) -> CoreResult<()> {
         // don't override the custom model catalog if one was provided by the user
         if matches!(self.catalog_mode, CatalogMode::Custom) {
+            return Ok(());
+        }
+        if self.provider.wire_api != WireApi::Responses {
             return Ok(());
         }
 
@@ -432,9 +440,11 @@ mod tests {
     use super::*;
     use crate::CodexAuth;
     use crate::auth::AuthCredentialsStoreMode;
+    use crate::built_in_model_providers;
     use crate::config::ConfigBuilder;
     use crate::model_provider_info::WireApi;
     use chrono::Utc;
+    use codex_protocol::openai_models::ApplyPatchToolType;
     use codex_protocol::openai_models::ModelsResponse;
     use core_test_support::responses::mount_models_once;
     use pretty_assertions::assert_eq;
@@ -496,6 +506,9 @@ mod tests {
             env_key_instructions: None,
             experimental_bearer_token: None,
             wire_api: WireApi::Responses,
+            version: None,
+            beta: None,
+            use_bearer_auth: false,
             query_params: None,
             http_headers: None,
             env_http_headers: None,
@@ -522,6 +535,7 @@ mod tests {
             auth_manager,
             None,
             CollaborationModesConfig::default(),
+            built_in_model_providers()["openai"].clone(),
         );
         let known_slug = manager
             .get_remote_models()
@@ -540,6 +554,80 @@ mod tests {
             .await;
         assert!(unknown.used_fallback_model_metadata);
         assert_eq!(unknown.slug, "model-that-does-not-exist");
+    }
+
+    #[tokio::test]
+    async fn non_responses_provider_starts_empty_and_skips_remote_refresh() {
+        let server = MockServer::start().await;
+        let models_mock = mount_models_once(
+            &server,
+            ModelsResponse {
+                models: vec![remote_model("chat-only-model", "Chat Only", 0)],
+            },
+        )
+        .await;
+
+        let codex_home = tempdir().expect("temp dir");
+        let auth_manager =
+            AuthManager::from_auth_for_testing(CodexAuth::create_dummy_chatgpt_auth_for_testing());
+        let mut provider = provider_for(server.uri());
+        provider.wire_api = WireApi::Chat;
+
+        let manager = ModelsManager::new(
+            codex_home.path().to_path_buf(),
+            auth_manager,
+            None,
+            CollaborationModesConfig::default(),
+            provider,
+        );
+
+        assert_eq!(manager.get_remote_models().await, Vec::<ModelInfo>::new());
+
+        manager
+            .refresh_available_models(RefreshStrategy::Online)
+            .await
+            .expect("non-responses providers should skip /models refresh");
+
+        assert_eq!(manager.get_remote_models().await, Vec::<ModelInfo>::new());
+        assert_eq!(models_mock.requests().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn non_responses_provider_uses_provider_aware_fallback_metadata() {
+        let codex_home = tempdir().expect("temp dir");
+        let mut config = ConfigBuilder::default()
+            .codex_home(codex_home.path().to_path_buf())
+            .build()
+            .await
+            .expect("load default test config");
+        config.model_provider_id = "anthropic".to_string();
+        config.model_provider = built_in_model_providers()["anthropic"].clone();
+        config.model = Some("claude-3-7-sonnet-latest".to_string());
+
+        let auth_manager =
+            AuthManager::from_auth_for_testing(CodexAuth::from_api_key("Test API Key"));
+        let manager = ModelsManager::new(
+            codex_home.path().to_path_buf(),
+            auth_manager,
+            None,
+            CollaborationModesConfig::default(),
+            config.model_provider.clone(),
+        );
+
+        let model = config.model.as_deref().expect("test model");
+        let model_info = manager.get_model_info(model, &config).await;
+        let expected = model_info::with_config_overrides(
+            model_info::model_info_from_slug_for_provider(model, WireApi::Anthropic),
+            &config,
+        );
+
+        assert_eq!(model_info, expected);
+        assert!(model_info.used_fallback_model_metadata);
+        assert!(model_info.supports_reasoning_summaries);
+        assert_eq!(
+            model_info.apply_patch_tool_type,
+            Some(ApplyPatchToolType::Function)
+        );
     }
 
     #[tokio::test]
@@ -562,6 +650,7 @@ mod tests {
                 models: vec![overlay],
             }),
             CollaborationModesConfig::default(),
+            built_in_model_providers()["openai"].clone(),
         );
 
         let model_info = manager
@@ -595,6 +684,7 @@ mod tests {
                 models: vec![remote],
             }),
             CollaborationModesConfig::default(),
+            built_in_model_providers()["openai"].clone(),
         );
         let namespaced_model = "custom/gpt-image".to_string();
 
@@ -620,6 +710,7 @@ mod tests {
             auth_manager,
             None,
             CollaborationModesConfig::default(),
+            built_in_model_providers()["openai"].clone(),
         );
         let known_slug = manager
             .get_remote_models()

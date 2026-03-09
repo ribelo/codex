@@ -756,6 +756,10 @@
           "description": "Base URL for the provider's OpenAI-compatible API.",
           "type": "string"
         },
+        "beta": {
+          "description": "Optional beta/feature selector used by native provider protocols.",
+          "type": "string"
+        },
         "env_http_headers": {
           "additionalProperties": {
             "type": "string"
@@ -820,6 +824,15 @@
           "default": false,
           "description": "Whether this provider supports the Responses API WebSocket transport.",
           "type": "boolean"
+        },
+        "use_bearer_auth": {
+          "default": false,
+          "description": "When true, native providers that support multiple auth styles should send the resolved token as `Authorization: Bearer ...` instead of a provider- specific API key header.",
+          "type": "boolean"
+        },
+        "version": {
+          "description": "Native API version selector used by providers such as Anthropic.",
+          "type": "string"
         },
         "wire_api": {
           "allOf": [
@@ -1690,6 +1703,27 @@
           "description": "The Responses API exposed by OpenAI at `/v1/responses`.",
           "enum": [
             "responses"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Regular OpenAI-compatible Chat Completions at `/v1/chat/completions`.",
+          "enum": [
+            "chat"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Anthropic Messages API at `/v1/messages`.",
+          "enum": [
+            "anthropic"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Gemini `streamGenerateContent` SSE API.",
+          "enum": [
+            "gemini"
           ],
           "type": "string"
         }

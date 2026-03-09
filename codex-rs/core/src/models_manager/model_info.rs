@@ -1,4 +1,5 @@
 use codex_protocol::config_types::ReasoningSummary;
+use codex_protocol::openai_models::ApplyPatchToolType;
 use codex_protocol::openai_models::ConfigShellToolType;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ModelInstructionsVariables;
@@ -11,6 +12,7 @@ use codex_protocol::openai_models::default_input_modalities;
 
 use crate::config::Config;
 use crate::features::Feature;
+use crate::model_provider_info::WireApi;
 use crate::truncate::approx_bytes_for_tokens;
 use tracing::warn;
 
@@ -91,6 +93,26 @@ pub(crate) fn model_info_from_slug(slug: &str) -> ModelInfo {
         prefer_websockets: false,
         used_fallback_model_metadata: true, // this is the fallback model metadata
     }
+}
+
+pub(crate) fn model_info_from_slug_for_provider(slug: &str, wire_api: WireApi) -> ModelInfo {
+    let mut model = model_info_from_slug(slug);
+    match wire_api {
+        WireApi::Responses => {}
+        WireApi::Chat => {
+            model.apply_patch_tool_type = Some(ApplyPatchToolType::Function);
+        }
+        WireApi::Anthropic => {
+            model.supports_reasoning_summaries = true;
+            model.apply_patch_tool_type = Some(ApplyPatchToolType::Function);
+        }
+        WireApi::Gemini => {
+            model.supports_reasoning_summaries = true;
+            model.apply_patch_tool_type = Some(ApplyPatchToolType::Function);
+            model.shell_type = ConfigShellToolType::ShellCommand;
+        }
+    }
+    model
 }
 
 fn local_personality_messages_for_slug(slug: &str) -> Option<ModelMessages> {

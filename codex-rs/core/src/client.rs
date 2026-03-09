@@ -96,6 +96,7 @@ use crate::error::Result;
 use crate::flags::CODEX_RS_SSE_FIXTURE;
 use crate::model_provider_info::ModelProviderInfo;
 use crate::model_provider_info::WireApi;
+use crate::provider_adapters;
 use crate::tools::spec::create_tools_json_for_responses_api;
 
 pub const OPENAI_BETA_HEADER: &str = "OpenAI-Beta";
@@ -283,6 +284,12 @@ impl ModelClient {
         model_info: &ModelInfo,
         session_telemetry: &SessionTelemetry,
     ) -> Result<Vec<ResponseItem>> {
+        if self.state.provider.wire_api != WireApi::Responses {
+            return Err(provider_adapters::responses_only_operation_error(
+                "Conversation compaction",
+                self.state.provider.wire_api,
+            ));
+        }
         if prompt.input.is_empty() {
             return Ok(Vec::new());
         }
@@ -323,6 +330,12 @@ impl ModelClient {
         effort: Option<ReasoningEffortConfig>,
         session_telemetry: &SessionTelemetry,
     ) -> Result<Vec<ApiMemorySummarizeOutput>> {
+        if self.state.provider.wire_api != WireApi::Responses {
+            return Err(provider_adapters::responses_only_operation_error(
+                "Memory summarization",
+                self.state.provider.wire_api,
+            ));
+        }
         if raw_memories.is_empty() {
             return Ok(Vec::new());
         }
@@ -1020,6 +1033,68 @@ impl ModelClientSession {
                 )
                 .await
             }
+            WireApi::Chat | WireApi::Anthropic | WireApi::Gemini => {
+                let auth_manager = self.client.state.auth_manager.clone();
+                let mut auth_recovery = auth_manager
+                    .as_ref()
+                    .map(super::auth::AuthManager::unauthorized_recovery);
+                loop {
+                    let client_setup = self.client.current_client_setup().await?;
+                    let http_client = build_reqwest_client();
+                    let adapter_context = provider_adapters::AdapterContext {
+                        http_client: &http_client,
+                        provider: &self.client.state.provider,
+                        api_provider: &client_setup.api_provider,
+                        api_auth: &client_setup.api_auth,
+                        conversation_id: &self.client.state.conversation_id,
+                        session_source: &self.client.state.session_source,
+                    };
+                    let result = match wire_api {
+                        WireApi::Chat => {
+                            provider_adapters::chat::stream_chat_completions(
+                                &adapter_context,
+                                prompt,
+                                model_info,
+                                session_telemetry,
+                            )
+                            .await
+                        }
+                        WireApi::Anthropic => {
+                            provider_adapters::anthropic::stream_anthropic_messages(
+                                &adapter_context,
+                                prompt,
+                                model_info,
+                                effort,
+                                summary,
+                                session_telemetry,
+                            )
+                            .await
+                        }
+                        WireApi::Gemini => {
+                            provider_adapters::gemini::stream_gemini_generate_content(
+                                &adapter_context,
+                                prompt,
+                                model_info,
+                                effort,
+                                session_telemetry,
+                            )
+                            .await
+                        }
+                        WireApi::Responses => unreachable!("handled above"),
+                    };
+                    match result {
+                        Err(CodexErr::UnexpectedStatus(err))
+                            if err.status == StatusCode::UNAUTHORIZED =>
+                        {
+                            if try_refresh_unauthorized(&mut auth_recovery).await? {
+                                continue;
+                            }
+                            return Err(CodexErr::UnexpectedStatus(err));
+                        }
+                        other => return other,
+                    }
+                }
+            }
         }
     }
 
@@ -1189,17 +1264,26 @@ async fn handle_unauthorized(
     transport: TransportError,
     auth_recovery: &mut Option<UnauthorizedRecovery>,
 ) -> Result<()> {
+    if try_refresh_unauthorized(auth_recovery).await? {
+        return Ok(());
+    }
+
+    Err(map_api_error(ApiError::Transport(transport)))
+}
+
+async fn try_refresh_unauthorized(
+    auth_recovery: &mut Option<UnauthorizedRecovery>,
+) -> Result<bool> {
     if let Some(recovery) = auth_recovery
         && recovery.has_next()
     {
         return match recovery.next().await {
-            Ok(_) => Ok(()),
+            Ok(_) => Ok(true),
             Err(RefreshTokenError::Permanent(failed)) => Err(CodexErr::RefreshTokenFailed(failed)),
             Err(RefreshTokenError::Transient(other)) => Err(CodexErr::Io(other)),
         };
     }
-
-    Err(map_api_error(ApiError::Transport(transport)))
+    Ok(false)
 }
 
 struct ApiTelemetry {

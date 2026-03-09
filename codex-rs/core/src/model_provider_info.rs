@@ -27,7 +27,8 @@ const MAX_STREAM_MAX_RETRIES: u64 = 100;
 const MAX_REQUEST_MAX_RETRIES: u64 = 100;
 
 const OPENAI_PROVIDER_NAME: &str = "OpenAI";
-const CHAT_WIRE_API_REMOVED_ERROR: &str = "`wire_api = \"chat\"` is no longer supported.\nHow to fix: set `wire_api = \"responses\"` in your provider config.\nMore info: https://github.com/openai/codex/discussions/7782";
+const ANTHROPIC_PROVIDER_NAME: &str = "Anthropic";
+const GEMINI_PROVIDER_NAME: &str = "Gemini";
 pub(crate) const LEGACY_OLLAMA_CHAT_PROVIDER_ID: &str = "ollama-chat";
 pub(crate) const OLLAMA_CHAT_PROVIDER_REMOVED_ERROR: &str = "`ollama-chat` is no longer supported.\nHow to fix: replace `ollama-chat` with `ollama` in `model_provider`, `oss_provider`, or `--local-provider`.\nMore info: https://github.com/openai/codex/discussions/7782";
 
@@ -38,6 +39,23 @@ pub enum WireApi {
     /// The Responses API exposed by OpenAI at `/v1/responses`.
     #[default]
     Responses,
+    /// Regular OpenAI-compatible Chat Completions at `/v1/chat/completions`.
+    Chat,
+    /// Anthropic Messages API at `/v1/messages`.
+    Anthropic,
+    /// Gemini `streamGenerateContent` SSE API.
+    Gemini,
+}
+
+impl WireApi {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Responses => "responses",
+            Self::Chat => "chat",
+            Self::Anthropic => "anthropic",
+            Self::Gemini => "gemini",
+        }
+    }
 }
 
 impl<'de> Deserialize<'de> for WireApi {
@@ -48,8 +66,13 @@ impl<'de> Deserialize<'de> for WireApi {
         let value = String::deserialize(deserializer)?;
         match value.as_str() {
             "responses" => Ok(Self::Responses),
-            "chat" => Err(serde::de::Error::custom(CHAT_WIRE_API_REMOVED_ERROR)),
-            _ => Err(serde::de::Error::unknown_variant(&value, &["responses"])),
+            "chat" => Ok(Self::Chat),
+            "anthropic" => Ok(Self::Anthropic),
+            "gemini" => Ok(Self::Gemini),
+            _ => Err(serde::de::Error::unknown_variant(
+                &value,
+                &["responses", "chat", "anthropic", "gemini"],
+            )),
         }
     }
 }
@@ -77,6 +100,18 @@ pub struct ModelProviderInfo {
     /// Which wire protocol this provider expects.
     #[serde(default)]
     pub wire_api: WireApi,
+
+    /// Native API version selector used by providers such as Anthropic.
+    pub version: Option<String>,
+
+    /// Optional beta/feature selector used by native provider protocols.
+    pub beta: Option<String>,
+
+    /// When true, native providers that support multiple auth styles should send
+    /// the resolved token as `Authorization: Bearer ...` instead of a provider-
+    /// specific API key header.
+    #[serde(default)]
+    pub use_bearer_auth: bool,
 
     /// Optional query parameters to append to the base URL.
     pub query_params: Option<HashMap<String, String>>,
@@ -116,7 +151,9 @@ pub struct ModelProviderInfo {
 impl ModelProviderInfo {
     fn build_header_map(&self) -> crate::error::Result<HeaderMap> {
         let capacity = self.http_headers.as_ref().map_or(0, HashMap::len)
-            + self.env_http_headers.as_ref().map_or(0, HashMap::len);
+            + self.env_http_headers.as_ref().map_or(0, HashMap::len)
+            + usize::from(self.version.is_some())
+            + usize::from(self.beta.is_some());
         let mut headers = HeaderMap::with_capacity(capacity);
         if let Some(extra) = &self.http_headers {
             for (k, v) in extra {
@@ -135,6 +172,22 @@ impl ModelProviderInfo {
                 {
                     headers.insert(name, value);
                 }
+            }
+        }
+
+        if self.wire_api == WireApi::Anthropic {
+            if let Some(version) = &self.version
+                && !headers.contains_key("anthropic-version")
+                && let Ok(value) = HeaderValue::try_from(version)
+            {
+                headers.insert(HeaderName::from_static("anthropic-version"), value);
+            }
+
+            if let Some(beta) = &self.beta
+                && !headers.contains_key("anthropic-beta")
+                && let Ok(value) = HeaderValue::try_from(beta)
+            {
+                headers.insert(HeaderName::from_static("anthropic-beta"), value);
             }
         }
 
@@ -230,6 +283,9 @@ impl ModelProviderInfo {
             env_key_instructions: None,
             experimental_bearer_token: None,
             wire_api: WireApi::Responses,
+            version: None,
+            beta: None,
+            use_bearer_auth: false,
             query_params: None,
             http_headers: Some(
                 [("version".to_string(), env!("CARGO_PKG_VERSION").to_string())]
@@ -264,19 +320,71 @@ impl ModelProviderInfo {
 pub const DEFAULT_LMSTUDIO_PORT: u16 = 1234;
 pub const DEFAULT_OLLAMA_PORT: u16 = 11434;
 
+pub const ANTHROPIC_PROVIDER_ID: &str = "anthropic";
+pub const GEMINI_PROVIDER_ID: &str = "gemini";
 pub const LMSTUDIO_OSS_PROVIDER_ID: &str = "lmstudio";
 pub const OLLAMA_OSS_PROVIDER_ID: &str = "ollama";
+
+fn default_anthropic_base_url() -> String {
+    "https://api.anthropic.com/v1".to_string()
+}
+
+fn default_gemini_base_url() -> String {
+    "https://generativelanguage.googleapis.com/v1beta".to_string()
+}
 
 /// Built-in default provider list.
 pub fn built_in_model_providers() -> HashMap<String, ModelProviderInfo> {
     use ModelProviderInfo as P;
 
-    // We do not want to be in the business of adjucating which third-party
-    // providers are bundled with Codex CLI, so we only include the OpenAI and
-    // open source ("oss") providers by default. Users are encouraged to add to
-    // `model_providers` in config.toml to add their own providers.
+    // Keep the built-in set small: OpenAI, the local OSS providers, and the
+    // native third-party APIs this fork explicitly supports.
     [
         ("openai", P::create_openai_provider()),
+        (
+            ANTHROPIC_PROVIDER_ID,
+            ModelProviderInfo {
+                name: ANTHROPIC_PROVIDER_NAME.into(),
+                base_url: Some(default_anthropic_base_url()),
+                env_key: Some("ANTHROPIC_API_KEY".to_string()),
+                env_key_instructions: None,
+                experimental_bearer_token: None,
+                wire_api: WireApi::Anthropic,
+                version: Some("2023-06-01".to_string()),
+                beta: None,
+                use_bearer_auth: false,
+                query_params: None,
+                http_headers: None,
+                env_http_headers: None,
+                request_max_retries: None,
+                stream_max_retries: None,
+                stream_idle_timeout_ms: None,
+                requires_openai_auth: false,
+                supports_websockets: false,
+            },
+        ),
+        (
+            GEMINI_PROVIDER_ID,
+            ModelProviderInfo {
+                name: GEMINI_PROVIDER_NAME.into(),
+                base_url: Some(default_gemini_base_url()),
+                env_key: Some("GEMINI_API_KEY".to_string()),
+                env_key_instructions: None,
+                experimental_bearer_token: None,
+                wire_api: WireApi::Gemini,
+                version: None,
+                beta: None,
+                use_bearer_auth: false,
+                query_params: None,
+                http_headers: None,
+                env_http_headers: None,
+                request_max_retries: None,
+                stream_max_retries: None,
+                stream_idle_timeout_ms: None,
+                requires_openai_auth: false,
+                supports_websockets: false,
+            },
+        ),
         (
             OLLAMA_OSS_PROVIDER_ID,
             create_oss_provider(DEFAULT_OLLAMA_PORT, WireApi::Responses),
@@ -318,6 +426,9 @@ pub fn create_oss_provider_with_base_url(base_url: &str, wire_api: WireApi) -> M
         env_key_instructions: None,
         experimental_bearer_token: None,
         wire_api,
+        version: None,
+        beta: None,
+        use_bearer_auth: false,
         query_params: None,
         http_headers: None,
         env_http_headers: None,
@@ -347,6 +458,9 @@ base_url = "http://localhost:11434/v1"
             env_key_instructions: None,
             experimental_bearer_token: None,
             wire_api: WireApi::Responses,
+            version: None,
+            beta: None,
+            use_bearer_auth: false,
             query_params: None,
             http_headers: None,
             env_http_headers: None,
@@ -376,6 +490,9 @@ query_params = { api-version = "2025-04-01-preview" }
             env_key_instructions: None,
             experimental_bearer_token: None,
             wire_api: WireApi::Responses,
+            version: None,
+            beta: None,
+            use_bearer_auth: false,
             query_params: Some(maplit::hashmap! {
                 "api-version".to_string() => "2025-04-01-preview".to_string(),
             }),
@@ -408,6 +525,9 @@ env_http_headers = { "X-Example-Env-Header" = "EXAMPLE_ENV_VAR" }
             env_key_instructions: None,
             experimental_bearer_token: None,
             wire_api: WireApi::Responses,
+            version: None,
+            beta: None,
+            use_bearer_auth: false,
             query_params: None,
             http_headers: Some(maplit::hashmap! {
                 "X-Example-Header".to_string() => "example-value".to_string(),
@@ -427,7 +547,7 @@ env_http_headers = { "X-Example-Env-Header" = "EXAMPLE_ENV_VAR" }
     }
 
     #[test]
-    fn test_deserialize_chat_wire_api_shows_helpful_error() {
+    fn test_deserialize_chat_wire_api() {
         let provider_toml = r#"
 name = "OpenAI using Chat Completions"
 base_url = "https://api.openai.com/v1"
@@ -435,7 +555,17 @@ env_key = "OPENAI_API_KEY"
 wire_api = "chat"
         "#;
 
-        let err = toml::from_str::<ModelProviderInfo>(provider_toml).unwrap_err();
-        assert!(err.to_string().contains(CHAT_WIRE_API_REMOVED_ERROR));
+        let provider = toml::from_str::<ModelProviderInfo>(provider_toml).unwrap();
+        assert_eq!(provider.wire_api, WireApi::Chat);
+    }
+
+    #[test]
+    fn built_in_providers_include_anthropic_and_gemini() {
+        let providers = built_in_model_providers();
+        assert_eq!(
+            providers[ANTHROPIC_PROVIDER_ID].wire_api,
+            WireApi::Anthropic
+        );
+        assert_eq!(providers[GEMINI_PROVIDER_ID].wire_api, WireApi::Gemini);
     }
 }

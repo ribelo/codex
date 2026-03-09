@@ -47,6 +47,7 @@ use crate::model_provider_info::LMSTUDIO_OSS_PROVIDER_ID;
 use crate::model_provider_info::ModelProviderInfo;
 use crate::model_provider_info::OLLAMA_CHAT_PROVIDER_REMOVED_ERROR;
 use crate::model_provider_info::OLLAMA_OSS_PROVIDER_ID;
+use crate::model_provider_info::WireApi;
 use crate::model_provider_info::built_in_model_providers;
 use crate::path_utils::normalize_for_native_workdir;
 use crate::project_doc::DEFAULT_PROJECT_DOC_FILENAME;
@@ -2172,6 +2173,20 @@ impl Config {
         let forced_login_method = cfg.forced_login_method;
 
         let model = model.or(config_profile.model).or(cfg.model);
+        if model.is_none() && model_provider.wire_api != WireApi::Responses {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "model must be set when using model_provider `{model_provider_id}` because `{}` providers do not support built-in model discovery",
+                    match model_provider.wire_api {
+                        WireApi::Responses => "responses",
+                        WireApi::Chat => "chat",
+                        WireApi::Anthropic => "anthropic",
+                        WireApi::Gemini => "gemini",
+                    }
+                ),
+            ));
+        }
         let service_tier = service_tier_override
             .unwrap_or_else(|| config_profile.service_tier.or(cfg.service_tier));
         let service_tier = match service_tier {
