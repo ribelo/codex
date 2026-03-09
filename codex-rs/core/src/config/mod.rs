@@ -74,6 +74,7 @@ use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::config_types::WebSearchToolConfig;
 use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::models::MacOsSeatbeltProfileExtensions;
+use codex_protocol::openai_models::ModelMetadataOverrides;
 use codex_protocol::openai_models::ModelsResponse;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::permissions::FileSystemSandboxPolicy;
@@ -218,6 +219,9 @@ pub struct Config {
 
     /// Token usage threshold triggering auto-compaction of conversation history.
     pub model_auto_compact_token_limit: Option<i64>,
+
+    /// User-configured model metadata overrides resolved from config and profiles.
+    pub model_metadata: Option<ModelMetadataOverrides>,
 
     /// Key into the model_providers map that specifies which provider to use.
     pub model_provider_id: String,
@@ -1050,6 +1054,9 @@ pub struct ConfigToml {
     /// Token usage threshold triggering auto-compaction of conversation history.
     pub model_auto_compact_token_limit: Option<i64>,
 
+    /// Optional model metadata overrides applied to the configured model.
+    pub model_metadata: Option<ModelMetadataOverrides>,
+
     /// Default approval policy for executing commands.
     pub approval_policy: Option<AskForApproval>,
 
@@ -1771,6 +1778,23 @@ fn resolve_web_search_config(
     }
 }
 
+fn apply_legacy_model_metadata_aliases(
+    model_metadata: &mut ModelMetadataOverrides,
+    context_window: Option<i64>,
+    auto_compact_token_limit: Option<i64>,
+    supports_reasoning_summaries: Option<bool>,
+) {
+    if let Some(context_window) = context_window {
+        model_metadata.context_window = Some(context_window);
+    }
+    if let Some(auto_compact_token_limit) = auto_compact_token_limit {
+        model_metadata.auto_compact_token_limit = Some(auto_compact_token_limit);
+    }
+    if let Some(supports_reasoning_summaries) = supports_reasoning_summaries {
+        model_metadata.supports_reasoning_summaries = Some(supports_reasoning_summaries);
+    }
+}
+
 pub(crate) fn resolve_web_search_mode_for_turn(
     web_search_mode: &Constrained<WebSearchMode>,
     sandbox_policy: &SandboxPolicy,
@@ -1884,6 +1908,30 @@ impl Config {
                 .clone(),
             None => ConfigProfile::default(),
         };
+        let mut model_metadata = cfg.model_metadata.clone().unwrap_or_default();
+        apply_legacy_model_metadata_aliases(
+            &mut model_metadata,
+            cfg.model_context_window,
+            cfg.model_auto_compact_token_limit,
+            cfg.model_supports_reasoning_summaries,
+        );
+        if let Some(profile_model_metadata) = &config_profile.model_metadata {
+            model_metadata.merge(profile_model_metadata);
+        }
+        apply_legacy_model_metadata_aliases(
+            &mut model_metadata,
+            config_profile.model_context_window,
+            config_profile.model_auto_compact_token_limit,
+            config_profile.model_supports_reasoning_summaries,
+        );
+        let model_metadata = (!model_metadata.is_empty()).then_some(model_metadata);
+        let model_context_window = model_metadata.as_ref().and_then(|m| m.context_window);
+        let model_auto_compact_token_limit = model_metadata
+            .as_ref()
+            .and_then(|m| m.auto_compact_token_limit);
+        let model_supports_reasoning_summaries = model_metadata
+            .as_ref()
+            .and_then(|m| m.supports_reasoning_summaries);
         let feature_overrides = FeatureOverrides {
             include_apply_patch_tool: include_apply_patch_tool_override,
             web_search_request: override_tools_web_search_request,
@@ -2354,8 +2402,9 @@ impl Config {
             model,
             service_tier,
             review_model,
-            model_context_window: cfg.model_context_window,
-            model_auto_compact_token_limit: cfg.model_auto_compact_token_limit,
+            model_context_window,
+            model_auto_compact_token_limit,
+            model_metadata,
             model_provider_id,
             model_provider,
             cwd: resolved_cwd,
@@ -2436,7 +2485,7 @@ impl Config {
             model_reasoning_summary: config_profile
                 .model_reasoning_summary
                 .or(cfg.model_reasoning_summary),
-            model_supports_reasoning_summaries: cfg.model_supports_reasoning_summaries,
+            model_supports_reasoning_summaries,
             model_catalog,
             model_verbosity: config_profile.model_verbosity.or(cfg.model_verbosity),
             chatgpt_base_url: config_profile

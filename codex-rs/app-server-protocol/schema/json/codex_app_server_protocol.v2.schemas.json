@@ -620,6 +620,13 @@
     "AppToolsConfig": {
       "type": "object"
     },
+    "ApplyPatchToolType": {
+      "enum": [
+        "freeform",
+        "function"
+      ],
+      "type": "string"
+    },
     "AppsConfig": {
       "properties": {
         "_default": {
@@ -2865,6 +2872,16 @@
             "null"
           ]
         },
+        "model_metadata": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ModelMetadataOverrides"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "model_provider": {
           "type": [
             "string",
@@ -2889,6 +2906,12 @@
             {
               "type": "null"
             }
+          ]
+        },
+        "model_supports_reasoning_summaries": {
+          "type": [
+            "boolean",
+            "null"
           ]
         },
         "model_verbosity": {
@@ -3332,6 +3355,17 @@
       },
       "title": "ConfigRequirementsReadResponse",
       "type": "object"
+    },
+    "ConfigShellToolType": {
+      "description": "Shell execution capability for a model.",
+      "enum": [
+        "default",
+        "local",
+        "unified_exec",
+        "disabled",
+        "shell_command"
+      ],
+      "type": "string"
     },
     "ConfigValueWriteParams": {
       "$schema": "http://json-schema.org/draft-07/schema#",
@@ -8544,6 +8578,44 @@
       ],
       "type": "object"
     },
+    "ModelInfoUpgrade": {
+      "properties": {
+        "migration_markdown": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "migration_markdown",
+        "model"
+      ],
+      "type": "object"
+    },
+    "ModelInstructionsVariables": {
+      "properties": {
+        "personality_default": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "personality_friendly": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "personality_pragmatic": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "ModelListParams": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "properties": {
@@ -8595,6 +8667,253 @@
         "data"
       ],
       "title": "ModelListResponse",
+      "type": "object"
+    },
+    "ModelMessages": {
+      "description": "A strongly-typed template for assembling model instructions and developer messages. If instructions_* is populated and valid, it will override base_instructions.",
+      "properties": {
+        "instructions_template": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "instructions_variables": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ModelInstructionsVariables"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "ModelMetadataOverrides": {
+      "description": "User-configurable overrides for model metadata.",
+      "properties": {
+        "apply_patch_tool_type": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ApplyPatchToolType"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "auto_compact_token_limit": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "availability_nux": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ModelAvailabilityNux"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "base_instructions": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "context_window": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "default_reasoning_level": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ReasoningEffort"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "default_reasoning_summary": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ReasoningSummary"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "default_verbosity": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Verbosity"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "display_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "effective_context_window_percent": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "experimental_supported_tools": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "input_modalities": {
+          "items": {
+            "$ref": "#/definitions/InputModality"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "model_messages": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ModelMessages"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "prefer_websockets": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "priority": {
+          "format": "int32",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "shell_type": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ConfigShellToolType"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "support_verbosity": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "supported_in_api": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "supported_reasoning_levels": {
+          "items": {
+            "$ref": "#/definitions/ReasoningEffortPreset"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "supports_image_detail_original": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "supports_parallel_tool_calls": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "supports_reasoning_summaries": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "truncation_policy": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/TruncationPolicyConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "upgrade": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ModelInfoUpgrade"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "visibility": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ModelVisibility"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "web_search_tool_type": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/WebSearchToolType"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
       "type": "object"
     },
     "ModelRerouteReason": {
@@ -8660,6 +8979,15 @@
         "model"
       ],
       "type": "object"
+    },
+    "ModelVisibility": {
+      "description": "Visibility of a model in the picker or APIs.",
+      "enum": [
+        "list",
+        "hide",
+        "none"
+      ],
+      "type": "string"
     },
     "NetworkAccess": {
       "enum": [
@@ -9409,6 +9737,30 @@
             "null"
           ]
         },
+        "model_auto_compact_token_limit": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "model_context_window": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "model_metadata": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ModelMetadataOverrides"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "model_provider": {
           "type": [
             "string",
@@ -9433,6 +9785,12 @@
             {
               "type": "null"
             }
+          ]
+        },
+        "model_supports_reasoning_summaries": {
+          "type": [
+            "boolean",
+            "null"
           ]
         },
         "model_verbosity": {
@@ -9864,6 +10222,28 @@
       "required": [
         "description",
         "reasoningEffort"
+      ],
+      "type": "object"
+    },
+    "ReasoningEffortPreset": {
+      "description": "A reasoning effort option that can be surfaced for a model.",
+      "properties": {
+        "description": {
+          "description": "Short human description shown next to the effort in UIs.",
+          "type": "string"
+        },
+        "effort": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ReasoningEffort"
+            }
+          ],
+          "description": "Effort level that the model supports."
+        }
+      },
+      "required": [
+        "description",
+        "effort"
       ],
       "type": "object"
     },
@@ -14804,6 +15184,30 @@
       },
       "type": "object"
     },
+    "TruncationMode": {
+      "description": "Server-provided truncation policy metadata for a model.",
+      "enum": [
+        "bytes",
+        "tokens"
+      ],
+      "type": "string"
+    },
+    "TruncationPolicyConfig": {
+      "properties": {
+        "limit": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "mode": {
+          "$ref": "#/definitions/TruncationMode"
+        }
+      },
+      "required": [
+        "limit",
+        "mode"
+      ],
+      "type": "object"
+    },
     "Turn": {
       "properties": {
         "error": {
@@ -15701,6 +16105,13 @@
         }
       },
       "type": "object"
+    },
+    "WebSearchToolType": {
+      "enum": [
+        "text",
+        "text_and_image"
+      ],
+      "type": "string"
     },
     "WindowsSandboxSetupCompletedNotification": {
       "$schema": "http://json-schema.org/draft-07/schema#",

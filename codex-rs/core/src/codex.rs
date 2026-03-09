@@ -2328,20 +2328,7 @@ impl Session {
         turn_context
     }
 
-    pub(crate) async fn maybe_emit_unknown_model_warning_for_turn(&self, tc: &TurnContext) {
-        if tc.model_info.used_fallback_model_metadata {
-            self.send_event(
-                tc,
-                EventMsg::Warning(WarningEvent {
-                    message: format!(
-                        "Model metadata for `{}` not found. Defaulting to fallback metadata; this can degrade performance and cause issues.",
-                        tc.model_info.slug
-                    ),
-                }),
-            )
-            .await;
-        }
-    }
+    pub(crate) async fn maybe_emit_unknown_model_warning_for_turn(&self, _tc: &TurnContext) {}
 
     pub(crate) async fn new_default_turn(&self) -> Arc<TurnContext> {
         self.new_default_turn_with_sub_id(self.next_internal_sub_id())

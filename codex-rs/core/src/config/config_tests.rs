@@ -14,6 +14,7 @@ use crate::config_loader::RequirementSource;
 use crate::features::Feature;
 use assert_matches::assert_matches;
 use codex_config::CONFIG_TOML_FILE;
+use codex_protocol::openai_models::ModelMetadataOverrides;
 use codex_protocol::permissions::FileSystemAccessMode;
 use codex_protocol::permissions::FileSystemPath;
 use codex_protocol::permissions::FileSystemSandboxEntry;
@@ -29,6 +30,8 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::time::Duration;
 use tempfile::TempDir;
+
+use crate::test_support::construct_model_info_offline;
 
 fn stdio_mcp(command: &str) -> McpServerConfig {
     McpServerConfig {
@@ -1462,6 +1465,91 @@ profile = "project"
 
     assert_eq!(config.active_profile.as_deref(), Some("project"));
     assert_eq!(config.model.as_deref(), Some("gpt-project"));
+
+    Ok(())
+}
+
+#[test]
+fn profile_legacy_model_context_window_is_applied() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    let mut profiles = HashMap::new();
+    profiles.insert(
+        "custom".to_string(),
+        ConfigProfile {
+            model_context_window: Some(262_144),
+            ..Default::default()
+        },
+    );
+    let cfg = ConfigToml {
+        model_context_window: Some(128_000),
+        profiles,
+        profile: Some("custom".to_string()),
+        ..Default::default()
+    };
+
+    let config = Config::load_from_base_config_with_overrides(
+        cfg,
+        ConfigOverrides::default(),
+        codex_home.path().to_path_buf(),
+    )?;
+
+    assert_eq!(config.model_context_window, Some(262_144));
+    assert_eq!(
+        config.model_metadata,
+        Some(ModelMetadataOverrides {
+            context_window: Some(262_144),
+            ..Default::default()
+        })
+    );
+
+    Ok(())
+}
+
+#[test]
+fn profile_model_metadata_overrides_root_and_applies_to_model_info() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    let mut profiles = HashMap::new();
+    profiles.insert(
+        "custom".to_string(),
+        ConfigProfile {
+            model_metadata: Some(ModelMetadataOverrides {
+                supports_parallel_tool_calls: Some(true),
+                context_window: Some(262_144),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+    );
+    let cfg = ConfigToml {
+        profile: Some("custom".to_string()),
+        model_metadata: Some(ModelMetadataOverrides {
+            display_name: Some("Base Display".to_string()),
+            supports_parallel_tool_calls: Some(false),
+            ..Default::default()
+        }),
+        profiles,
+        ..Default::default()
+    };
+
+    let config = Config::load_from_base_config_with_overrides(
+        cfg,
+        ConfigOverrides::default(),
+        codex_home.path().to_path_buf(),
+    )?;
+    let model_info = construct_model_info_offline("custom-model", &config);
+
+    assert_eq!(
+        config.model_metadata,
+        Some(ModelMetadataOverrides {
+            display_name: Some("Base Display".to_string()),
+            supports_parallel_tool_calls: Some(true),
+            context_window: Some(262_144),
+            ..Default::default()
+        })
+    );
+    assert_eq!(model_info.display_name, "Base Display");
+    assert!(model_info.supports_parallel_tool_calls);
+    assert_eq!(model_info.context_window, Some(262_144));
 
     Ok(())
 }
@@ -4041,6 +4129,7 @@ fn test_precedence_fixture_with_o3_profile() -> std::io::Result<()> {
             review_model: None,
             model_context_window: None,
             model_auto_compact_token_limit: None,
+            model_metadata: None,
             service_tier: None,
             model_provider_id: "openai".to_string(),
             model_provider: fixture.openai_provider.clone(),
@@ -4177,6 +4266,7 @@ fn test_precedence_fixture_with_gpt3_profile() -> std::io::Result<()> {
         review_model: None,
         model_context_window: None,
         model_auto_compact_token_limit: None,
+        model_metadata: None,
         service_tier: None,
         model_provider_id: "openai-custom".to_string(),
         model_provider: fixture.openai_custom_provider.clone(),
@@ -4311,6 +4401,7 @@ fn test_precedence_fixture_with_zdr_profile() -> std::io::Result<()> {
         review_model: None,
         model_context_window: None,
         model_auto_compact_token_limit: None,
+        model_metadata: None,
         service_tier: None,
         model_provider_id: "openai".to_string(),
         model_provider: fixture.openai_provider.clone(),
@@ -4431,6 +4522,7 @@ fn test_precedence_fixture_with_gpt5_profile() -> std::io::Result<()> {
         review_model: None,
         model_context_window: None,
         model_auto_compact_token_limit: None,
+        model_metadata: None,
         service_tier: None,
         model_provider_id: "openai".to_string(),
         model_provider: fixture.openai_provider.clone(),

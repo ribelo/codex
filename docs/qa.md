@@ -84,6 +84,30 @@ Wire/runtime decisions:
   `GOOGLE_CLOUD_PROJECT` / `GOOGLE_CLOUD_PROJECT_ID`, with `ANTIGRAVITY_PROJECT_ID` as an
   Antigravity-specific override
 
+### How should custom-model metadata work in the fork?
+
+Do not require hardcoded model entries or JSON catalogs for normal custom-model use.
+
+Custom models should resolve from provider-aware inferred defaults plus config overrides. Missing an
+exact catalog entry is not a warning-worthy scenario by itself.
+
+Config decisions:
+
+- add a typed `model_metadata` block at the root config level and inside profiles
+- let `model_metadata` mirror the public `ModelInfo` surface, excluding the internal fallback flag
+- keep `model_catalog_json` optional for exact catalog/picker metadata, not as the normal fix for
+  custom models
+- keep provider transport/auth settings out of `model_metadata`
+
+Compatibility/runtime decisions:
+
+- profile-level `model_context_window`, `model_auto_compact_token_limit`, and
+  `model_supports_reasoning_summaries` are accepted as compatibility aliases and feed into the
+  same effective metadata path
+- inferred metadata remains internal fallback state for code that cares, but Codex must not emit
+  the old scary per-turn warning just because a slug is custom
+- explicit config instruction overrides still win over `model_metadata.base_instructions`
+
 ### How should the built-in footer and `/statusline` relate?
 
 The built-in idle footer is the richer layout:

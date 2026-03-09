@@ -14,7 +14,7 @@ use crate::config::Config;
 use crate::features::Feature;
 use crate::model_provider_info::WireApi;
 use crate::truncate::approx_bytes_for_tokens;
-use tracing::warn;
+use tracing::debug;
 
 pub const BASE_INSTRUCTIONS: &str = include_str!("../../prompt.md");
 const DEFAULT_PERSONALITY_HEADER: &str = "You are Codex, a coding agent based on GPT-5. You and the user share the same workspace and collaborate to achieve the user's goals.";
@@ -24,6 +24,9 @@ const LOCAL_PRAGMATIC_TEMPLATE: &str = "You are a deeply pragmatic, effective so
 const PERSONALITY_PLACEHOLDER: &str = "{{ personality }}";
 
 pub(crate) fn with_config_overrides(mut model: ModelInfo, config: &Config) -> ModelInfo {
+    if let Some(model_metadata) = &config.model_metadata {
+        model_metadata.apply_to(&mut model);
+    }
     if let Some(supports_reasoning_summaries) = config.model_supports_reasoning_summaries
         && supports_reasoning_summaries
     {
@@ -61,7 +64,7 @@ pub(crate) fn with_config_overrides(mut model: ModelInfo, config: &Config) -> Mo
 
 /// Build a minimal fallback model descriptor for missing/unknown slugs.
 pub(crate) fn model_info_from_slug(slug: &str) -> ModelInfo {
-    warn!("Unknown model {slug} is used. This will use fallback model metadata.");
+    debug!("Unknown model {slug} is using inferred metadata.");
     ModelInfo {
         slug: slug.to_string(),
         display_name: slug.to_string(),
@@ -153,6 +156,7 @@ fn local_personality_messages_for_slug(slug: &str) -> Option<ModelMessages> {
 mod tests {
     use super::*;
     use crate::config::test_config;
+    use codex_protocol::openai_models::ModelMetadataOverrides;
     use pretty_assertions::assert_eq;
 
     #[test]
@@ -189,6 +193,30 @@ mod tests {
         let updated = with_config_overrides(model.clone(), &config);
 
         assert_eq!(updated, model);
+    }
+
+    #[test]
+    fn model_metadata_overrides_apply_before_runtime_instruction_overrides() {
+        let model = model_info_from_slug("unknown-model");
+        let mut config = test_config();
+        config.model_metadata = Some(ModelMetadataOverrides {
+            display_name: Some("Custom Display".to_string()),
+            supports_parallel_tool_calls: Some(true),
+            context_window: Some(262_144),
+            base_instructions: Some("metadata instructions".to_string()),
+            ..Default::default()
+        });
+        config.base_instructions = Some("runtime instructions".to_string());
+
+        let updated = with_config_overrides(model.clone(), &config);
+        let mut expected = model;
+        expected.display_name = "Custom Display".to_string();
+        expected.supports_parallel_tool_calls = true;
+        expected.context_window = Some(262_144);
+        expected.base_instructions = "runtime instructions".to_string();
+        expected.model_messages = None;
+
+        assert_eq!(updated, expected);
     }
 
     #[test]
