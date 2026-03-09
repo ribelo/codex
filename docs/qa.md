@@ -40,6 +40,34 @@ Bedrock-specific behavior:
 - `ServiceTier::Fast` maps to Bedrock `priority`, and `ServiceTier::Flex` maps to Bedrock `flex`
 - structured output uses Bedrock Converse `output_config` with a JSON schema string
 
+### How should Gemini OAuth and Antigravity fit the restored fork?
+
+Treat both as first-class fork features on top of the current additive provider architecture.
+Do not revive the old global `provider_kind`, provider-profile, canonical `provider/model`, or
+shared auth-mode design.
+
+Provider/runtime decisions:
+
+- `gemini` stays a built-in provider and supports fork-specific Google OAuth in addition to
+  `GEMINI_API_KEY`
+- built-in `antigravity` is restored as a fork-specific native provider with `wire_api =
+  "antigravity"`
+- Gemini credential precedence is `experimental_bearer_token` -> stored Gemini OAuth ->
+  `GEMINI_API_KEY`
+- Antigravity uses provider-scoped OAuth credentials and its native endpoint fallback order
+- Gemini OAuth uses the restored Google Code Assist transport and request shape
+
+Auth/CLI decisions:
+
+- store provider-scoped Google OAuth credentials in `auth.json` under `GEMINI_ACCOUNTS` and
+  `ANTIGRAVITY_ACCOUNTS`
+- do not embed Google OAuth client credentials in the repo; read provider client IDs from env and
+  allow optional env-provided client secrets
+- provider-only OAuth buckets must not be treated as primary OpenAI auth
+- restore `codex login gemini`, `codex login antigravity`, `codex logout gemini`, and
+  `codex logout antigravity`
+- `login status` reports Gemini and Antigravity OAuth availability even when no OpenAI auth exists
+
 ### How should the built-in footer and `/statusline` relate?
 
 The built-in idle footer is the richer layout:

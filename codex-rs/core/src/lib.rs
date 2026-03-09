@@ -6,6 +6,7 @@
 #![deny(clippy::print_stdout, clippy::print_stderr)]
 
 mod analytics_client;
+pub mod antigravity;
 pub mod api_bridge;
 mod apply_patch;
 mod apps;
@@ -156,6 +157,7 @@ pub use rollout::policy::EventPersistenceMode;
 pub use rollout::rollout_date_parts;
 pub use rollout::session_index::find_thread_names_by_ids;
 mod function_tool;
+pub mod gemini;
 mod state;
 mod tasks;
 mod user_shell_command;

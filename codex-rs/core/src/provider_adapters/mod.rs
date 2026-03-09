@@ -1,4 +1,5 @@
 use crate::api_bridge::CoreAuthProvider;
+use crate::auth::AuthManager;
 use crate::error::CodexErr;
 use crate::model_provider_info::ModelProviderInfo;
 use crate::model_provider_info::WireApi;
@@ -15,6 +16,7 @@ use reqwest::RequestBuilder;
 use url::Url;
 
 pub(crate) mod anthropic;
+pub(crate) mod antigravity;
 pub(crate) mod bedrock;
 pub(crate) mod chat;
 pub(crate) mod gemini;
@@ -24,6 +26,7 @@ pub(crate) struct AdapterContext<'a> {
     pub(crate) provider: &'a ModelProviderInfo,
     pub(crate) api_provider: &'a ApiProvider,
     pub(crate) api_auth: &'a CoreAuthProvider,
+    pub(crate) auth_manager: Option<&'a AuthManager>,
     pub(crate) conversation_id: &'a ThreadId,
     pub(crate) session_source: &'a SessionSource,
 }

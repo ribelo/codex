@@ -9,6 +9,10 @@ use crate::error::CodexErr;
 use crate::error::ConnectionFailedError;
 use crate::error::Result;
 use crate::error::UnexpectedResponseError;
+use crate::gemini::GEMINI_CODE_ASSIST_CLIENT_METADATA;
+use crate::gemini::GEMINI_CODE_ASSIST_ENDPOINT;
+use crate::gemini::GEMINI_CODE_ASSIST_USER_AGENT;
+use crate::gemini::GEMINI_CODE_ASSIST_X_GOOG_API_CLIENT;
 use crate::provider_adapters::AdapterContext;
 use crate::provider_adapters::max_output_tokens;
 use crate::util::backoff;
@@ -41,7 +45,7 @@ const GEMINI_MODEL_FALLBACKS: &[(&str, &str)] = &[
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct GeminiRequest {
+pub(crate) struct GeminiRequest {
     contents: Vec<GeminiContent>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<GeminiTool>>,
@@ -51,18 +55,22 @@ struct GeminiRequest {
     system_instruction: Option<GeminiContent>,
     #[serde(skip_serializing_if = "Option::is_none")]
     generation_config: Option<GeminiGenerationConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) safety_settings: Option<Vec<SafetySetting>>,
 }
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
-struct GeminiContent {
+pub(crate) struct GeminiContent {
     role: String,
     parts: Vec<GeminiPart>,
 }
 
 #[derive(Serialize, Default, Clone)]
 #[serde(rename_all = "camelCase")]
-struct GeminiPart {
+pub(crate) struct GeminiPart {
     #[serde(skip_serializing_if = "Option::is_none")]
     text: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -73,6 +81,13 @@ struct GeminiPart {
     thought_signature: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     thought: Option<bool>,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SafetySetting {
+    pub(crate) category: String,
+    pub(crate) threshold: String,
 }
 
 #[derive(Serialize, Clone)]
@@ -110,13 +125,13 @@ struct GeminiFunctionDeclaration {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct GeminiToolConfig {
+pub(crate) struct GeminiToolConfig {
     function_calling_config: GeminiFunctionCallingConfig,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct GeminiFunctionCallingConfig {
+pub(crate) struct GeminiFunctionCallingConfig {
     mode: String,
 }
 
@@ -186,6 +201,32 @@ struct GeminiUsageMetadata {
     thoughts_token_count: Option<i64>,
 }
 
+enum GeminiCredential {
+    ApiKey(String),
+    ProviderBearer(String),
+    OAuth {
+        access_token: String,
+        project_id: String,
+    },
+}
+
+enum GeminiRequestConfig {
+    GenerativeLanguage {
+        url: String,
+        auth_header: GeminiAuthHeader,
+    },
+    CodeAssist {
+        url: String,
+        access_token: String,
+        project_id: String,
+    },
+}
+
+enum GeminiAuthHeader {
+    ApiKey(String),
+    Bearer(String),
+}
+
 struct AssistantState {
     item: ResponseItem,
     added: bool,
@@ -199,6 +240,28 @@ struct ReasoningState {
     signature: Option<String>,
 }
 
+pub(crate) fn prepend_system_instruction_part(payload: &mut GeminiRequest, text: &str) {
+    let system_instruction = payload.system_instruction.get_or_insert(GeminiContent {
+        role: "user".to_string(),
+        parts: Vec::new(),
+    });
+    system_instruction.parts.insert(
+        0,
+        GeminiPart {
+            text: Some(text.to_string()),
+            ..Default::default()
+        },
+    );
+}
+
+pub(crate) fn set_tool_config_validated_mode(payload: &mut GeminiRequest) {
+    payload.tool_config = Some(GeminiToolConfig {
+        function_calling_config: GeminiFunctionCallingConfig {
+            mode: "VALIDATED".to_string(),
+        },
+    });
+}
+
 pub(crate) async fn stream_gemini_generate_content(
     ctx: &AdapterContext<'_>,
     prompt: &Prompt,
@@ -207,24 +270,41 @@ pub(crate) async fn stream_gemini_generate_content(
     session_telemetry: &SessionTelemetry,
 ) -> Result<ResponseStream> {
     let (payload, model_name) = build_payload(prompt, model_info, effort)?;
-    let request_url = ctx.request_url_with_query(
-        &format!("/models/{model_name}:streamGenerateContent"),
-        &[("alt", "sse")],
-    )?;
+    let request_config = match resolve_gemini_credentials(ctx).await? {
+        GeminiCredential::ApiKey(token) => GeminiRequestConfig::GenerativeLanguage {
+            url: ctx.request_url_with_query(
+                &format!("/models/{model_name}:streamGenerateContent"),
+                &[("alt", "sse")],
+            )?,
+            auth_header: GeminiAuthHeader::ApiKey(token),
+        },
+        GeminiCredential::ProviderBearer(token) => GeminiRequestConfig::GenerativeLanguage {
+            url: ctx.request_url_with_query(
+                &format!("/models/{model_name}:streamGenerateContent"),
+                &[("alt", "sse")],
+            )?,
+            auth_header: GeminiAuthHeader::Bearer(token),
+        },
+        GeminiCredential::OAuth {
+            access_token,
+            project_id,
+        } => GeminiRequestConfig::CodeAssist {
+            url: format!(
+                "{}/v1internal:streamGenerateContent?alt=sse",
+                code_assist_base_url(ctx)
+            ),
+            access_token,
+            project_id,
+        },
+    };
     let mut attempt = 0_u64;
     let max_retries = ctx.provider.request_max_retries();
     loop {
         attempt += 1;
         let started_at = Instant::now();
-        let mut request = ctx.request_builder(request_url.clone(), http::HeaderMap::new());
-        if let Some(token) = ctx.bearer_token() {
-            request = if ctx.provider.use_bearer_auth {
-                request.bearer_auth(token)
-            } else {
-                request.header("x-goog-api-key", token)
-            };
-        }
-        let response = request.json(&payload).send().await;
+        let response = build_gemini_request(ctx, &request_config, &payload, &model_name)
+            .send()
+            .await;
         let duration = started_at.elapsed();
         session_telemetry.record_api_request(
             attempt,
@@ -276,7 +356,95 @@ pub(crate) async fn stream_gemini_generate_content(
     }
 }
 
-fn build_payload(
+async fn resolve_gemini_credentials(ctx: &AdapterContext<'_>) -> Result<GeminiCredential> {
+    if let Some(token) = &ctx.provider.experimental_bearer_token {
+        return if ctx.provider.use_bearer_auth {
+            Ok(GeminiCredential::ProviderBearer(token.clone()))
+        } else {
+            Ok(GeminiCredential::ApiKey(token.clone()))
+        };
+    }
+
+    if let Some(auth_manager) = ctx.auth_manager
+        && auth_manager.has_gemini_oauth()
+    {
+        let (tokens, project_id) = auth_manager
+            .gemini_oauth_context_for_account(0)
+            .await
+            .map_err(|err| CodexErr::UnsupportedOperation(err.to_string()))?;
+        return Ok(GeminiCredential::OAuth {
+            access_token: tokens.access_token,
+            project_id,
+        });
+    }
+
+    let Some(token) = ctx.provider.api_key()? else {
+        return Err(CodexErr::UnsupportedOperation(
+            "Gemini requires `codex login gemini`, `GEMINI_API_KEY`, or `experimental_bearer_token`."
+                .to_string(),
+        ));
+    };
+    if ctx.provider.use_bearer_auth {
+        Ok(GeminiCredential::ProviderBearer(token))
+    } else {
+        Ok(GeminiCredential::ApiKey(token))
+    }
+}
+
+fn code_assist_base_url(ctx: &AdapterContext<'_>) -> String {
+    ctx.provider
+        .base_url
+        .as_deref()
+        .filter(|url| !url.contains("generativelanguage.googleapis.com"))
+        .map(|url| url.trim_end_matches('/').to_string())
+        .unwrap_or_else(|| GEMINI_CODE_ASSIST_ENDPOINT.to_string())
+}
+
+fn build_gemini_request<'a>(
+    ctx: &'a AdapterContext<'_>,
+    request_config: &'a GeminiRequestConfig,
+    payload: &'a GeminiRequest,
+    model_name: &'a str,
+) -> reqwest::RequestBuilder {
+    match request_config {
+        GeminiRequestConfig::GenerativeLanguage { url, auth_header } => {
+            let request = ctx.request_builder(url.clone(), http::HeaderMap::new());
+            let request = match auth_header {
+                GeminiAuthHeader::ApiKey(token) => request.header("x-goog-api-key", token),
+                GeminiAuthHeader::Bearer(token) => request.bearer_auth(token),
+            };
+            request.json(payload)
+        }
+        GeminiRequestConfig::CodeAssist {
+            url,
+            access_token,
+            project_id,
+        } => {
+            #[derive(Serialize)]
+            struct CodeAssistRequest<'a> {
+                project: &'a str,
+                model: &'a str,
+                request: &'a GeminiRequest,
+            }
+
+            ctx.http_client
+                .post(url)
+                .bearer_auth(access_token)
+                .header(reqwest::header::CONTENT_TYPE, "application/json")
+                .header(reqwest::header::ACCEPT, "text/event-stream")
+                .header(reqwest::header::USER_AGENT, GEMINI_CODE_ASSIST_USER_AGENT)
+                .header("X-Goog-Api-Client", GEMINI_CODE_ASSIST_X_GOOG_API_CLIENT)
+                .header("Client-Metadata", GEMINI_CODE_ASSIST_CLIENT_METADATA)
+                .json(&CodeAssistRequest {
+                    project: project_id,
+                    model: model_name,
+                    request: payload,
+                })
+        }
+    }
+}
+
+pub(crate) fn build_payload(
     prompt: &Prompt,
     model_info: &ModelInfo,
     effort: Option<ReasoningEffortConfig>,
@@ -315,12 +483,14 @@ fn build_payload(
             tool_config,
             system_instruction,
             generation_config: Some(generation_config),
+            session_id: None,
+            safety_settings: None,
         },
         model_name,
     ))
 }
 
-fn normalize_model_name(model: &str) -> String {
+pub(crate) fn normalize_model_name(model: &str) -> String {
     GEMINI_MODEL_FALLBACKS
         .iter()
         .find_map(|(pattern, fallback)| (*pattern == model).then(|| (*fallback).to_string()))
@@ -697,7 +867,7 @@ fn apply_synthetic_thought_signatures(contents: &mut [GeminiContent], model_name
     }
 }
 
-async fn process_gemini_sse(
+pub(crate) async fn process_gemini_sse(
     stream: impl futures::Stream<Item = std::result::Result<tokio_util::bytes::Bytes, reqwest::Error>>
     + Unpin
     + Eventsource,

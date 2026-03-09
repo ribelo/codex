@@ -10,7 +10,7 @@ For a full configuration reference, see [this documentation](https://developers.
 
 This fork keeps upstream’s canonical provider selection shape:
 
-- `model_provider = "openai" | "anthropic" | "gemini" | "<custom-id>"`
+- `model_provider = "openai" | "anthropic" | "gemini" | "antigravity" | "<custom-id>"`
 - `model = "<raw-model-slug>"`
 
 Built-in native providers:
@@ -22,10 +22,18 @@ Built-in native providers:
 - `gemini`
   - default base URL: `https://generativelanguage.googleapis.com/v1beta`
   - default key env var: `GEMINI_API_KEY`
+  - also supports fork-specific Google OAuth via `codex login gemini`
   - native wire protocol: `wire_api = "gemini"`
+  - credential precedence: `experimental_bearer_token` -> stored Gemini OAuth -> `GEMINI_API_KEY`
+- `antigravity`
+  - fork-specific Google OAuth provider restored from the pre-reset fork
+  - uses `codex login antigravity`
+  - native wire protocol: `wire_api = "antigravity"`
+  - default endpoint selection falls back across the built-in Antigravity Google endpoints unless
+    `base_url` overrides it
 
 Non-Responses providers must set `model` explicitly. Codex does not refresh `/models` for
-`wire_api = "chat"`, `wire_api = "anthropic"`, `wire_api = "gemini"`, or
+`wire_api = "chat"`, `wire_api = "anthropic"`, `wire_api = "gemini"`, `wire_api = "antigravity"`, or
 `wire_api = "bedrock"`.
 
 Custom providers can opt into the supported wire protocols under `[model_providers.<id>]`:
@@ -38,6 +46,11 @@ model = "claude-3-7-sonnet-latest"
 ```toml
 model_provider = "gemini"
 model = "gemini-2.5-pro"
+```
+
+```toml
+model_provider = "antigravity"
+model = "claude-opus-4-5-thinking"
 ```
 
 ```toml
@@ -67,6 +80,24 @@ use_bearer_auth = true
 version = "2023-06-01"
 beta = "tools-2024-05-16"
 ```
+
+Gemini and Antigravity OAuth are provider-scoped fork features:
+
+- `codex login gemini`
+- `codex login antigravity`
+- `codex logout gemini`
+- `codex logout antigravity`
+- `codex login status` reports Gemini and Antigravity OAuth availability even when no OpenAI auth
+  is configured
+- `codex login gemini` requires `CODEX_GEMINI_OAUTH_CLIENT_ID`
+- `codex login antigravity` requires `CODEX_ANTIGRAVITY_OAUTH_CLIENT_ID`
+- `CODEX_GEMINI_OAUTH_CLIENT_SECRET` and `CODEX_ANTIGRAVITY_OAUTH_CLIENT_SECRET` are optional
+  overrides when the Google client requires a secret; otherwise Codex relies on PKCE without an
+  embedded secret
+
+Provider-scoped OAuth credentials live in `auth.json` under `GEMINI_ACCOUNTS` and
+`ANTIGRAVITY_ACCOUNTS`. They do not replace the normal OpenAI auth mode and do not restore the old
+fork-wide provider auth architecture.
 
 Bedrock is supported as a custom provider using AWS credential-chain auth. It does not use
 `env_key` or bearer tokens:
