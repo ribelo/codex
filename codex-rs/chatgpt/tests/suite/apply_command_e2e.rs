@@ -75,6 +75,7 @@ async fn mock_get_task_with_fixture() -> anyhow::Result<GetTaskResponse> {
 }
 
 #[tokio::test]
+#[ignore = "spawns git commit; local git signing can trigger credential or pinentry prompts"]
 async fn test_apply_command_creates_fibonacci_file() {
     let temp_repo = create_temp_git_repo()
         .await
@@ -117,6 +118,7 @@ async fn test_apply_command_creates_fibonacci_file() {
 }
 
 #[tokio::test]
+#[ignore = "spawns git commit; local git signing can trigger credential or pinentry prompts"]
 async fn test_apply_command_with_merge_conflicts() {
     let temp_repo = create_temp_git_repo()
         .await
