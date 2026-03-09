@@ -163,6 +163,8 @@ pub fn write_chatgpt_auth(
         openai_api_key: None,
         tokens: Some(tokens),
         last_refresh,
+        gemini_accounts: Vec::new(),
+        antigravity_accounts: Vec::new(),
     };
 
     save_auth(codex_home, &auth, cli_auth_credentials_store_mode).context("write auth.json")

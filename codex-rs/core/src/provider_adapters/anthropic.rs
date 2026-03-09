@@ -926,6 +926,7 @@ fn parse_usage(value: &Value) -> Option<codex_protocol::protocol::TokenUsage> {
     Some(codex_protocol::protocol::TokenUsage {
         input_tokens,
         cached_input_tokens,
+        cache_write_input_tokens: 0,
         output_tokens,
         reasoning_output_tokens,
         total_tokens: input_tokens + output_tokens,

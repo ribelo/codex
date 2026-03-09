@@ -120,13 +120,17 @@ pub(crate) fn model_info_from_slug_for_provider(slug: &str, wire_api: WireApi) -
             }
         }
         WireApi::Bedrock => {
-            if slug.starts_with("anthropic.claude-") || slug.starts_with("claude") {
+            if is_bedrock_claude_slug(slug) {
                 model.supports_reasoning_summaries = true;
                 model.apply_patch_tool_type = Some(ApplyPatchToolType::Function);
             }
         }
     }
     model
+}
+
+pub(crate) fn is_bedrock_claude_slug(slug: &str) -> bool {
+    slug.starts_with("anthropic.claude-") || slug.starts_with("claude")
 }
 
 fn local_personality_messages_for_slug(slug: &str) -> Option<ModelMessages> {

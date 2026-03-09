@@ -3171,6 +3171,7 @@ mod tests {
             total_token_usage: TokenUsage {
                 input_tokens: 100,
                 cached_input_tokens: 25,
+                cache_write_input_tokens: 4,
                 output_tokens: 50,
                 reasoning_output_tokens: 9,
                 total_tokens: 200,
@@ -3178,6 +3179,7 @@ mod tests {
             last_token_usage: TokenUsage {
                 input_tokens: 10,
                 cached_input_tokens: 5,
+                cache_write_input_tokens: 1,
                 output_tokens: 7,
                 reasoning_output_tokens: 1,
                 total_tokens: 23,
@@ -3222,6 +3224,7 @@ mod tests {
                 let usage = payload.token_usage;
                 assert_eq!(usage.total.total_tokens, 200);
                 assert_eq!(usage.total.cached_input_tokens, 25);
+                assert_eq!(usage.total.cache_write_input_tokens, 4);
                 assert_eq!(usage.last.output_tokens, 7);
                 assert_eq!(usage.model_context_window, Some(4096));
             }

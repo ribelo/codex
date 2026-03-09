@@ -14653,6 +14653,10 @@
     },
     "TokenUsage": {
       "properties": {
+        "cache_write_input_tokens": {
+          "format": "int64",
+          "type": "integer"
+        },
         "cached_input_tokens": {
           "format": "int64",
           "type": "integer"
@@ -14675,6 +14679,7 @@
         }
       },
       "required": [
+        "cache_write_input_tokens",
         "cached_input_tokens",
         "input_tokens",
         "output_tokens",
@@ -14685,6 +14690,10 @@
     },
     "TokenUsageBreakdown": {
       "properties": {
+        "cacheWriteInputTokens": {
+          "format": "int64",
+          "type": "integer"
+        },
         "cachedInputTokens": {
           "format": "int64",
           "type": "integer"
@@ -14707,6 +14716,7 @@
         }
       },
       "required": [
+        "cacheWriteInputTokens",
         "cachedInputTokens",
         "inputTokens",
         "outputTokens",

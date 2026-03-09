@@ -486,6 +486,11 @@ fn emit_token_usage_metrics(session: &Arc<Session>, token_usage: &TokenUsage) {
     );
     otel.histogram(
         metrics::MEMORY_PHASE_TWO_TOKEN_USAGE,
+        token_usage.cache_write_input(),
+        &[("token_type", "cache_write_input")],
+    );
+    otel.histogram(
+        metrics::MEMORY_PHASE_TWO_TOKEN_USAGE,
         token_usage.output_tokens.max(0),
         &[("token_type", "output")],
     );

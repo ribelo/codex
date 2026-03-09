@@ -9,6 +9,8 @@ use aws_sdk_bedrockruntime::error::DisplayErrorContext;
 use aws_sdk_bedrockruntime::error::ProvideErrorMetadata;
 use aws_sdk_bedrockruntime::error::SdkError;
 use aws_sdk_bedrockruntime::operation::converse_stream::ConverseStreamError;
+use aws_sdk_bedrockruntime::types::CachePointBlock;
+use aws_sdk_bedrockruntime::types::CachePointType;
 use aws_sdk_bedrockruntime::types::ContentBlock;
 use aws_sdk_bedrockruntime::types::ContentBlockDelta;
 use aws_sdk_bedrockruntime::types::ConversationRole;
@@ -62,6 +64,7 @@ use crate::client_common::tools::ToolSpec;
 use crate::error::CodexErr;
 use crate::error::Result;
 use crate::model_provider_info::ModelProviderInfo;
+use crate::models_manager::model_info::is_bedrock_claude_slug;
 use crate::provider_adapters::max_output_tokens;
 use crate::util::backoff;
 
@@ -100,8 +103,8 @@ pub(crate) async fn stream_bedrock_converse(
     session_telemetry: &SessionTelemetry,
 ) -> Result<ResponseStream> {
     let client = build_bedrock_client(provider).await?;
-    let system = build_system(prompt);
-    let messages = build_messages(prompt)?;
+    let system = build_system(prompt, model_info)?;
+    let messages = build_messages(prompt, model_info)?;
     let tool_config = build_tool_config(&prompt.tools)?;
     let additional_model_request_fields =
         build_additional_model_request_fields(model_info, effort, summary);
@@ -182,7 +185,7 @@ async fn build_bedrock_client(provider: &ModelProviderInfo) -> Result<Client> {
     Ok(Client::from_conf(config.build()))
 }
 
-fn build_system(prompt: &Prompt) -> Vec<SystemContentBlock> {
+fn build_system(prompt: &Prompt, model_info: &ModelInfo) -> Result<Vec<SystemContentBlock>> {
     let mut blocks = Vec::new();
     if !prompt.base_instructions.text.trim().is_empty() {
         blocks.push(SystemContentBlock::Text(
@@ -199,10 +202,15 @@ fn build_system(prompt: &Prompt) -> Vec<SystemContentBlock> {
             }
         }
     }
-    blocks
+
+    if is_bedrock_claude_slug(&model_info.slug) && !blocks.is_empty() {
+        blocks.push(SystemContentBlock::CachePoint(default_cache_point()?));
+    }
+
+    Ok(blocks)
 }
 
-fn build_messages(prompt: &Prompt) -> Result<Vec<Message>> {
+fn build_messages(prompt: &Prompt, model_info: &ModelInfo) -> Result<Vec<Message>> {
     let input = prompt.get_formatted_input();
     let mut messages = Vec::new();
 
@@ -265,7 +273,28 @@ fn build_messages(prompt: &Prompt) -> Result<Vec<Message>> {
         }
     }
 
+    if is_bedrock_claude_slug(&model_info.slug)
+        && let Some(index) = messages
+            .iter()
+            .rposition(|message| message.role() == &ConversationRole::User)
+    {
+        let mut content = messages[index].content().to_vec();
+        content.push(ContentBlock::CachePoint(default_cache_point()?));
+        messages[index] = Message::builder()
+            .role(ConversationRole::User)
+            .set_content(Some(content))
+            .build()
+            .map_err(|err| CodexErr::Fatal(format!("failed to build Bedrock message: {err}")))?;
+    }
+
     Ok(messages)
+}
+
+fn default_cache_point() -> Result<CachePointBlock> {
+    CachePointBlock::builder()
+        .r#type(CachePointType::Default)
+        .build()
+        .map_err(|err| CodexErr::Fatal(format!("failed to build Bedrock cache point: {err}")))
 }
 
 fn build_tool_config(tools: &[ToolSpec]) -> Result<Option<ToolConfiguration>> {
@@ -746,13 +775,7 @@ async fn process_bedrock_stream(
                 return;
             }
             ConverseStreamOutput::Metadata(event) => {
-                usage = event.usage().map(|usage| TokenUsage {
-                    input_tokens: usage.input_tokens() as i64,
-                    cached_input_tokens: usage.cache_read_input_tokens().unwrap_or_default() as i64,
-                    output_tokens: usage.output_tokens() as i64,
-                    reasoning_output_tokens: 0,
-                    total_tokens: usage.total_tokens() as i64,
-                });
+                usage = event.usage().map(map_bedrock_usage);
             }
             _ => {
                 trace!("Ignoring unknown Bedrock stream event");
@@ -779,6 +802,17 @@ async fn process_bedrock_stream(
             token_usage: usage,
         }))
         .await;
+}
+
+fn map_bedrock_usage(usage: &aws_sdk_bedrockruntime::types::TokenUsage) -> TokenUsage {
+    TokenUsage {
+        input_tokens: usage.input_tokens() as i64,
+        cached_input_tokens: usage.cache_read_input_tokens().unwrap_or_default() as i64,
+        cache_write_input_tokens: usage.cache_write_input_tokens().unwrap_or_default() as i64,
+        output_tokens: usage.output_tokens() as i64,
+        reasoning_output_tokens: 0,
+        total_tokens: usage.total_tokens() as i64,
+    }
 }
 
 async fn handle_content_block_start(
@@ -1023,10 +1057,15 @@ mod tests {
     use aws_sdk_bedrockruntime::types::ContentBlockStopEvent;
     use aws_sdk_bedrockruntime::types::OutputFormatStructure;
     use aws_sdk_bedrockruntime::types::OutputFormatType;
+    use aws_sdk_bedrockruntime::types::TokenUsage as BedrockTokenUsage;
     use aws_sdk_bedrockruntime::types::ToolUseBlockStart;
     use pretty_assertions::assert_eq;
 
     use super::*;
+
+    fn sample_model_info(slug: &str) -> ModelInfo {
+        crate::models_manager::model_info::model_info_from_slug(slug)
+    }
 
     #[test]
     fn build_messages_keeps_tool_use_after_assistant_text() {
@@ -1060,7 +1099,8 @@ mod tests {
             ..Prompt::default()
         };
 
-        let messages = build_messages(&prompt).expect("messages");
+        let messages =
+            build_messages(&prompt, &sample_model_info("amazon.nova-lite-v1:0")).expect("messages");
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].role(), &ConversationRole::Assistant);
         assert_eq!(messages[0].content().len(), 3);
@@ -1114,6 +1154,146 @@ mod tests {
         assert_eq!(fast.r#type(), &BedrockServiceTierType::Priority);
         assert_eq!(flex.r#type(), &BedrockServiceTierType::Flex);
         assert_eq!(build_service_tier(None), None);
+    }
+
+    #[test]
+    fn build_system_adds_cache_point_for_bedrock_claude() {
+        let mut prompt = Prompt::default();
+        prompt.base_instructions.text = "Be terse.".to_string();
+
+        let system = build_system(
+            &prompt,
+            &sample_model_info("anthropic.claude-3-7-sonnet-20250219-v1:0"),
+        )
+        .expect("system");
+
+        assert_eq!(system.len(), 2);
+        assert!(matches!(system[0], SystemContentBlock::Text(_)));
+        assert!(matches!(system[1], SystemContentBlock::CachePoint(_)));
+    }
+
+    #[test]
+    fn build_messages_adds_cache_point_to_last_user_message_for_bedrock_claude() {
+        let prompt = Prompt {
+            input: vec![
+                ResponseItem::Message {
+                    id: None,
+                    role: "user".to_string(),
+                    content: vec![ContentItem::InputText {
+                        text: "first".to_string(),
+                    }],
+                    end_turn: None,
+                    phase: None,
+                },
+                ResponseItem::Message {
+                    id: None,
+                    role: "assistant".to_string(),
+                    content: vec![ContentItem::OutputText {
+                        text: "middle".to_string(),
+                    }],
+                    end_turn: None,
+                    phase: None,
+                },
+                ResponseItem::Message {
+                    id: None,
+                    role: "user".to_string(),
+                    content: vec![ContentItem::InputText {
+                        text: "last".to_string(),
+                    }],
+                    end_turn: None,
+                    phase: None,
+                },
+            ],
+            ..Prompt::default()
+        };
+
+        let messages = build_messages(
+            &prompt,
+            &sample_model_info("anthropic.claude-3-7-sonnet-20250219-v1:0"),
+        )
+        .expect("messages");
+
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[2].role(), &ConversationRole::User);
+        assert!(matches!(messages[2].content()[0], ContentBlock::Text(_)));
+        assert!(matches!(
+            messages[2].content()[1],
+            ContentBlock::CachePoint(_)
+        ));
+    }
+
+    #[test]
+    fn build_messages_does_not_create_synthetic_user_cache_point() {
+        let prompt = Prompt {
+            input: vec![ResponseItem::Message {
+                id: None,
+                role: "assistant".to_string(),
+                content: vec![ContentItem::OutputText {
+                    text: "only assistant".to_string(),
+                }],
+                end_turn: None,
+                phase: None,
+            }],
+            ..Prompt::default()
+        };
+
+        let messages = build_messages(
+            &prompt,
+            &sample_model_info("anthropic.claude-3-7-sonnet-20250219-v1:0"),
+        )
+        .expect("messages");
+
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].role(), &ConversationRole::Assistant);
+        assert_eq!(messages[0].content().len(), 1);
+        assert!(matches!(messages[0].content()[0], ContentBlock::Text(_)));
+    }
+
+    #[test]
+    fn build_messages_skips_cache_point_for_non_claude_bedrock_models() {
+        let prompt = Prompt {
+            input: vec![ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: "hello".to_string(),
+                }],
+                end_turn: None,
+                phase: None,
+            }],
+            ..Prompt::default()
+        };
+
+        let messages =
+            build_messages(&prompt, &sample_model_info("amazon.nova-lite-v1:0")).expect("messages");
+
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].content().len(), 1);
+        assert!(matches!(messages[0].content()[0], ContentBlock::Text(_)));
+    }
+
+    #[test]
+    fn map_bedrock_usage_includes_cache_write_tokens() {
+        let usage = BedrockTokenUsage::builder()
+            .input_tokens(120)
+            .cache_read_input_tokens(40)
+            .cache_write_input_tokens(8)
+            .output_tokens(30)
+            .total_tokens(150)
+            .build()
+            .expect("usage");
+
+        assert_eq!(
+            map_bedrock_usage(&usage),
+            TokenUsage {
+                input_tokens: 120,
+                cached_input_tokens: 40,
+                cache_write_input_tokens: 8,
+                output_tokens: 30,
+                reasoning_output_tokens: 0,
+                total_tokens: 150,
+            }
+        );
     }
 
     #[tokio::test]
