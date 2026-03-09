@@ -650,6 +650,10 @@ async fn gemini_wire_api_uses_native_schema_and_thought_streaming() -> Result<()
         body["systemInstruction"]["parts"][0]["text"],
         Value::String("Be terse and accurate.".to_string())
     );
+    assert_eq!(
+        body["generationConfig"]["thinkingConfig"]["thinkingBudget"],
+        Value::Number(8_192.into())
+    );
 
     assert!(
         events
@@ -788,8 +792,107 @@ async fn gemini_wire_api_uses_code_assist_when_oauth_is_available() -> Result<()
     assert_eq!(body["project"], Value::String("oauth-project".to_string()));
     assert_eq!(body["model"], Value::String("gemini-2.5-flash".to_string()));
     assert_eq!(
+        body["userAgent"],
+        Value::String("pi-coding-agent".to_string())
+    );
+    assert_eq!(
+        body["requestId"]
+            .as_str()
+            .map(|request_id| request_id.starts_with("pi-")),
+        Some(true)
+    );
+    assert_eq!(
         body["request"]["systemInstruction"]["parts"][0]["text"],
         Value::String("Be terse and accurate.".to_string())
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, ResponseEvent::Completed { .. }))
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gemini_3_oauth_uses_thinking_level() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = MockServer::start().await;
+    let response = sse_body(
+        &[json!({
+            "candidates": [{
+                "content": {
+                    "parts": [{ "text": "thinking level ok" }]
+                },
+                "finishReason": "STOP"
+            }]
+        })],
+        false,
+    );
+
+    Mock::given(method("POST"))
+        .and(path("/v1internal:streamGenerateContent"))
+        .and(query_param("alt", "sse"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_raw(response, "text/event-stream"),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut provider = built_in_model_providers()["gemini"].clone();
+    provider.name = "test-gemini-3-oauth".to_string();
+    provider.base_url = Some(server.uri());
+    provider.env_key = None;
+    provider.env_key_instructions = None;
+    provider.experimental_bearer_token = None;
+    provider.request_max_retries = Some(0);
+    provider.stream_max_retries = Some(0);
+    provider.stream_idle_timeout_ms = Some(5_000);
+    provider.supports_websockets = false;
+
+    let codex_home = TempDir::new()?;
+    let auth_manager = write_provider_auth(
+        &codex_home,
+        vec![sample_google_tokens("gemini-3-oauth", "oauth-project")],
+        Vec::new(),
+    )?;
+    let (_hold_home, client, model_info, telemetry) =
+        build_client_context_with_auth(provider, "gemini-3-pro-preview", Some(auth_manager))
+            .await?;
+    let mut session = client.new_session();
+
+    let stream = session
+        .stream(
+            &prompt_with_schema(),
+            &model_info,
+            &telemetry,
+            Some(ReasoningEffort::Medium),
+            ReasoningSummary::Auto,
+            None,
+            None,
+        )
+        .await?;
+    let events = collect_events(stream).await?;
+    let request = single_request(&server).await;
+    let body = request
+        .body_json::<Value>()
+        .unwrap_or_else(|_| panic!("gemini-3 oauth request body should be json"));
+
+    assert_eq!(
+        body["model"],
+        Value::String("gemini-3-pro-preview".to_string())
+    );
+    assert_eq!(
+        body["request"]["generationConfig"]["thinkingConfig"]["thinkingLevel"],
+        Value::String("HIGH".to_string())
+    );
+    assert_eq!(
+        body["request"]["generationConfig"]["thinkingConfig"].get("thinkingBudget"),
+        None
     );
     assert!(
         events
@@ -876,6 +979,13 @@ async fn antigravity_wire_api_uses_oauth_and_claude_request_shape() -> Result<()
     assert_eq!(
         request
             .headers
+            .get("user-agent")
+            .and_then(|value| value.to_str().ok()),
+        Some("antigravity/1.18.4 darwin/arm64")
+    );
+    assert_eq!(
+        request
+            .headers
             .get("anthropic-beta")
             .and_then(|value| value.to_str().ok()),
         Some("interleaved-thinking-2025-05-14")
@@ -885,9 +995,12 @@ async fn antigravity_wire_api_uses_oauth_and_claude_request_shape() -> Result<()
         Value::String("antigravity-project".to_string())
     );
     assert_eq!(body["requestType"], Value::String("agent".to_string()));
+    assert_eq!(body["userAgent"], Value::String("antigravity".to_string()));
     assert_eq!(
-        body["userAgent"],
-        Value::String("antigravity/1.11.9".to_string())
+        body["requestId"]
+            .as_str()
+            .map(|request_id| request_id.starts_with("agent-")),
+        Some(true)
     );
     assert_eq!(
         body["model"],
@@ -898,11 +1011,11 @@ async fn antigravity_wire_api_uses_oauth_and_claude_request_shape() -> Result<()
         "antigravity requests should carry a session id"
     );
     assert_eq!(
-        body["request"]["generationConfig"]["thinkingConfig"]["thinking_budget"],
+        body["request"]["generationConfig"]["thinkingConfig"]["thinkingBudget"],
         Value::Number(16_384.into())
     );
     assert_eq!(
-        body["request"]["generationConfig"]["thinkingConfig"]["include_thoughts"],
+        body["request"]["generationConfig"]["thinkingConfig"]["includeThoughts"],
         Value::Bool(true)
     );
     assert_eq!(
@@ -913,6 +1026,12 @@ async fn antigravity_wire_api_uses_oauth_and_claude_request_shape() -> Result<()
         body["request"]["systemInstruction"]["parts"][0]["text"]
             .as_str()
             .map(|text| text.contains("You are Antigravity")),
+        Some(true)
+    );
+    assert_eq!(
+        body["request"]["systemInstruction"]["parts"][1]["text"]
+            .as_str()
+            .map(|text| text.contains("Please ignore following [ignore]")),
         Some(true)
     );
     assert!(

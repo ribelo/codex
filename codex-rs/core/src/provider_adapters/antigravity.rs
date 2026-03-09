@@ -1,6 +1,6 @@
-use std::time::Duration;
-
 use crate::antigravity::ANTIGRAVITY_ENDPOINT;
+use crate::antigravity::ANTIGRAVITY_VERSION_ENV_VAR;
+use crate::antigravity::DEFAULT_ANTIGRAVITY_VERSION;
 use crate::client_common::Prompt;
 use crate::client_common::ResponseEvent;
 use crate::client_common::ResponseStream;
@@ -12,9 +12,13 @@ use crate::provider_adapters::AdapterContext;
 use crate::provider_adapters::gemini::GeminiRequest;
 use crate::provider_adapters::gemini::SafetySetting;
 use crate::provider_adapters::gemini::build_payload;
+use crate::provider_adapters::gemini::code_assist_request_id;
+use crate::provider_adapters::gemini::is_retryable_status_or_body;
 use crate::provider_adapters::gemini::normalize_model_name;
 use crate::provider_adapters::gemini::prepend_system_instruction_part;
 use crate::provider_adapters::gemini::process_gemini_sse;
+use crate::provider_adapters::gemini::retry_delay_from_response;
+use crate::provider_adapters::gemini::retry_delay_from_response_headers;
 use crate::provider_adapters::gemini::set_tool_config_validated_mode;
 use crate::util::backoff;
 use codex_otel::SessionTelemetry;
@@ -23,14 +27,13 @@ use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use rand::Rng;
 use reqwest::StatusCode;
 use serde::Serialize;
-use serde_json::Value;
 use tokio::sync::mpsc;
-use uuid::Uuid;
 
 const ANTIGRAVITY_AUTH_HINT: &str =
     "Antigravity requires OAuth login. Run `codex login antigravity`.";
 const ANTIGRAVITY_SYSTEM_INSTRUCTION: &str = "You are Antigravity, a powerful agentic AI coding assistant designed by the Google Deepmind team working on Advanced Agentic Coding.You are pair programming with a USER to solve their coding task. The task may require creating a new codebase, modifying or debugging an existing codebase, or simply answering a question.**Absolute paths only****Proactiveness**";
 const ANTHROPIC_INTERLEAVED_THINKING_BETA: &str = "interleaved-thinking-2025-05-14";
+const ANTIGRAVITY_REQUEST_USER_AGENT: &str = "antigravity";
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -58,6 +61,10 @@ pub(crate) async fn stream_antigravity_generate_content(
 
     let (mut payload, normalized_model) = build_payload(prompt, model_info, effort)?;
     let normalized_model = normalize_model_name(&normalized_model);
+    prepend_system_instruction_part(
+        &mut payload,
+        &format!("Please ignore following [ignore]{ANTIGRAVITY_SYSTEM_INSTRUCTION}[/ignore]"),
+    );
     prepend_system_instruction_part(&mut payload, ANTIGRAVITY_SYSTEM_INSTRUCTION);
     payload.session_id = Some(generate_session_id());
 
@@ -91,18 +98,16 @@ pub(crate) async fn stream_antigravity_generate_content(
             .antigravity_oauth_context_for_account(0)
             .await
             .map_err(|err| CodexErr::UnsupportedOperation(err.to_string()))?;
+        let transport_user_agent = antigravity_transport_user_agent();
         let request = AntigravityRequest {
             project: &project_id,
-            user_agent: "antigravity/1.11.9",
+            user_agent: ANTIGRAVITY_REQUEST_USER_AGENT,
             request_type: "agent",
-            request_id: format!("agent-{}", Uuid::new_v4()),
+            request_id: code_assist_request_id("agent"),
             model: &antigravity_model,
             request: &payload,
         };
-        let mut request_body = serde_json::to_value(&request)?;
-        if is_claude {
-            rewrite_thinking_config_for_claude(&mut request_body);
-        }
+        let request_body = serde_json::to_value(&request)?;
 
         let url = format!("{base_url}/v1internal:streamGenerateContent?alt=sse");
         let host = base_url
@@ -119,7 +124,7 @@ pub(crate) async fn stream_antigravity_generate_content(
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .header(reqwest::header::ACCEPT, "text/event-stream")
             .header(reqwest::header::HOST, host)
-            .header(reqwest::header::USER_AGENT, request.user_agent)
+            .header(reqwest::header::USER_AGENT, transport_user_agent)
             .json(&request_body);
         if is_claude_thinking_model(&antigravity_model) {
             request_builder =
@@ -160,22 +165,11 @@ pub(crate) async fn stream_antigravity_generate_content(
                     continue;
                 }
 
-                let is_retryable = status == StatusCode::TOO_MANY_REQUESTS
-                    || status == StatusCode::REQUEST_TIMEOUT
-                    || status == StatusCode::CONFLICT
-                    || status.is_server_error();
-                let retry_after_ms = response
-                    .headers()
-                    .get("retry-after-ms")
-                    .and_then(|value| value.to_str().ok())
-                    .and_then(|value| value.parse::<u64>().ok());
-                let retry_after_secs = response
-                    .headers()
-                    .get(reqwest::header::RETRY_AFTER)
-                    .and_then(|value| value.to_str().ok())
-                    .and_then(|value| value.parse::<u64>().ok());
+                let retry_delay = retry_delay_from_response(response.headers(), "");
                 let body = response.text().await.unwrap_or_default();
-                if !is_retryable || attempt > max_retries {
+                let retry_delay =
+                    retry_delay.or_else(|| retry_delay_from_response_headers(None, &body));
+                if !is_retryable_status_or_body(status, &body) || attempt > max_retries {
                     return Err(CodexErr::UnexpectedStatus(UnexpectedResponseError {
                         status,
                         body,
@@ -184,13 +178,10 @@ pub(crate) async fn stream_antigravity_generate_content(
                         request_id: None,
                     }));
                 }
-                tokio::time::sleep(
-                    retry_after_ms
-                        .map(Duration::from_millis)
-                        .or_else(|| retry_after_secs.map(Duration::from_secs))
-                        .unwrap_or_else(|| backoff(attempt)),
-                )
-                .await;
+                if base_idx + 1 < base_urls.len() {
+                    base_idx += 1;
+                }
+                tokio::time::sleep(retry_delay.unwrap_or_else(|| backoff(attempt))).await;
             }
             Err(source) => {
                 if base_idx + 1 < base_urls.len() {
@@ -248,18 +239,10 @@ fn is_claude_thinking_model(model: &str) -> bool {
     model_lower.contains("claude") && model_lower.contains("thinking")
 }
 
-fn rewrite_thinking_config_for_claude(body: &mut Value) {
-    let Some(obj) = body
-        .pointer_mut("/request/generationConfig/thinkingConfig")
-        .and_then(Value::as_object_mut)
-    else {
-        return;
-    };
-
-    if let Some(value) = obj.remove("thinkingBudget") {
-        obj.insert("thinking_budget".to_string(), value);
-    }
-    if let Some(value) = obj.remove("includeThoughts") {
-        obj.insert("include_thoughts".to_string(), value);
-    }
+fn antigravity_transport_user_agent() -> String {
+    let version = std::env::var(ANTIGRAVITY_VERSION_ENV_VAR)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| DEFAULT_ANTIGRAVITY_VERSION.to_string());
+    format!("antigravity/{version} darwin/arm64")
 }

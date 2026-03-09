@@ -94,6 +94,11 @@ Gemini and Antigravity OAuth are provider-scoped fork features:
 - `CODEX_GEMINI_OAUTH_CLIENT_SECRET` and `CODEX_ANTIGRAVITY_OAUTH_CLIENT_SECRET` are optional
   overrides when the Google client requires a secret; otherwise Codex relies on PKCE without an
   embedded secret
+- set `GOOGLE_CLOUD_PROJECT` or `GOOGLE_CLOUD_PROJECT_ID` when Gemini or Antigravity needs a
+  specific Cloud Code Assist workspace project
+- `ANTIGRAVITY_PROJECT_ID` overrides the Google project env vars for Antigravity only
+- `PI_AI_ANTIGRAVITY_VERSION` overrides the Antigravity transport `User-Agent` version when the
+  sandbox endpoints expect a different client build
 
 Provider-scoped OAuth credentials live in `auth.json` under `GEMINI_ACCOUNTS` and
 `ANTIGRAVITY_ACCOUNTS`. They do not replace the normal OpenAI auth mode and do not restore the old

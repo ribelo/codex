@@ -7,6 +7,8 @@ pub const ANTIGRAVITY_CLIENT_SECRET_ENV_VAR: &str = "CODEX_ANTIGRAVITY_OAUTH_CLI
 pub const ANTIGRAVITY_AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 pub const ANTIGRAVITY_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 pub const ANTIGRAVITY_ENDPOINT: &str = "https://daily-cloudcode-pa.sandbox.googleapis.com";
+pub const ANTIGRAVITY_VERSION_ENV_VAR: &str = "PI_AI_ANTIGRAVITY_VERSION";
+pub const DEFAULT_ANTIGRAVITY_VERSION: &str = "1.18.4";
 
 pub const ANTIGRAVITY_SCOPES: &[&str] = &[
     "https://www.googleapis.com/auth/cloud-platform",
