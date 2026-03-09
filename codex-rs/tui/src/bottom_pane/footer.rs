@@ -43,6 +43,7 @@
 //! `FooterProps` mapping.
 use crate::key_hint;
 use crate::key_hint::KeyBinding;
+use crate::line_truncation::truncate_line_with_ellipsis_if_overflow;
 use crate::render::line_utils::prefix_lines;
 use crate::status::format_tokens_compact;
 use crate::ui_consts::FOOTER_INDENT_COLS;
@@ -110,6 +111,7 @@ pub(crate) enum CollaborationModeIndicator {
 
 const MODE_CYCLE_HINT: &str = "shift+tab to cycle";
 const FOOTER_CONTEXT_GAP_COLS: u16 = 1;
+const DEFAULT_FOOTER_SECTION_GAP_COLS: usize = 2;
 
 impl CollaborationModeIndicator {
     fn label(self, show_cycle_hint: bool) -> String {
@@ -850,17 +852,23 @@ fn build_columns(entries: Vec<Line<'static>>) -> Vec<Line<'static>> {
 }
 
 pub(crate) fn context_window_line(percent: Option<i64>, used_tokens: Option<i64>) -> Line<'static> {
+    Line::from(vec![
+        Span::from(context_window_text(percent, used_tokens)).dim(),
+    ])
+}
+
+fn context_window_text(percent: Option<i64>, used_tokens: Option<i64>) -> String {
     if let Some(percent) = percent {
         let percent = percent.clamp(0, 100);
-        return Line::from(vec![Span::from(format!("{percent}% left")).dim()]);
+        return format!("{percent}% left");
     }
 
     if let Some(tokens) = used_tokens {
         let used_fmt = format_tokens_compact(tokens);
-        return Line::from(vec![Span::from(format!("{used_fmt} used")).dim()]);
+        return format!("{used_fmt} used");
     }
 
-    Line::from(vec![Span::from("100% left").dim()])
+    "100% left".to_string()
 }
 
 fn context_only_line(props: &FooterProps) -> Line<'static> {
@@ -910,21 +918,185 @@ fn footer_context_line(
     Line::from(spans)
 }
 
-pub(crate) fn default_summary_line(
+pub(crate) fn default_footer_line(
     summary: &DefaultFooterSummary,
-    sandbox_policy: &SandboxPolicy,
+    context_window_percent: Option<i64>,
+    context_window_used_tokens: Option<i64>,
+    width: u16,
 ) -> Option<Line<'static>> {
+    let width = usize::from(width);
+    if width == 0 {
+        return None;
+    }
+
+    let right = context_window_line(context_window_percent, context_window_used_tokens);
+    let right_width = right.width();
+    if right_width >= width {
+        return Some(truncate_line_with_ellipsis_if_overflow(right, width));
+    }
+
+    let center = default_footer_identity_line(summary)?;
+    let left = default_footer_git_line(summary);
+
+    centered_default_footer_line(width, left.clone(), center.clone(), right.clone())
+        .or_else(|| packed_default_footer_line(width, left, center.clone(), right.clone()))
+        .or_else(|| truncated_center_default_footer_line(width, center, right.clone()))
+        .or_else(|| {
+            Some(positioned_footer_line(
+                width,
+                vec![(width - right_width, right)],
+            ))
+        })
+}
+
+fn default_footer_identity_line(summary: &DefaultFooterSummary) -> Option<Line<'static>> {
     if summary.identity.is_empty() {
         return None;
     }
 
-    let mut spans = vec![mode_dot(sandbox_policy), " ".into()];
-    if let Some(git) = &summary.git {
-        spans.push(git.clone().dim());
-        spans.push("  ".into());
+    Some(Line::from(summary.identity.join(" • ")).dim())
+}
+
+fn default_footer_git_line(summary: &DefaultFooterSummary) -> Option<Line<'static>> {
+    summary
+        .git
+        .as_ref()
+        .map(|git| Line::from(git.clone()).dim())
+}
+
+fn centered_default_footer_line(
+    width: usize,
+    left: Option<Line<'static>>,
+    center: Line<'static>,
+    right: Line<'static>,
+) -> Option<Line<'static>> {
+    let right_width = right.width();
+    let center_width = center.width();
+    let right_start = width.checked_sub(right_width)?;
+    let center_start = width.saturating_sub(center_width) / 2;
+    let center_end = center_start + center_width;
+    if center_end + DEFAULT_FOOTER_SECTION_GAP_COLS > right_start {
+        return None;
     }
-    spans.push(summary.identity.join(" • ").dim());
-    Some(Line::from(spans))
+
+    let left_limit = center_start.saturating_sub(DEFAULT_FOOTER_SECTION_GAP_COLS);
+    let left = left
+        .map(|line| truncate_line_with_ellipsis_if_overflow(line, left_limit))
+        .filter(|line| !line.spans.is_empty());
+    let left_width = left
+        .as_ref()
+        .map(ratatui::prelude::Line::width)
+        .unwrap_or(0);
+    if left_width > 0 && left_width + DEFAULT_FOOTER_SECTION_GAP_COLS > center_start {
+        return None;
+    }
+
+    let mut segments = Vec::new();
+    if let Some(left) = left {
+        segments.push((0, left));
+    }
+    segments.push((center_start, center));
+    segments.push((right_start, right));
+    Some(positioned_footer_line(width, segments))
+}
+
+fn packed_default_footer_line(
+    width: usize,
+    left: Option<Line<'static>>,
+    center: Line<'static>,
+    right: Line<'static>,
+) -> Option<Line<'static>> {
+    let right_width = right.width();
+    let center_width = center.width();
+    if center_width + DEFAULT_FOOTER_SECTION_GAP_COLS + right_width > width {
+        return None;
+    }
+
+    let max_left = if left.is_some() {
+        width.saturating_sub(center_width + right_width + DEFAULT_FOOTER_SECTION_GAP_COLS * 2)
+    } else {
+        0
+    };
+    let left = left
+        .map(|line| truncate_line_with_ellipsis_if_overflow(line, max_left))
+        .filter(|line| !line.spans.is_empty());
+    let left_width = left
+        .as_ref()
+        .map(ratatui::prelude::Line::width)
+        .unwrap_or(0);
+    let center_start = if left_width > 0 {
+        left_width + DEFAULT_FOOTER_SECTION_GAP_COLS
+    } else {
+        0
+    };
+    let right_start = width - right_width;
+    if center_start + center_width + DEFAULT_FOOTER_SECTION_GAP_COLS > right_start {
+        return None;
+    }
+
+    let mut segments = Vec::new();
+    if let Some(left) = left {
+        segments.push((0, left));
+    }
+    segments.push((center_start, center));
+    segments.push((right_start, right));
+    Some(positioned_footer_line(width, segments))
+}
+
+fn truncated_center_default_footer_line(
+    width: usize,
+    center: Line<'static>,
+    right: Line<'static>,
+) -> Option<Line<'static>> {
+    let right_width = right.width();
+    if right_width >= width {
+        return Some(truncate_line_with_ellipsis_if_overflow(right, width));
+    }
+
+    let center_max = width.saturating_sub(right_width + DEFAULT_FOOTER_SECTION_GAP_COLS);
+    if center_max == 0 {
+        return Some(positioned_footer_line(
+            width,
+            vec![(width - right_width, right)],
+        ));
+    }
+
+    let center = truncate_line_with_ellipsis_if_overflow(center, center_max);
+    let center_width = center.width();
+    let right_start = width - right_width;
+    if center_width + DEFAULT_FOOTER_SECTION_GAP_COLS > right_start {
+        return Some(positioned_footer_line(
+            width,
+            vec![(width - right_width, right)],
+        ));
+    }
+
+    Some(positioned_footer_line(
+        width,
+        vec![(0, center), (right_start, right)],
+    ))
+}
+
+fn positioned_footer_line(
+    width: usize,
+    mut segments: Vec<(usize, Line<'static>)>,
+) -> Line<'static> {
+    segments.sort_by_key(|(start, _)| *start);
+
+    let mut spans = Vec::new();
+    let mut cursor = 0usize;
+    for (start, line) in segments {
+        if start > cursor {
+            spans.push(" ".repeat(start - cursor).into());
+            cursor = start;
+        }
+        cursor += line.width();
+        spans.extend(line.spans);
+    }
+    if spans.is_empty() && width > 0 {
+        spans.push(" ".repeat(width).into());
+    }
+    Line::from(spans)
 }
 
 fn mode_dot(policy: &SandboxPolicy) -> Span<'static> {
@@ -1140,6 +1312,7 @@ mod tests {
     use pretty_assertions::assert_eq;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+    use ratatui::text::Line;
 
     fn base_props() -> FooterProps {
         FooterProps {
@@ -1171,6 +1344,13 @@ mod tests {
             })
             .unwrap();
         assert_snapshot!(name, terminal.backend());
+    }
+
+    fn line_text(line: &Line<'_>) -> String {
+        line.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>()
     }
 
     #[test]
@@ -1264,6 +1444,27 @@ mod tests {
         };
 
         assert_eq!(footer_height(&props), 4);
+    }
+
+    #[test]
+    fn default_footer_line_snapshot() {
+        let line = default_footer_line(
+            &DefaultFooterSummary {
+                git: Some("codex:main +0/-0".to_string()),
+                identity: vec![
+                    "openai".to_string(),
+                    "gpt-5.4".to_string(),
+                    "high".to_string(),
+                    "plan".to_string(),
+                ],
+            },
+            Some(50),
+            None,
+            76,
+        )
+        .expect("default footer line");
+
+        assert_snapshot!("default_footer_line", line_text(&line));
     }
 }
 

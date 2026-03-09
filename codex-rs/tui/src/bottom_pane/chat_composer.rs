@@ -158,7 +158,7 @@ use super::footer::FooterProps;
 use super::footer::SummaryLeft;
 use super::footer::can_show_left_with_context;
 use super::footer::context_window_line;
-use super::footer::default_summary_line;
+use super::footer::default_footer_line;
 use super::footer::esc_hint_mode;
 use super::footer::footer_height;
 use super::footer::footer_hint_items_width;
@@ -4249,6 +4249,9 @@ impl ChatComposer {
                     .width
                     .saturating_sub(crate::ui_consts::FOOTER_INDENT_COLS as u16)
                     as usize;
+                let default_footer_width = hint_rect
+                    .width
+                    .saturating_sub((crate::ui_consts::FOOTER_INDENT_COLS as u16) * 2);
                 let status_line =
                     passive_footer_status_line(&footer_props).map(ratatui::prelude::Stylize::dim);
                 let status_line_candidate = footer_props.status_line_enabled
@@ -4277,16 +4280,17 @@ impl ChatComposer {
                         | FooterMode::ShortcutOverlay
                         | FooterMode::EscHint => false,
                     };
-                let default_summary = if default_summary_candidate {
-                    default_summary_line(
+                let built_in_footer_line = if default_summary_candidate {
+                    default_footer_line(
                         &footer_props.default_summary,
-                        &footer_props.sandbox_policy,
+                        footer_props.context_window_percent,
+                        footer_props.context_window_used_tokens,
+                        default_footer_width,
                     )
                 } else {
                     None
                 };
-                let mut truncated_default_summary = default_summary.clone();
-                let default_summary_active = truncated_default_summary.is_some();
+                let default_summary_active = built_in_footer_line.is_some();
 
                 let left_mode_indicator = if status_line_active {
                     None
@@ -4306,7 +4310,7 @@ impl ChatComposer {
                         .map(|line| line.width() as u16)
                         .unwrap_or(0)
                 } else if default_summary_active {
-                    truncated_default_summary
+                    built_in_footer_line
                         .as_ref()
                         .map(|line| line.width() as u16)
                         .unwrap_or(0)
@@ -4329,6 +4333,8 @@ impl ChatComposer {
                     } else {
                         compact
                     }
+                } else if default_summary_active {
+                    None
                 } else {
                     Some(context_window_line(
                         footer_props.context_window_percent,
@@ -4339,24 +4345,15 @@ impl ChatComposer {
                     .as_ref()
                     .map(|line| line.width() as u16)
                     .unwrap_or(0);
-                if let Some(max_left) = max_left_width_for_right(hint_rect, right_width) {
-                    if status_line_active
-                        && left_width > max_left
-                        && let Some(line) = status_line.as_ref().map(|line| {
-                            truncate_line_with_ellipsis_if_overflow(line.clone(), max_left as usize)
-                        })
-                    {
-                        left_width = line.width() as u16;
-                        truncated_status_line = Some(line);
-                    } else if default_summary_active
-                        && left_width > max_left
-                        && let Some(line) = default_summary.as_ref().map(|line| {
-                            truncate_line_with_ellipsis_if_overflow(line.clone(), max_left as usize)
-                        })
-                    {
-                        left_width = line.width() as u16;
-                        truncated_default_summary = Some(line);
-                    }
+                if let Some(max_left) = max_left_width_for_right(hint_rect, right_width)
+                    && status_line_active
+                    && left_width > max_left
+                    && let Some(line) = status_line.as_ref().map(|line| {
+                        truncate_line_with_ellipsis_if_overflow(line.clone(), max_left as usize)
+                    })
+                {
+                    left_width = line.width() as u16;
+                    truncated_status_line = Some(line);
                 }
                 let can_show_left_and_context =
                     can_show_left_with_context(hint_rect, left_width, right_width);
@@ -4398,6 +4395,7 @@ impl ChatComposer {
                         | FooterMode::QuitShortcutReminder
                         | FooterMode::ShortcutOverlay
                 ) || status_line_candidate && !status_line_active
+                    || default_summary_active
                     || generic_footer_active
                     || default_single_line_active
                 {
@@ -4440,7 +4438,7 @@ impl ChatComposer {
                 } else if status_line_candidate {
                     // A configured status-line override owns this footer row even
                     // when the selected items are currently unavailable.
-                } else if let Some(line) = truncated_default_summary {
+                } else if let Some(line) = built_in_footer_line {
                     render_footer_line(hint_rect, buf, line);
                 } else {
                     render_footer(hint_rect, buf, footer_props);
@@ -4610,7 +4608,7 @@ mod tests {
         let mut hint_row: Option<(u16, String)> = None;
         for y in 0..area.height {
             let row = row_to_string(y);
-            if row.contains("? for shortcuts") {
+            if row.contains("100% left") {
                 hint_row = Some((y, row));
                 break;
             }

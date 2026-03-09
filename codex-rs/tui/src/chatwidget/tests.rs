@@ -9896,6 +9896,63 @@ async fn configured_status_line_override_snapshot() {
 }
 
 #[tokio::test]
+async fn configured_status_line_new_items_snapshot() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+    let (_repo_guard, repo_path) = create_footer_test_repo("codex");
+    chat.current_cwd = Some(repo_path.clone());
+    chat.status_line_branch = Some("main".to_string());
+    chat.status_line_diff_stats = Some(GitDiffStats {
+        added: 0,
+        removed: 0,
+    });
+    chat.status_line_branch_cwd = Some(repo_path);
+    chat.status_line_branch_pending = false;
+    chat.status_line_branch_lookup_complete = true;
+    chat.set_reasoning_effort(Some(ReasoningEffortConfig::High));
+    chat.set_feature_enabled(Feature::CollaborationModes, true);
+    let plan_mask =
+        collaboration_modes::mask_for_kind(chat.models_manager.as_ref(), ModeKind::Plan)
+            .expect("plan collaboration mode");
+    chat.set_collaboration_mask(plan_mask);
+    chat.config.tui_status_line = Some(vec![
+        "project-name".to_string(),
+        "git-changes".to_string(),
+        "provider".to_string(),
+        "model-name".to_string(),
+        "reasoning-effort".to_string(),
+        "mode".to_string(),
+        "context-remaining".to_string(),
+    ]);
+
+    chat.refresh_status_line();
+
+    assert_snapshot!(
+        "configured_status_line_new_items",
+        render_chat_footer_row(&mut chat, 120)
+    );
+}
+
+#[tokio::test]
+async fn git_summary_status_line_item_uses_default_footer_git_label() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+    let (_repo_guard, repo_path) = create_footer_test_repo("codex");
+    chat.current_cwd = Some(repo_path.clone());
+    chat.status_line_branch = Some("main".to_string());
+    chat.status_line_diff_stats = Some(GitDiffStats {
+        added: 0,
+        removed: 0,
+    });
+    chat.status_line_branch_cwd = Some(repo_path);
+    chat.status_line_branch_pending = false;
+    chat.status_line_branch_lookup_complete = true;
+
+    assert_eq!(
+        chat.status_line_value_for_item(&StatusLineItem::GitSummary),
+        Some("codex:main +0/-0".to_string())
+    );
+}
+
+#[tokio::test]
 async fn empty_status_line_setup_restores_default_footer_summary() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
     let cwd = tempdir().expect("tempdir");

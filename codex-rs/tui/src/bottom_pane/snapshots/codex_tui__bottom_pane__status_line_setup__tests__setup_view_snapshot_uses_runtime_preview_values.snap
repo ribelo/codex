@@ -1,6 +1,5 @@
 ---
 source: tui/src/bottom_pane/status_line_setup.rs
-assertion_line: 471
 expression: "render_lines(&view, 72)"
 ---
                                                                         
@@ -9,14 +8,14 @@ expression: "render_lines(&view, 72)"
                                                                         
   Type to search                                                        
   >                                                                     
-› [x] model-name            Current model name                          
-  [x] current-dir           Current working directory                   
-  [x] git-branch            Current Git branch (omitted when unavaila…  
+› [x] project-name          Current project or repository name (omitt…  
+  [x] git-changes           Tracked Git diff summary against HEAD (om…  
+  [x] provider              Current model provider id                   
+  [x] model-name            Current model name                          
   [ ] model-with-reasoning  Current model name with reasoning level     
-  [ ] project-root          Project root directory (omitted when unav…  
-  [ ] context-remaining     Percentage of context window remaining (o…  
-  [ ] context-used          Percentage of context window used (omitte…  
-  [ ] five-hour-limit       Remaining usage on 5-hour usage limit (om…  
+  [ ] reasoning-effort      Current reasoning effort label (omitted f…  
+  [ ] mode                  Current collaboration mode label (omitted…  
+  [ ] current-dir           Current working directory                   
                                                                         
-  gpt-5-codex · ~/codex-rs · jif/statusline-preview                     
+  codex-rs · +3/-1 · openai · gpt-5-codex                               
   Use ↑↓ to navigate, ←→ to move, space to select, enter to confirm, esc

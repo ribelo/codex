@@ -1143,10 +1143,6 @@ impl ChatWidget {
             return;
         }
 
-        if items.contains(&StatusLineItem::GitBranch) && !self.status_line_branch_lookup_complete {
-            self.request_status_line_branch(cwd);
-        }
-
         let mut parts = Vec::new();
         for item in items {
             if let Some(value) = self.status_line_value_for_item(&item) {
@@ -5390,7 +5386,6 @@ impl ChatWidget {
         if self.config.tui_status_line.is_none() {
             preview_data = preview_data.with_default_footer_preview(
                 default_footer_summary,
-                self.config.permissions.sandbox_policy.get().clone(),
                 self.status_line_context_remaining_percent(),
                 None,
             );
@@ -5563,6 +5558,8 @@ impl ChatWidget {
     /// git metadata.
     fn status_line_value_for_item(&self, item: &StatusLineItem) -> Option<String> {
         match item {
+            StatusLineItem::Provider => (!self.config.model_provider_id.is_empty())
+                .then_some(self.config.model_provider_id.clone()),
             StatusLineItem::ModelName => Some(self.model_display_name().to_string()),
             StatusLineItem::ModelWithReasoning => {
                 let label =
@@ -5574,11 +5571,27 @@ impl ChatWidget {
                 };
                 Some(format!("{} {label}{fast_label}", self.model_display_name()))
             }
+            StatusLineItem::ReasoningEffort => (!self.current_model().starts_with("codex-auto-"))
+                .then(|| {
+                    Self::status_line_reasoning_effort_label(self.effective_reasoning_effort())
+                        .to_string()
+                }),
+            StatusLineItem::Mode => match self.active_mode_kind() {
+                ModeKind::Plan => Some("plan".to_string()),
+                ModeKind::Default | ModeKind::PairProgramming | ModeKind::Execute => None,
+            },
             StatusLineItem::CurrentDir => {
                 Some(format_directory_display(self.status_line_cwd(), None))
             }
-            StatusLineItem::ProjectRoot => self.status_line_project_root_name(),
+            StatusLineItem::ProjectName => self.status_line_project_root_name(),
+            StatusLineItem::ProjectRoot => self
+                .status_line_project_root()
+                .map(|root| format_directory_display(&root, None)),
+            StatusLineItem::GitSummary => self.default_footer_git_label(),
             StatusLineItem::GitBranch => self.status_line_branch.clone(),
+            StatusLineItem::GitChanges => self
+                .status_line_diff_stats
+                .map(|diff_stats| format!("+{}/-{}", diff_stats.added, diff_stats.removed)),
             StatusLineItem::UsedTokens => {
                 let usage = self.status_line_total_usage();
                 let total = usage.tokens_in_context_window();
