@@ -1,0 +1,5 @@
+---
+source: tui/src/bottom_pane/footer.rs
+expression: line_text(&line)
+---
+codex:main +0/-0       openai • gpt-5.4 • high • plan               50% left

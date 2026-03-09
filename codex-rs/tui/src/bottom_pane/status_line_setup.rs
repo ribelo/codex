@@ -32,15 +32,10 @@ use crate::app_event_sender::AppEventSender;
 use crate::bottom_pane::CancellationEvent;
 use crate::bottom_pane::bottom_pane_view::BottomPaneView;
 use crate::bottom_pane::footer::DefaultFooterSummary;
-use crate::bottom_pane::footer::can_show_left_with_context;
-use crate::bottom_pane::footer::context_window_line;
-use crate::bottom_pane::footer::default_summary_line;
-use crate::bottom_pane::footer::max_left_width_for_right;
+use crate::bottom_pane::footer::default_footer_line;
 use crate::bottom_pane::multi_select_picker::MultiSelectItem;
 use crate::bottom_pane::multi_select_picker::MultiSelectPicker;
-use crate::line_truncation::truncate_line_with_ellipsis_if_overflow;
 use crate::render::renderable::Renderable;
-use codex_protocol::protocol::SandboxPolicy;
 
 /// Available items that can be displayed in the status line.
 ///
@@ -55,20 +50,38 @@ use codex_protocol::protocol::SandboxPolicy;
 #[derive(EnumIter, EnumString, Display, Debug, Clone, Eq, PartialEq, Ord, PartialOrd)]
 #[strum(serialize_all = "kebab_case")]
 pub(crate) enum StatusLineItem {
+    /// The current model provider id.
+    Provider,
+
     /// The current model name.
     ModelName,
 
     /// Model name with reasoning level suffix.
     ModelWithReasoning,
 
+    /// Reasoning effort label only.
+    ReasoningEffort,
+
+    /// Current collaboration mode label when applicable.
+    Mode,
+
     /// Current working directory path.
     CurrentDir,
+
+    /// Project or repository name (basename only).
+    ProjectName,
 
     /// Project root directory (if detected).
     ProjectRoot,
 
+    /// Project name, branch, and tracked diff summary.
+    GitSummary,
+
     /// Current git branch name (if in a repository).
     GitBranch,
+
+    /// Current tracked git diff summary.
+    GitChanges,
 
     /// Percentage of context window remaining.
     ContextRemaining,
@@ -108,11 +121,25 @@ impl StatusLineItem {
     /// User-visible description shown in the popup.
     pub(crate) fn description(&self) -> &'static str {
         match self {
+            StatusLineItem::Provider => "Current model provider id",
             StatusLineItem::ModelName => "Current model name",
             StatusLineItem::ModelWithReasoning => "Current model name with reasoning level",
+            StatusLineItem::ReasoningEffort => {
+                "Current reasoning effort label (omitted for auto reasoning)"
+            }
+            StatusLineItem::Mode => "Current collaboration mode label (omitted in default mode)",
             StatusLineItem::CurrentDir => "Current working directory",
+            StatusLineItem::ProjectName => {
+                "Current project or repository name (omitted when unavailable)"
+            }
             StatusLineItem::ProjectRoot => "Project root directory (omitted when unavailable)",
+            StatusLineItem::GitSummary => {
+                "Project name, Git branch, and tracked diff summary (omitted when unavailable)"
+            }
             StatusLineItem::GitBranch => "Current Git branch (omitted when unavailable)",
+            StatusLineItem::GitChanges => {
+                "Tracked Git diff summary against HEAD (omitted when unavailable)"
+            }
             StatusLineItem::ContextRemaining => {
                 "Percentage of context window remaining (omitted when unknown)"
             }
@@ -150,7 +177,6 @@ pub(crate) struct StatusLinePreviewData {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct DefaultFooterPreview {
     summary: DefaultFooterSummary,
-    sandbox_policy: SandboxPolicy,
     context_window_percent: Option<i64>,
     context_window_used_tokens: Option<i64>,
 }
@@ -169,13 +195,11 @@ impl StatusLinePreviewData {
     pub(crate) fn with_default_footer_preview(
         mut self,
         summary: DefaultFooterSummary,
-        sandbox_policy: SandboxPolicy,
         context_window_percent: Option<i64>,
         context_window_used_tokens: Option<i64>,
     ) -> Self {
         self.default_footer = Some(DefaultFooterPreview {
             summary,
-            sandbox_policy,
             context_window_percent,
             context_window_used_tokens,
         });
@@ -199,35 +223,13 @@ impl StatusLinePreviewData {
 
     fn default_footer_line(&self, width: u16) -> Option<Line<'static>> {
         let preview = self.default_footer.as_ref()?;
-        let left = default_summary_line(&preview.summary, &preview.sandbox_policy)?;
-        let right = context_window_line(
+        default_footer_line(
+            &preview.summary,
             preview.context_window_percent,
             preview.context_window_used_tokens,
-        );
-        let area = Rect::new(0, 0, width, 1);
-        let right_width = right.width() as u16;
-        let left = if let Some(max_left) = max_left_width_for_right(area, right_width) {
-            truncate_line_with_ellipsis_if_overflow(left, max_left as usize)
-        } else {
-            left
-        };
-        let left_width = left.width() as u16;
-        if can_show_left_with_context(area, left_width, right_width) {
-            Some(join_left_and_right(left, right, width))
-        } else {
-            Some(left)
-        }
+            width,
+        )
     }
-}
-
-fn join_left_and_right(left: Line<'static>, right: Line<'static>, width: u16) -> Line<'static> {
-    let left_width = left.width() as u16;
-    let right_width = right.width() as u16;
-    let gap = width.saturating_sub(left_width.saturating_add(right_width)) as usize;
-    let mut spans = left.spans;
-    spans.push(" ".repeat(gap).into());
-    spans.extend(right.spans);
-    Line::from(spans)
 }
 
 /// Interactive view for configuring which items appear in the status line.
@@ -426,7 +428,6 @@ mod tests {
                             "high".to_string(),
                         ],
                     },
-                    SandboxPolicy::new_workspace_write_policy(),
                     Some(50),
                     None,
                 );
@@ -456,17 +457,16 @@ mod tests {
         let (tx_raw, _rx) = unbounded_channel::<AppEvent>();
         let view = StatusLineSetupView::new(
             Some(&[
+                StatusLineItem::ProjectName.to_string(),
+                StatusLineItem::GitChanges.to_string(),
+                StatusLineItem::Provider.to_string(),
                 StatusLineItem::ModelName.to_string(),
-                StatusLineItem::CurrentDir.to_string(),
-                StatusLineItem::GitBranch.to_string(),
             ]),
             StatusLinePreviewData::from_iter([
+                (StatusLineItem::ProjectName, "codex-rs".to_string()),
+                (StatusLineItem::GitChanges, "+3/-1".to_string()),
+                (StatusLineItem::Provider, "openai".to_string()),
                 (StatusLineItem::ModelName, "gpt-5-codex".to_string()),
-                (StatusLineItem::CurrentDir, "~/codex-rs".to_string()),
-                (
-                    StatusLineItem::GitBranch,
-                    "jif/statusline-preview".to_string(),
-                ),
                 (StatusLineItem::WeeklyLimit, "weekly 82%".to_string()),
             ]),
             AppEventSender::new(tx_raw),
@@ -490,7 +490,6 @@ mod tests {
                             "high".to_string(),
                         ],
                     },
-                    SandboxPolicy::new_workspace_write_policy(),
                     Some(50),
                     None,
                 ),

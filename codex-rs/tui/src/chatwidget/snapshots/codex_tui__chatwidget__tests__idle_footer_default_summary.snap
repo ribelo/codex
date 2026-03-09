@@ -2,4 +2,4 @@
 source: tui/src/chatwidget/tests.rs
 expression: "render_chat_footer_row(&mut chat, 80)"
 ---
-  • openai • gpt-5.3-codex • high                                    100% left
+                         openai • gpt-5.3-codex • high               100% left
