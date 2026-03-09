@@ -284,6 +284,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "spawns git commit; local git signing can trigger credential or pinentry prompts"]
     fn read_local_sha_prefers_repo_head_when_available() {
         let tmp = tempdir().expect("tempdir");
         let repo_path = tmp.path().join("repo");

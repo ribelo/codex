@@ -244,6 +244,7 @@ mod tests {
     use tokio::process::Command;
 
     #[tokio::test]
+    #[ignore = "spawns git commit; local git signing can trigger credential or pinentry prompts"]
     async fn build_turn_metadata_header_includes_has_changes_for_clean_repo() {
         let temp_dir = TempDir::new().expect("temp dir");
         let repo_path = temp_dir.path().join("repo");
