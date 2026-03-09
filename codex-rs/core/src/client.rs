@@ -1033,6 +1033,18 @@ impl ModelClientSession {
                 )
                 .await
             }
+            WireApi::Bedrock => {
+                provider_adapters::bedrock::stream_bedrock_converse(
+                    &self.client.state.provider,
+                    prompt,
+                    model_info,
+                    effort,
+                    summary,
+                    service_tier,
+                    session_telemetry,
+                )
+                .await
+            }
             WireApi::Chat | WireApi::Anthropic | WireApi::Gemini => {
                 let auth_manager = self.client.state.auth_manager.clone();
                 let mut auth_recovery = auth_manager
@@ -1080,6 +1092,7 @@ impl ModelClientSession {
                             )
                             .await
                         }
+                        WireApi::Bedrock => unreachable!("handled above"),
                         WireApi::Responses => unreachable!("handled above"),
                     };
                     match result {

@@ -1642,6 +1642,108 @@ fn non_responses_provider_requires_explicit_model() -> std::io::Result<()> {
 }
 
 #[test]
+fn bedrock_provider_rejects_api_key_and_header_knobs() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    let cfg = ConfigToml {
+        model: Some("anthropic.claude-3-7-sonnet-20250219-v1:0".to_string()),
+        model_provider: Some("bedrock-test".to_string()),
+        model_providers: HashMap::from([(
+            "bedrock-test".to_string(),
+            ModelProviderInfo {
+                name: "Bedrock Test".to_string(),
+                base_url: None,
+                env_key: Some("BEDROCK_API_KEY".to_string()),
+                env_key_instructions: None,
+                experimental_bearer_token: None,
+                wire_api: WireApi::Bedrock,
+                version: None,
+                beta: None,
+                use_bearer_auth: false,
+                aws_region: Some("us-east-1".to_string()),
+                aws_profile: None,
+                query_params: None,
+                http_headers: Some(HashMap::from([("X-Test".to_string(), "value".to_string())])),
+                env_http_headers: None,
+                request_max_retries: None,
+                stream_max_retries: None,
+                stream_idle_timeout_ms: None,
+                requires_openai_auth: false,
+                supports_websockets: false,
+            },
+        )]),
+        ..Default::default()
+    };
+
+    let err = Config::load_from_base_config_with_overrides(
+        cfg,
+        ConfigOverrides::default(),
+        codex_home.path().to_path_buf(),
+    )
+    .expect_err("bedrock provider should reject API-key and header knobs");
+
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert!(err.to_string().contains("wire_api = \"bedrock\""));
+    assert!(err.to_string().contains("env_key"));
+    assert!(err.to_string().contains("http_headers"));
+    Ok(())
+}
+
+#[test]
+fn bedrock_provider_accepts_region_profile_and_endpoint_override() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    let cfg = ConfigToml {
+        model: Some("anthropic.claude-3-7-sonnet-20250219-v1:0".to_string()),
+        model_provider: Some("bedrock-test".to_string()),
+        model_providers: HashMap::from([(
+            "bedrock-test".to_string(),
+            ModelProviderInfo {
+                name: "Bedrock Test".to_string(),
+                base_url: Some("http://localhost:4566".to_string()),
+                env_key: None,
+                env_key_instructions: None,
+                experimental_bearer_token: None,
+                wire_api: WireApi::Bedrock,
+                version: None,
+                beta: None,
+                use_bearer_auth: false,
+                aws_region: Some("us-east-1".to_string()),
+                aws_profile: Some("sandbox".to_string()),
+                query_params: None,
+                http_headers: None,
+                env_http_headers: None,
+                request_max_retries: Some(1),
+                stream_max_retries: Some(0),
+                stream_idle_timeout_ms: Some(5_000),
+                requires_openai_auth: false,
+                supports_websockets: false,
+            },
+        )]),
+        ..Default::default()
+    };
+
+    let config = Config::load_from_base_config_with_overrides(
+        cfg,
+        ConfigOverrides::default(),
+        codex_home.path().to_path_buf(),
+    )?;
+
+    assert_eq!(config.model_provider.wire_api, WireApi::Bedrock);
+    assert_eq!(
+        config.model_provider.aws_region.as_deref(),
+        Some("us-east-1")
+    );
+    assert_eq!(
+        config.model_provider.aws_profile.as_deref(),
+        Some("sandbox")
+    );
+    assert_eq!(
+        config.model_provider.base_url.as_deref(),
+        Some("http://localhost:4566")
+    );
+    Ok(())
+}
+
+#[test]
 fn config_honors_explicit_file_oauth_store_mode() -> std::io::Result<()> {
     let codex_home = TempDir::new()?;
     let cfg = ConfigToml {
@@ -3873,6 +3975,8 @@ model_verbosity = "high"
         version: None,
         beta: None,
         use_bearer_auth: false,
+        aws_region: None,
+        aws_profile: None,
         env_key_instructions: None,
         experimental_bearer_token: None,
         query_params: None,

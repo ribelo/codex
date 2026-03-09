@@ -25,7 +25,8 @@ Built-in native providers:
   - native wire protocol: `wire_api = "gemini"`
 
 Non-Responses providers must set `model` explicitly. Codex does not refresh `/models` for
-`wire_api = "chat"`, `wire_api = "anthropic"`, or `wire_api = "gemini"`.
+`wire_api = "chat"`, `wire_api = "anthropic"`, `wire_api = "gemini"`, or
+`wire_api = "bedrock"`.
 
 Custom providers can opt into the supported wire protocols under `[model_providers.<id>]`:
 
@@ -66,6 +67,26 @@ use_bearer_auth = true
 version = "2023-06-01"
 beta = "tools-2024-05-16"
 ```
+
+Bedrock is supported as a custom provider using AWS credential-chain auth. It does not use
+`env_key` or bearer tokens:
+
+```toml
+model_provider = "my-bedrock"
+model = "anthropic.claude-3-7-sonnet-20250219-v1:0"
+
+[model_providers.my-bedrock]
+name = "AWS Bedrock"
+wire_api = "bedrock"
+aws_region = "us-east-1"
+aws_profile = "sandbox"
+```
+
+Optional Bedrock notes:
+
+- `base_url` can override the Bedrock endpoint for LocalStack or other test gateways.
+- Claude-on-Bedrock models get Bedrock-aware fallback metadata automatically.
+- Bedrock structured output uses the native Converse `output_config` JSON-schema path.
 
 Some features remain Responses-only. Conversation compaction, memory summarization, realtime, and
 Responses WebSocket transport are only available with `wire_api = "responses"`.

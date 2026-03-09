@@ -752,6 +752,14 @@
       "additionalProperties": false,
       "description": "Serializable representation of a provider definition.",
       "properties": {
+        "aws_profile": {
+          "description": "AWS profile override used by Bedrock providers.",
+          "type": "string"
+        },
+        "aws_region": {
+          "description": "AWS region override used by Bedrock providers.",
+          "type": "string"
+        },
         "base_url": {
           "description": "Base URL for the provider's OpenAI-compatible API.",
           "type": "string"
@@ -1724,6 +1732,13 @@
           "description": "Gemini `streamGenerateContent` SSE API.",
           "enum": [
             "gemini"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Amazon Bedrock `ConverseStream` API.",
+          "enum": [
+            "bedrock"
           ],
           "type": "string"
         }

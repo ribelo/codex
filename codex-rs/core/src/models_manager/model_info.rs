@@ -111,6 +111,12 @@ pub(crate) fn model_info_from_slug_for_provider(slug: &str, wire_api: WireApi) -
             model.apply_patch_tool_type = Some(ApplyPatchToolType::Function);
             model.shell_type = ConfigShellToolType::ShellCommand;
         }
+        WireApi::Bedrock => {
+            if slug.starts_with("anthropic.claude-") || slug.starts_with("claude") {
+                model.supports_reasoning_summaries = true;
+                model.apply_patch_tool_type = Some(ApplyPatchToolType::Function);
+            }
+        }
     }
     model
 }
@@ -171,5 +177,27 @@ mod tests {
         let updated = with_config_overrides(model.clone(), &config);
 
         assert_eq!(updated, model);
+    }
+
+    #[test]
+    fn bedrock_claude_slugs_get_provider_aware_defaults() {
+        let model = model_info_from_slug_for_provider(
+            "anthropic.claude-3-7-sonnet-20250219-v1:0",
+            WireApi::Bedrock,
+        );
+
+        assert!(model.supports_reasoning_summaries);
+        assert_eq!(
+            model.apply_patch_tool_type,
+            Some(ApplyPatchToolType::Function)
+        );
+    }
+
+    #[test]
+    fn non_claude_bedrock_slugs_keep_conservative_defaults() {
+        let model = model_info_from_slug_for_provider("amazon.nova-lite-v1:0", WireApi::Bedrock);
+
+        assert!(!model.supports_reasoning_summaries);
+        assert_eq!(model.apply_patch_tool_type, None);
     }
 }

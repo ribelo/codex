@@ -2172,6 +2172,8 @@ impl Config {
 
         let forced_login_method = cfg.forced_login_method;
 
+        validate_model_provider_configuration(&model_provider_id, &model_provider)?;
+
         let model = model.or(config_profile.model).or(cfg.model);
         if model.is_none() && model_provider.wire_api != WireApi::Responses {
             return Err(std::io::Error::new(
@@ -2183,6 +2185,7 @@ impl Config {
                         WireApi::Chat => "chat",
                         WireApi::Anthropic => "anthropic",
                         WireApi::Gemini => "gemini",
+                        WireApi::Bedrock => "bedrock",
                     }
                 ),
             ));
@@ -2603,6 +2606,62 @@ impl Config {
     pub fn bundled_skills_enabled(&self) -> bool {
         crate::skills::manager::bundled_skills_enabled_from_stack(&self.config_layer_stack)
     }
+}
+
+fn validate_model_provider_configuration(
+    model_provider_id: &str,
+    model_provider: &ModelProviderInfo,
+) -> std::io::Result<()> {
+    if model_provider.wire_api != WireApi::Bedrock {
+        return Ok(());
+    }
+
+    let mut unsupported = Vec::new();
+    if model_provider.env_key.is_some() {
+        unsupported.push("env_key");
+    }
+    if model_provider.env_key_instructions.is_some() {
+        unsupported.push("env_key_instructions");
+    }
+    if model_provider.experimental_bearer_token.is_some() {
+        unsupported.push("experimental_bearer_token");
+    }
+    if model_provider.version.is_some() {
+        unsupported.push("version");
+    }
+    if model_provider.beta.is_some() {
+        unsupported.push("beta");
+    }
+    if model_provider.use_bearer_auth {
+        unsupported.push("use_bearer_auth");
+    }
+    if model_provider.query_params.is_some() {
+        unsupported.push("query_params");
+    }
+    if model_provider.http_headers.is_some() {
+        unsupported.push("http_headers");
+    }
+    if model_provider.env_http_headers.is_some() {
+        unsupported.push("env_http_headers");
+    }
+    if model_provider.requires_openai_auth {
+        unsupported.push("requires_openai_auth");
+    }
+    if model_provider.supports_websockets {
+        unsupported.push("supports_websockets");
+    }
+
+    if unsupported.is_empty() {
+        return Ok(());
+    }
+
+    Err(std::io::Error::new(
+        ErrorKind::InvalidInput,
+        format!(
+            "model_provider `{model_provider_id}` uses wire_api = \"bedrock\" and does not support {}",
+            unsupported.join(", ")
+        ),
+    ))
 }
 
 pub(crate) fn uses_deprecated_instructions_file(config_layer_stack: &ConfigLayerStack) -> bool {
