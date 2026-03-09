@@ -20,6 +20,8 @@ use std::net::TcpStream;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::thread;
 use std::time::Duration;
 
@@ -30,6 +32,7 @@ use chrono::Utc;
 use codex_app_server_protocol::AuthMode;
 use codex_core::auth::AuthCredentialsStoreMode;
 use codex_core::auth::AuthDotJson;
+use codex_core::auth::load_auth_dot_json;
 use codex_core::auth::save_auth;
 use codex_core::default_client::originator;
 use codex_core::token_data::TokenData;
@@ -113,12 +116,35 @@ impl LoginServer {
 #[derive(Clone, Debug)]
 pub struct ShutdownHandle {
     shutdown_notify: Arc<tokio::sync::Notify>,
+    shutdown_state: Arc<AtomicBool>,
+}
+
+impl Default for ShutdownHandle {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ShutdownHandle {
+    pub fn new() -> Self {
+        Self {
+            shutdown_notify: Arc::new(tokio::sync::Notify::new()),
+            shutdown_state: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
     /// Signals the login loop to terminate.
     pub fn shutdown(&self) {
+        self.shutdown_state.store(true, Ordering::Relaxed);
         self.shutdown_notify.notify_waiters();
+    }
+
+    pub fn is_shutdown(&self) -> bool {
+        self.shutdown_state.load(Ordering::Relaxed)
+    }
+
+    pub fn notifier(&self) -> Arc<tokio::sync::Notify> {
+        Arc::clone(&self.shutdown_notify)
     }
 }
 
@@ -168,9 +194,9 @@ pub fn run_login_server(opts: ServerOptions) -> io::Result<LoginServer> {
         })
     };
 
-    let shutdown_notify = Arc::new(tokio::sync::Notify::new());
+    let shutdown_handle = ShutdownHandle::new();
     let server_handle = {
-        let shutdown_notify = shutdown_notify.clone();
+        let shutdown_notify = shutdown_handle.notifier();
         let server = server;
         tokio::spawn(async move {
             let result = loop {
@@ -228,7 +254,7 @@ pub fn run_login_server(opts: ServerOptions) -> io::Result<LoginServer> {
         auth_url,
         actual_port,
         server_handle,
-        shutdown_handle: ShutdownHandle { shutdown_notify },
+        shutdown_handle,
     })
 }
 
@@ -767,10 +793,16 @@ pub(crate) async fn persist_tokens_async(
         {
             tokens.account_id = Some(acc.to_string());
         }
+        let existing = match load_auth_dot_json(&codex_home, auth_credentials_store_mode) {
+            Ok(Some(auth)) => auth,
+            Ok(None) | Err(_) => AuthDotJson::empty(),
+        };
         let auth = AuthDotJson {
             auth_mode: Some(AuthMode::Chatgpt),
             openai_api_key: api_key,
             tokens: Some(tokens),
+            gemini_accounts: existing.gemini_accounts,
+            antigravity_accounts: existing.antigravity_accounts,
             last_refresh: Some(Utc::now()),
         };
         save_auth(&codex_home, &auth, auth_credentials_store_mode)

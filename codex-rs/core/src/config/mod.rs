@@ -2185,6 +2185,7 @@ impl Config {
                         WireApi::Chat => "chat",
                         WireApi::Anthropic => "anthropic",
                         WireApi::Gemini => "gemini",
+                        WireApi::Antigravity => "antigravity",
                         WireApi::Bedrock => "bedrock",
                     }
                 ),

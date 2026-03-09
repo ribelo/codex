@@ -1045,7 +1045,7 @@ impl ModelClientSession {
                 )
                 .await
             }
-            WireApi::Chat | WireApi::Anthropic | WireApi::Gemini => {
+            WireApi::Chat | WireApi::Anthropic => {
                 let auth_manager = self.client.state.auth_manager.clone();
                 let mut auth_recovery = auth_manager
                     .as_ref()
@@ -1058,6 +1058,7 @@ impl ModelClientSession {
                         provider: &self.client.state.provider,
                         api_provider: &client_setup.api_provider,
                         api_auth: &client_setup.api_auth,
+                        auth_manager: self.client.state.auth_manager.as_deref(),
                         conversation_id: &self.client.state.conversation_id,
                         session_source: &self.client.state.session_source,
                     };
@@ -1082,16 +1083,8 @@ impl ModelClientSession {
                             )
                             .await
                         }
-                        WireApi::Gemini => {
-                            provider_adapters::gemini::stream_gemini_generate_content(
-                                &adapter_context,
-                                prompt,
-                                model_info,
-                                effort,
-                                session_telemetry,
-                            )
-                            .await
-                        }
+                        WireApi::Gemini => unreachable!("handled below"),
+                        WireApi::Antigravity => unreachable!("handled below"),
                         WireApi::Bedrock => unreachable!("handled above"),
                         WireApi::Responses => unreachable!("handled above"),
                     };
@@ -1105,6 +1098,46 @@ impl ModelClientSession {
                             return Err(CodexErr::UnexpectedStatus(err));
                         }
                         other => return other,
+                    }
+                }
+            }
+            WireApi::Gemini | WireApi::Antigravity => {
+                let http_client = build_reqwest_client();
+                let api_provider = self.client.state.provider.to_api_provider(None)?;
+                let api_auth = CoreAuthProvider::default();
+                let adapter_context = provider_adapters::AdapterContext {
+                    http_client: &http_client,
+                    provider: &self.client.state.provider,
+                    api_provider: &api_provider,
+                    api_auth: &api_auth,
+                    auth_manager: self.client.state.auth_manager.as_deref(),
+                    conversation_id: &self.client.state.conversation_id,
+                    session_source: &self.client.state.session_source,
+                };
+
+                match wire_api {
+                    WireApi::Gemini => {
+                        provider_adapters::gemini::stream_gemini_generate_content(
+                            &adapter_context,
+                            prompt,
+                            model_info,
+                            effort,
+                            session_telemetry,
+                        )
+                        .await
+                    }
+                    WireApi::Antigravity => {
+                        provider_adapters::antigravity::stream_antigravity_generate_content(
+                            &adapter_context,
+                            prompt,
+                            model_info,
+                            effort,
+                            session_telemetry,
+                        )
+                        .await
+                    }
+                    WireApi::Responses | WireApi::Chat | WireApi::Anthropic | WireApi::Bedrock => {
+                        unreachable!("handled above")
                     }
                 }
             }

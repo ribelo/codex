@@ -53,6 +53,8 @@ async fn refresh_token_succeeds_updates_storage() -> Result<()> {
         auth_mode: Some(AuthMode::Chatgpt),
         openai_api_key: None,
         tokens: Some(initial_tokens.clone()),
+        gemini_accounts: Vec::new(),
+        antigravity_accounts: Vec::new(),
         last_refresh: Some(initial_last_refresh),
     };
     ctx.write_auth(&initial_auth)?;
@@ -116,6 +118,8 @@ async fn refresh_token_refreshes_when_auth_is_unchanged() -> Result<()> {
         auth_mode: Some(AuthMode::Chatgpt),
         openai_api_key: None,
         tokens: Some(initial_tokens.clone()),
+        gemini_accounts: Vec::new(),
+        antigravity_accounts: Vec::new(),
         last_refresh: Some(initial_last_refresh),
     };
     ctx.write_auth(&initial_auth)?;
@@ -170,6 +174,8 @@ async fn refresh_token_skips_refresh_when_auth_changed() -> Result<()> {
         auth_mode: Some(AuthMode::Chatgpt),
         openai_api_key: None,
         tokens: Some(initial_tokens),
+        gemini_accounts: Vec::new(),
+        antigravity_accounts: Vec::new(),
         last_refresh: Some(initial_last_refresh),
     };
     ctx.write_auth(&initial_auth)?;
@@ -179,6 +185,8 @@ async fn refresh_token_skips_refresh_when_auth_changed() -> Result<()> {
         auth_mode: Some(AuthMode::Chatgpt),
         openai_api_key: None,
         tokens: Some(disk_tokens.clone()),
+        gemini_accounts: Vec::new(),
+        antigravity_accounts: Vec::new(),
         last_refresh: Some(initial_last_refresh),
     };
     save_auth(
@@ -233,6 +241,8 @@ async fn refresh_token_errors_on_account_mismatch() -> Result<()> {
         auth_mode: Some(AuthMode::Chatgpt),
         openai_api_key: None,
         tokens: Some(initial_tokens.clone()),
+        gemini_accounts: Vec::new(),
+        antigravity_accounts: Vec::new(),
         last_refresh: Some(initial_last_refresh),
     };
     ctx.write_auth(&initial_auth)?;
@@ -243,6 +253,8 @@ async fn refresh_token_errors_on_account_mismatch() -> Result<()> {
         auth_mode: Some(AuthMode::Chatgpt),
         openai_api_key: None,
         tokens: Some(disk_tokens),
+        gemini_accounts: Vec::new(),
+        antigravity_accounts: Vec::new(),
         last_refresh: Some(initial_last_refresh),
     };
     save_auth(
@@ -300,6 +312,8 @@ async fn returns_fresh_tokens_as_is() -> Result<()> {
         auth_mode: Some(AuthMode::Chatgpt),
         openai_api_key: None,
         tokens: Some(initial_tokens.clone()),
+        gemini_accounts: Vec::new(),
+        antigravity_accounts: Vec::new(),
         last_refresh: Some(initial_last_refresh),
     };
     ctx.write_auth(&initial_auth)?;
@@ -346,6 +360,8 @@ async fn refreshes_token_when_last_refresh_is_stale() -> Result<()> {
         auth_mode: Some(AuthMode::Chatgpt),
         openai_api_key: None,
         tokens: Some(initial_tokens.clone()),
+        gemini_accounts: Vec::new(),
+        antigravity_accounts: Vec::new(),
         last_refresh: Some(stale_refresh),
     };
     ctx.write_auth(&initial_auth)?;
@@ -405,6 +421,8 @@ async fn refresh_token_returns_permanent_error_for_expired_refresh_token() -> Re
         auth_mode: Some(AuthMode::Chatgpt),
         openai_api_key: None,
         tokens: Some(initial_tokens.clone()),
+        gemini_accounts: Vec::new(),
+        antigravity_accounts: Vec::new(),
         last_refresh: Some(initial_last_refresh),
     };
     ctx.write_auth(&initial_auth)?;
@@ -455,6 +473,8 @@ async fn refresh_token_returns_transient_error_on_server_failure() -> Result<()>
         auth_mode: Some(AuthMode::Chatgpt),
         openai_api_key: None,
         tokens: Some(initial_tokens.clone()),
+        gemini_accounts: Vec::new(),
+        antigravity_accounts: Vec::new(),
         last_refresh: Some(initial_last_refresh),
     };
     ctx.write_auth(&initial_auth)?;
@@ -507,6 +527,8 @@ async fn unauthorized_recovery_reloads_then_refreshes_tokens() -> Result<()> {
         auth_mode: Some(AuthMode::Chatgpt),
         openai_api_key: None,
         tokens: Some(initial_tokens.clone()),
+        gemini_accounts: Vec::new(),
+        antigravity_accounts: Vec::new(),
         last_refresh: Some(initial_last_refresh),
     };
     ctx.write_auth(&initial_auth)?;
@@ -516,6 +538,8 @@ async fn unauthorized_recovery_reloads_then_refreshes_tokens() -> Result<()> {
         auth_mode: Some(AuthMode::Chatgpt),
         openai_api_key: None,
         tokens: Some(disk_tokens.clone()),
+        gemini_accounts: Vec::new(),
+        antigravity_accounts: Vec::new(),
         last_refresh: Some(initial_last_refresh),
     };
     save_auth(
@@ -599,6 +623,8 @@ async fn unauthorized_recovery_errors_on_account_mismatch() -> Result<()> {
         auth_mode: Some(AuthMode::Chatgpt),
         openai_api_key: None,
         tokens: Some(initial_tokens.clone()),
+        gemini_accounts: Vec::new(),
+        antigravity_accounts: Vec::new(),
         last_refresh: Some(initial_last_refresh),
     };
     ctx.write_auth(&initial_auth)?;
@@ -609,6 +635,8 @@ async fn unauthorized_recovery_errors_on_account_mismatch() -> Result<()> {
         auth_mode: Some(AuthMode::Chatgpt),
         openai_api_key: None,
         tokens: Some(disk_tokens),
+        gemini_accounts: Vec::new(),
+        antigravity_accounts: Vec::new(),
         last_refresh: Some(initial_last_refresh),
     };
     save_auth(
@@ -666,6 +694,8 @@ async fn unauthorized_recovery_requires_chatgpt_auth() -> Result<()> {
         auth_mode: Some(AuthMode::ApiKey),
         openai_api_key: Some("sk-test".to_string()),
         tokens: None,
+        gemini_accounts: Vec::new(),
+        antigravity_accounts: Vec::new(),
         last_refresh: None,
     };
     ctx.write_auth(&auth)?;

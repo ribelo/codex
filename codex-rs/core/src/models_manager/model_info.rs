@@ -111,6 +111,14 @@ pub(crate) fn model_info_from_slug_for_provider(slug: &str, wire_api: WireApi) -
             model.apply_patch_tool_type = Some(ApplyPatchToolType::Function);
             model.shell_type = ConfigShellToolType::ShellCommand;
         }
+        WireApi::Antigravity => {
+            model.shell_type = ConfigShellToolType::ShellCommand;
+            let slug_lower = slug.to_ascii_lowercase();
+            if slug_lower.contains("claude") || slug_lower.contains("gemini") {
+                model.supports_reasoning_summaries = true;
+                model.apply_patch_tool_type = Some(ApplyPatchToolType::Function);
+            }
+        }
         WireApi::Bedrock => {
             if slug.starts_with("anthropic.claude-") || slug.starts_with("claude") {
                 model.supports_reasoning_summaries = true;
@@ -199,5 +207,17 @@ mod tests {
 
         assert!(!model.supports_reasoning_summaries);
         assert_eq!(model.apply_patch_tool_type, None);
+    }
+
+    #[test]
+    fn antigravity_claude_slugs_get_reasoning_defaults() {
+        let model =
+            model_info_from_slug_for_provider("claude-opus-4-5-thinking", WireApi::Antigravity);
+
+        assert!(model.supports_reasoning_summaries);
+        assert_eq!(
+            model.apply_patch_tool_type,
+            Some(ApplyPatchToolType::Function)
+        );
     }
 }

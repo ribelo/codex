@@ -29,6 +29,7 @@ const MAX_REQUEST_MAX_RETRIES: u64 = 100;
 const OPENAI_PROVIDER_NAME: &str = "OpenAI";
 const ANTHROPIC_PROVIDER_NAME: &str = "Anthropic";
 const GEMINI_PROVIDER_NAME: &str = "Gemini";
+const ANTIGRAVITY_PROVIDER_NAME: &str = "Antigravity";
 pub(crate) const LEGACY_OLLAMA_CHAT_PROVIDER_ID: &str = "ollama-chat";
 pub(crate) const OLLAMA_CHAT_PROVIDER_REMOVED_ERROR: &str = "`ollama-chat` is no longer supported.\nHow to fix: replace `ollama-chat` with `ollama` in `model_provider`, `oss_provider`, or `--local-provider`.\nMore info: https://github.com/openai/codex/discussions/7782";
 
@@ -45,6 +46,8 @@ pub enum WireApi {
     Anthropic,
     /// Gemini `streamGenerateContent` SSE API.
     Gemini,
+    /// Antigravity `streamGenerateContent` SSE API.
+    Antigravity,
     /// Amazon Bedrock `ConverseStream` API.
     Bedrock,
 }
@@ -56,6 +59,7 @@ impl WireApi {
             Self::Chat => "chat",
             Self::Anthropic => "anthropic",
             Self::Gemini => "gemini",
+            Self::Antigravity => "antigravity",
             Self::Bedrock => "bedrock",
         }
     }
@@ -72,10 +76,18 @@ impl<'de> Deserialize<'de> for WireApi {
             "chat" => Ok(Self::Chat),
             "anthropic" => Ok(Self::Anthropic),
             "gemini" => Ok(Self::Gemini),
+            "antigravity" => Ok(Self::Antigravity),
             "bedrock" => Ok(Self::Bedrock),
             _ => Err(serde::de::Error::unknown_variant(
                 &value,
-                &["responses", "chat", "anthropic", "gemini", "bedrock"],
+                &[
+                    "responses",
+                    "chat",
+                    "anthropic",
+                    "gemini",
+                    "antigravity",
+                    "bedrock",
+                ],
             )),
         }
     }
@@ -334,6 +346,7 @@ pub const DEFAULT_OLLAMA_PORT: u16 = 11434;
 
 pub const ANTHROPIC_PROVIDER_ID: &str = "anthropic";
 pub const GEMINI_PROVIDER_ID: &str = "gemini";
+pub const ANTIGRAVITY_PROVIDER_ID: &str = "antigravity";
 pub const LMSTUDIO_OSS_PROVIDER_ID: &str = "lmstudio";
 pub const OLLAMA_OSS_PROVIDER_ID: &str = "ollama";
 
@@ -386,6 +399,30 @@ pub fn built_in_model_providers() -> HashMap<String, ModelProviderInfo> {
                 env_key_instructions: None,
                 experimental_bearer_token: None,
                 wire_api: WireApi::Gemini,
+                version: None,
+                beta: None,
+                use_bearer_auth: false,
+                aws_region: None,
+                aws_profile: None,
+                query_params: None,
+                http_headers: None,
+                env_http_headers: None,
+                request_max_retries: None,
+                stream_max_retries: None,
+                stream_idle_timeout_ms: None,
+                requires_openai_auth: false,
+                supports_websockets: false,
+            },
+        ),
+        (
+            ANTIGRAVITY_PROVIDER_ID,
+            ModelProviderInfo {
+                name: ANTIGRAVITY_PROVIDER_NAME.into(),
+                base_url: None,
+                env_key: None,
+                env_key_instructions: None,
+                experimental_bearer_token: None,
+                wire_api: WireApi::Antigravity,
                 version: None,
                 beta: None,
                 use_bearer_auth: false,
@@ -584,6 +621,17 @@ wire_api = "chat"
     }
 
     #[test]
+    fn test_deserialize_antigravity_wire_api() {
+        let provider_toml = r#"
+name = "Antigravity"
+wire_api = "antigravity"
+        "#;
+
+        let provider = toml::from_str::<ModelProviderInfo>(provider_toml).unwrap();
+        assert_eq!(provider.wire_api, WireApi::Antigravity);
+    }
+
+    #[test]
     fn test_deserialize_bedrock_wire_api() {
         let provider_toml = r#"
 name = "Bedrock"
@@ -606,5 +654,10 @@ aws_profile = "sandbox"
             WireApi::Anthropic
         );
         assert_eq!(providers[GEMINI_PROVIDER_ID].wire_api, WireApi::Gemini);
+        assert_eq!(
+            providers[ANTIGRAVITY_PROVIDER_ID].wire_api,
+            WireApi::Antigravity
+        );
+        assert_eq!(providers[ANTIGRAVITY_PROVIDER_ID].base_url, None);
     }
 }

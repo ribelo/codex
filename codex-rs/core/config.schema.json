@@ -1736,6 +1736,13 @@
           "type": "string"
         },
         {
+          "description": "Antigravity `streamGenerateContent` SSE API.",
+          "enum": [
+            "antigravity"
+          ],
+          "type": "string"
+        },
+        {
           "description": "Amazon Bedrock `ConverseStream` API.",
           "enum": [
             "bedrock"

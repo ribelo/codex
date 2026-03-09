@@ -14,11 +14,17 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::RwLock;
+use std::time::Duration;
 
 use codex_app_server_protocol::AuthMode as ApiAuthMode;
 use codex_otel::TelemetryAuthMode;
 use codex_protocol::config_types::ForcedLoginMethod;
+use tokio::time::sleep;
 
+use crate::antigravity::ANTIGRAVITY_ENDPOINT;
+use crate::antigravity::ANTIGRAVITY_TOKEN_URL;
+use crate::antigravity::antigravity_client_id;
+use crate::antigravity::antigravity_client_secret;
 pub use crate::auth::storage::AuthCredentialsStoreMode;
 pub use crate::auth::storage::AuthDotJson;
 use crate::auth::storage::AuthStorageBackend;
@@ -26,6 +32,17 @@ use crate::auth::storage::create_auth_storage;
 use crate::config::Config;
 use crate::error::RefreshTokenFailedError;
 use crate::error::RefreshTokenFailedReason;
+use crate::gemini::GEMINI_CODE_ASSIST_CLIENT_METADATA;
+use crate::gemini::GEMINI_CODE_ASSIST_ENDPOINT;
+use crate::gemini::GEMINI_CODE_ASSIST_USER_AGENT;
+use crate::gemini::GEMINI_CODE_ASSIST_X_GOOG_API_CLIENT;
+use crate::gemini::GEMINI_METADATA_IDE_TYPE;
+use crate::gemini::GEMINI_METADATA_PLATFORM;
+use crate::gemini::GEMINI_METADATA_PLUGIN;
+use crate::gemini::GEMINI_TOKEN_URL;
+use crate::gemini::gemini_client_id;
+use crate::gemini::gemini_client_secret;
+use crate::token_data::GeminiTokenData;
 use crate::token_data::KnownPlan as InternalKnownPlan;
 use crate::token_data::PlanType as InternalPlanType;
 use crate::token_data::TokenData;
@@ -103,6 +120,11 @@ const REFRESH_TOKEN_UNKNOWN_MESSAGE: &str =
 const REFRESH_TOKEN_ACCOUNT_MISMATCH_MESSAGE: &str = "Your access token could not be refreshed because you have since logged out or signed in to another account. Please sign in again.";
 const REFRESH_TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
 pub const REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR: &str = "CODEX_REFRESH_TOKEN_URL_OVERRIDE";
+const GEMINI_PROJECT_REQUIRED_MESSAGE: &str = "Gemini requires a Google Cloud project. Run `codex login gemini` and supply a project ID with the Gemini API enabled.";
+const ANTIGRAVITY_PROJECT_REQUIRED_MESSAGE: &str = "Antigravity requires a Google Cloud project. Run `codex login antigravity` and supply a project ID with the Gemini API enabled.";
+const GOOGLE_ACCESS_TOKEN_LEEWAY_SECONDS: i64 = 300;
+const GEMINI_ONBOARD_MAX_ATTEMPTS: usize = 10;
+const GEMINI_ONBOARD_DELAY_MILLIS: u64 = 500;
 
 #[derive(Debug, Error)]
 pub enum RefreshTokenError {
@@ -328,6 +350,8 @@ impl CodexAuth {
                 refresh_token: "test".to_string(),
                 account_id: Some("account_id".to_string()),
             }),
+            gemini_accounts: Vec::new(),
+            antigravity_accounts: Vec::new(),
             last_refresh: Some(Utc::now()),
         };
 
@@ -397,16 +421,62 @@ pub fn logout(
     storage.delete()
 }
 
+/// Clears only the stored Gemini OAuth accounts, leaving primary auth and
+/// Antigravity accounts intact.
+pub fn logout_gemini(
+    codex_home: &Path,
+    auth_credentials_store_mode: AuthCredentialsStoreMode,
+) -> std::io::Result<bool> {
+    let storage = create_auth_storage(codex_home.to_path_buf(), auth_credentials_store_mode);
+    match storage.load()? {
+        Some(mut auth) => {
+            if auth.gemini_accounts.is_empty() {
+                return Ok(false);
+            }
+            auth.gemini_accounts.clear();
+            storage.save(&auth)?;
+            Ok(true)
+        }
+        None => Ok(false),
+    }
+}
+
+/// Clears only the stored Antigravity OAuth accounts, leaving primary auth and
+/// Gemini accounts intact.
+pub fn logout_antigravity(
+    codex_home: &Path,
+    auth_credentials_store_mode: AuthCredentialsStoreMode,
+) -> std::io::Result<bool> {
+    let storage = create_auth_storage(codex_home.to_path_buf(), auth_credentials_store_mode);
+    match storage.load()? {
+        Some(mut auth) => {
+            if auth.antigravity_accounts.is_empty() {
+                return Ok(false);
+            }
+            auth.antigravity_accounts.clear();
+            storage.save(&auth)?;
+            Ok(true)
+        }
+        None => Ok(false),
+    }
+}
+
 /// Writes an `auth.json` that contains only the API key.
 pub fn login_with_api_key(
     codex_home: &Path,
     api_key: &str,
     auth_credentials_store_mode: AuthCredentialsStoreMode,
 ) -> std::io::Result<()> {
+    let existing = match load_auth_dot_json(codex_home, auth_credentials_store_mode) {
+        Ok(Some(auth)) => auth,
+        Ok(None) | Err(_) => AuthDotJson::empty(),
+    };
     let auth_dot_json = AuthDotJson {
         auth_mode: Some(ApiAuthMode::ApiKey),
         openai_api_key: Some(api_key.to_string()),
         tokens: None,
+        gemini_accounts: existing.gemini_accounts,
+        antigravity_accounts: existing.antigravity_accounts,
         last_refresh: None,
     };
     save_auth(codex_home, &auth_dot_json, auth_credentials_store_mode)
@@ -596,6 +666,10 @@ fn load_auth(
         None => return Ok(None),
     };
 
+    if !auth_dot_json.has_primary_auth() {
+        return Ok(None);
+    }
+
     let auth = build_auth(auth_dot_json, auth_credentials_store_mode)?;
     Ok(Some(auth))
 }
@@ -749,6 +823,17 @@ fn refresh_token_endpoint() -> String {
 }
 
 impl AuthDotJson {
+    pub fn empty() -> Self {
+        Self {
+            auth_mode: None,
+            openai_api_key: None,
+            tokens: None,
+            gemini_accounts: Vec::new(),
+            antigravity_accounts: Vec::new(),
+            last_refresh: None,
+        }
+    }
+
     fn from_external_tokens(external: &ExternalAuthTokens) -> std::io::Result<Self> {
         let mut token_info =
             parse_chatgpt_jwt_claims(&external.access_token).map_err(std::io::Error::other)?;
@@ -770,6 +855,8 @@ impl AuthDotJson {
             auth_mode: Some(ApiAuthMode::ChatgptAuthTokens),
             openai_api_key: None,
             tokens: Some(tokens),
+            gemini_accounts: Vec::new(),
+            antigravity_accounts: Vec::new(),
             last_refresh: Some(Utc::now()),
         })
     }
@@ -795,6 +882,10 @@ impl AuthDotJson {
             return ApiAuthMode::ApiKey;
         }
         ApiAuthMode::Chatgpt
+    }
+
+    fn has_primary_auth(&self) -> bool {
+        self.auth_mode.is_some() || self.openai_api_key.is_some() || self.tokens.is_some()
     }
 
     fn storage_mode(
@@ -1265,6 +1356,54 @@ impl AuthManager {
         self.auth_cached().as_ref().map(CodexAuth::auth_mode)
     }
 
+    pub fn load_auth_dot_json(&self) -> std::io::Result<Option<AuthDotJson>> {
+        self.auth_storage().load()
+    }
+
+    pub fn gemini_account_count(&self) -> usize {
+        self.load_auth_dot_json()
+            .ok()
+            .flatten()
+            .map(|auth| auth.gemini_accounts.len())
+            .unwrap_or_default()
+    }
+
+    pub fn antigravity_account_count(&self) -> usize {
+        self.load_auth_dot_json()
+            .ok()
+            .flatten()
+            .map(|auth| auth.antigravity_accounts.len())
+            .unwrap_or_default()
+    }
+
+    pub fn has_gemini_oauth(&self) -> bool {
+        self.gemini_account_count() > 0
+    }
+
+    pub fn has_antigravity_oauth(&self) -> bool {
+        self.antigravity_account_count() > 0
+    }
+
+    pub async fn gemini_oauth_context_for_account(
+        &self,
+        index: usize,
+    ) -> std::io::Result<(GeminiTokenData, String)> {
+        let tokens = self.ensure_valid_gemini_tokens_for(index).await?;
+        let project_id = self.ensure_gemini_project_id_for(index, &tokens).await?;
+        Ok((tokens, project_id))
+    }
+
+    pub async fn antigravity_oauth_context_for_account(
+        &self,
+        index: usize,
+    ) -> std::io::Result<(GeminiTokenData, String)> {
+        let tokens = self.ensure_valid_antigravity_tokens_for(index).await?;
+        let project_id = self
+            .ensure_antigravity_project_id_for(index, &tokens)
+            .await?;
+        Ok((tokens, project_id))
+    }
+
     async fn refresh_if_stale(&self, auth: &CodexAuth) -> Result<bool, RefreshTokenError> {
         let chatgpt_auth = match auth {
             CodexAuth::Chatgpt(chatgpt_auth) => chatgpt_auth,
@@ -1289,6 +1428,352 @@ impl AuthManager {
         self.refresh_and_persist_chatgpt_token(chatgpt_auth, tokens.refresh_token)
             .await?;
         Ok(true)
+    }
+
+    fn auth_storage(&self) -> Arc<dyn AuthStorageBackend> {
+        create_auth_storage(self.codex_home.clone(), self.auth_credentials_store_mode)
+    }
+
+    fn persist_provider_auth(&self, auth: &AuthDotJson) -> std::io::Result<()> {
+        self.auth_storage().save(auth)
+    }
+
+    async fn ensure_valid_gemini_tokens_for(
+        &self,
+        index: usize,
+    ) -> std::io::Result<GeminiTokenData> {
+        let tokens = self.update_gemini_account(index, |account| account.clone())?;
+        let should_refresh = tokens
+            .expires_at
+            .map(|expires_at| {
+                expires_at
+                    <= Utc::now() + chrono::Duration::seconds(GOOGLE_ACCESS_TOKEN_LEEWAY_SECONDS)
+            })
+            .unwrap_or(true);
+
+        if !should_refresh {
+            return Ok(tokens);
+        }
+
+        self.refresh_gemini_access_token_for(index, &tokens.refresh_token)
+            .await
+    }
+
+    async fn ensure_valid_antigravity_tokens_for(
+        &self,
+        index: usize,
+    ) -> std::io::Result<GeminiTokenData> {
+        let tokens = self.update_antigravity_account(index, |account| account.clone())?;
+        let should_refresh = tokens
+            .expires_at
+            .map(|expires_at| {
+                expires_at
+                    <= Utc::now() + chrono::Duration::seconds(GOOGLE_ACCESS_TOKEN_LEEWAY_SECONDS)
+            })
+            .unwrap_or(true);
+
+        if !should_refresh {
+            return Ok(tokens);
+        }
+
+        self.refresh_antigravity_access_token_for(index, &tokens.refresh_token)
+            .await
+    }
+
+    async fn ensure_gemini_project_id_for(
+        &self,
+        index: usize,
+        tokens: &GeminiTokenData,
+    ) -> std::io::Result<String> {
+        if let Some(project_id) = Self::resolve_project_id(tokens) {
+            return Ok(project_id);
+        }
+
+        let load_payload = load_managed_project(
+            &crate::default_client::create_client(),
+            &tokens.access_token,
+            tokens.project_id.as_deref(),
+        )
+        .await?;
+
+        if let Some(payload) = load_payload {
+            if let Some(managed_id) = payload.cloudaicompanion_project {
+                let managed_clone = managed_id.clone();
+                self.update_gemini_account(index, |account| {
+                    account.managed_project_id = Some(managed_id);
+                })?;
+                return Ok(managed_clone);
+            }
+
+            let tier_id = select_gemini_tier(&payload)
+                .ok_or_else(|| std::io::Error::other(GEMINI_PROJECT_REQUIRED_MESSAGE))?;
+            let is_free_tier =
+                tier_id.eq_ignore_ascii_case("FREE") || tier_id.eq_ignore_ascii_case("free-tier");
+            if !is_free_tier {
+                return Err(std::io::Error::other(GEMINI_PROJECT_REQUIRED_MESSAGE));
+            }
+
+            if let Some(managed_id) = onboard_managed_project(
+                &crate::default_client::create_client(),
+                &tokens.access_token,
+                &tier_id,
+                tokens.project_id.as_deref(),
+            )
+            .await?
+            {
+                let managed_clone = managed_id.clone();
+                self.update_gemini_account(index, |account| {
+                    account.managed_project_id = Some(managed_id);
+                })?;
+                return Ok(managed_clone);
+            }
+        }
+
+        Err(std::io::Error::other(GEMINI_PROJECT_REQUIRED_MESSAGE))
+    }
+
+    async fn ensure_antigravity_project_id_for(
+        &self,
+        index: usize,
+        tokens: &GeminiTokenData,
+    ) -> std::io::Result<String> {
+        if let Ok(env_project) = env::var("ANTIGRAVITY_PROJECT_ID") {
+            let trimmed = env_project.trim();
+            if !trimmed.is_empty() {
+                let project = trimmed.to_string();
+                self.update_antigravity_account(index, |account| {
+                    account.project_id = Some(project.clone());
+                })?;
+                return Ok(project);
+            }
+        }
+
+        if let Some(project_id) = Self::resolve_project_id(tokens) {
+            return Ok(project_id);
+        }
+
+        let load_payload = load_managed_project_antigravity(
+            &crate::default_client::create_client(),
+            &tokens.access_token,
+            tokens.project_id.as_deref(),
+        )
+        .await?;
+
+        if let Some(payload) = load_payload {
+            if let Some(managed_id) = payload.cloudaicompanion_project {
+                let managed_clone = managed_id.clone();
+                self.update_antigravity_account(index, |account| {
+                    account.managed_project_id = Some(managed_id);
+                })?;
+                return Ok(managed_clone);
+            }
+
+            let Some(tier_id) = select_gemini_tier(&payload) else {
+                return self.try_gemini_fallback_for_antigravity(index).await;
+            };
+            let is_free_tier =
+                tier_id.eq_ignore_ascii_case("FREE") || tier_id.eq_ignore_ascii_case("free-tier");
+            if !is_free_tier {
+                return self.try_gemini_fallback_for_antigravity(index).await;
+            }
+
+            if let Some(managed_id) = onboard_managed_project(
+                &crate::default_client::create_client(),
+                &tokens.access_token,
+                &tier_id,
+                tokens.project_id.as_deref(),
+            )
+            .await?
+            {
+                let managed_clone = managed_id.clone();
+                self.update_antigravity_account(index, |account| {
+                    account.managed_project_id = Some(managed_id);
+                })?;
+                return Ok(managed_clone);
+            }
+
+            return self.try_gemini_fallback_for_antigravity(index).await;
+        }
+
+        self.try_gemini_fallback_for_antigravity(index).await
+    }
+
+    async fn try_gemini_fallback_for_antigravity(&self, index: usize) -> std::io::Result<String> {
+        let Some(auth) = self.load_auth_dot_json()? else {
+            return Err(std::io::Error::other(
+                ANTIGRAVITY_PROJECT_REQUIRED_MESSAGE.to_string(),
+            ));
+        };
+
+        if let Some(project_id) = auth
+            .gemini_accounts
+            .iter()
+            .find_map(Self::resolve_project_id)
+        {
+            self.update_antigravity_account(index, |account| {
+                account.managed_project_id = Some(project_id.clone());
+            })?;
+            return Ok(project_id);
+        }
+
+        Err(std::io::Error::other(
+            ANTIGRAVITY_PROJECT_REQUIRED_MESSAGE.to_string(),
+        ))
+    }
+
+    fn resolve_project_id(tokens: &GeminiTokenData) -> Option<String> {
+        tokens
+            .project_id
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .or_else(|| {
+                tokens
+                    .managed_project_id
+                    .as_deref()
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string)
+            })
+    }
+
+    fn update_gemini_account<F, R>(&self, index: usize, updater: F) -> std::io::Result<R>
+    where
+        F: FnOnce(&mut GeminiTokenData) -> R,
+    {
+        let mut auth = self.load_auth_dot_json()?.ok_or_else(|| {
+            std::io::Error::other("auth.json missing while updating Gemini tokens")
+        })?;
+        if index >= auth.gemini_accounts.len() {
+            return Err(std::io::Error::other(format!(
+                "Gemini account index {index} out of range"
+            )));
+        }
+        let result = updater(&mut auth.gemini_accounts[index]);
+        self.persist_provider_auth(&auth)?;
+        Ok(result)
+    }
+
+    fn update_antigravity_account<F, R>(&self, index: usize, updater: F) -> std::io::Result<R>
+    where
+        F: FnOnce(&mut GeminiTokenData) -> R,
+    {
+        let mut auth = self.load_auth_dot_json()?.ok_or_else(|| {
+            std::io::Error::other("auth.json missing while updating Antigravity tokens")
+        })?;
+        if index >= auth.antigravity_accounts.len() {
+            return Err(std::io::Error::other(format!(
+                "Antigravity account index {index} out of range"
+            )));
+        }
+        let result = updater(&mut auth.antigravity_accounts[index]);
+        self.persist_provider_auth(&auth)?;
+        Ok(result)
+    }
+
+    async fn refresh_gemini_access_token_for(
+        &self,
+        index: usize,
+        refresh_token: &str,
+    ) -> std::io::Result<GeminiTokenData> {
+        #[derive(Deserialize)]
+        struct RefreshResponse {
+            access_token: String,
+            expires_in: i64,
+            refresh_token: Option<String>,
+        }
+
+        let client_id = gemini_client_id()?;
+        let mut form = vec![
+            ("grant_type", "refresh_token".to_string()),
+            ("refresh_token", refresh_token.to_string()),
+            ("client_id", client_id),
+        ];
+        if let Some(client_secret) = gemini_client_secret() {
+            form.push(("client_secret", client_secret));
+        }
+        let response = reqwest::Client::new()
+            .post(GEMINI_TOKEN_URL)
+            .form(&form)
+            .send()
+            .await
+            .map_err(std::io::Error::other)?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            if error_text.contains("invalid_grant") {
+                return Err(std::io::Error::other(
+                    "Gemini credentials were revoked. Run `codex login gemini` to reauthenticate.",
+                ));
+            }
+            return Err(std::io::Error::other(format!(
+                "Failed to refresh Gemini access token ({status}): {error_text}"
+            )));
+        }
+
+        let payload: RefreshResponse = response.json().await.map_err(std::io::Error::other)?;
+        let expires_at = Utc::now() + chrono::Duration::seconds(payload.expires_in);
+        self.update_gemini_account(index, |account| {
+            account.access_token = payload.access_token.clone();
+            account.expires_at = Some(expires_at);
+            if let Some(new_refresh) = payload.refresh_token.clone() {
+                account.refresh_token = new_refresh;
+            }
+        })?;
+        self.update_gemini_account(index, |account| account.clone())
+    }
+
+    async fn refresh_antigravity_access_token_for(
+        &self,
+        index: usize,
+        refresh_token: &str,
+    ) -> std::io::Result<GeminiTokenData> {
+        #[derive(Deserialize)]
+        struct RefreshResponse {
+            access_token: String,
+            expires_in: i64,
+            refresh_token: Option<String>,
+        }
+
+        let client_id = antigravity_client_id()?;
+        let mut form = vec![
+            ("grant_type", "refresh_token".to_string()),
+            ("refresh_token", refresh_token.to_string()),
+            ("client_id", client_id),
+        ];
+        if let Some(client_secret) = antigravity_client_secret() {
+            form.push(("client_secret", client_secret));
+        }
+        let response = reqwest::Client::new()
+            .post(ANTIGRAVITY_TOKEN_URL)
+            .form(&form)
+            .send()
+            .await
+            .map_err(std::io::Error::other)?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            if error_text.contains("invalid_grant") {
+                return Err(std::io::Error::other(
+                    "Antigravity credentials were revoked. Run `codex login antigravity` to reauthenticate.",
+                ));
+            }
+            return Err(std::io::Error::other(format!(
+                "Failed to refresh Antigravity access token ({status}): {error_text}"
+            )));
+        }
+
+        let payload: RefreshResponse = response.json().await.map_err(std::io::Error::other)?;
+        let expires_at = Utc::now() + chrono::Duration::seconds(payload.expires_in);
+        self.update_antigravity_account(index, |account| {
+            account.access_token = payload.access_token.clone();
+            account.expires_at = Some(expires_at);
+            if let Some(new_refresh) = payload.refresh_token.clone() {
+                account.refresh_token = new_refresh;
+            }
+        })?;
+        self.update_antigravity_account(index, |account| account.clone())
     }
 
     async fn refresh_external_auth(
@@ -1363,6 +1848,220 @@ impl AuthManager {
 
         Ok(())
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct GeminiTier {
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default, rename = "isDefault")]
+    is_default: Option<bool>,
+}
+
+#[derive(Deserialize)]
+struct LoadCodeAssistPayload {
+    #[serde(default)]
+    tiers: Option<Vec<GeminiTier>>,
+    #[serde(default)]
+    cloudaicompanion_project: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct OnboardUserPayload {
+    #[serde(default)]
+    done: Option<bool>,
+    #[serde(default)]
+    response: Option<OnboardUserResponse>,
+}
+
+#[derive(Deserialize)]
+struct OnboardUserResponse {
+    #[serde(default, rename = "cloudaicompanionProject")]
+    cloudaicompanion_project: Option<OnboardUserProject>,
+}
+
+#[derive(Deserialize)]
+struct OnboardUserProject {
+    #[serde(default)]
+    id: Option<String>,
+}
+
+fn select_gemini_tier(payload: &LoadCodeAssistPayload) -> Option<String> {
+    payload
+        .tiers
+        .as_ref()
+        .and_then(|tiers| tiers.iter().find(|tier| tier.is_default.unwrap_or(false)))
+        .and_then(|tier| tier.id.clone())
+}
+
+fn build_gemini_metadata(project_id: Option<&str>) -> Value {
+    let mut metadata = serde_json::Map::new();
+    metadata.insert(
+        "ideType".to_string(),
+        Value::String(GEMINI_METADATA_IDE_TYPE.to_string()),
+    );
+    metadata.insert(
+        "platform".to_string(),
+        Value::String(GEMINI_METADATA_PLATFORM.to_string()),
+    );
+    metadata.insert(
+        "pluginType".to_string(),
+        Value::String(GEMINI_METADATA_PLUGIN.to_string()),
+    );
+    if let Some(project) = project_id {
+        metadata.insert(
+            "duetProject".to_string(),
+            Value::String(project.to_string()),
+        );
+    }
+    Value::Object(metadata)
+}
+
+async fn load_managed_project(
+    client: &CodexHttpClient,
+    access_token: &str,
+    project_id: Option<&str>,
+) -> std::io::Result<Option<LoadCodeAssistPayload>> {
+    load_managed_project_with_endpoint(
+        client,
+        access_token,
+        project_id,
+        GEMINI_CODE_ASSIST_ENDPOINT,
+    )
+    .await
+}
+
+async fn load_managed_project_with_endpoint(
+    client: &CodexHttpClient,
+    access_token: &str,
+    project_id: Option<&str>,
+    endpoint: &str,
+) -> std::io::Result<Option<LoadCodeAssistPayload>> {
+    let mut body = serde_json::Map::new();
+    body.insert("metadata".to_string(), build_gemini_metadata(project_id));
+    body.insert(
+        "cloudaicompanionProject".to_string(),
+        project_id
+            .map(|project| Value::String(project.to_string()))
+            .unwrap_or(Value::Null),
+    );
+
+    let url = format!(
+        "{}/v1internal:loadCodeAssist",
+        endpoint.trim_end_matches('/')
+    );
+    let response = client
+        .post(&url)
+        .bearer_auth(access_token)
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .header(reqwest::header::USER_AGENT, GEMINI_CODE_ASSIST_USER_AGENT)
+        .header("X-Goog-Api-Client", GEMINI_CODE_ASSIST_X_GOOG_API_CLIENT)
+        .header("Client-Metadata", GEMINI_CODE_ASSIST_CLIENT_METADATA)
+        .json(&body)
+        .send()
+        .await
+        .map_err(std::io::Error::other)?;
+
+    if !response.status().is_success() {
+        tracing::debug!(
+            endpoint = %endpoint,
+            status = %response.status(),
+            "loadCodeAssist request failed"
+        );
+        return Ok(None);
+    }
+
+    let payload = response.json().await.map_err(std::io::Error::other)?;
+    Ok(Some(payload))
+}
+
+async fn load_managed_project_antigravity(
+    client: &CodexHttpClient,
+    access_token: &str,
+    project_id: Option<&str>,
+) -> std::io::Result<Option<LoadCodeAssistPayload>> {
+    let endpoints = [
+        GEMINI_CODE_ASSIST_ENDPOINT,
+        ANTIGRAVITY_ENDPOINT,
+        "https://autopush-cloudcode-pa.sandbox.googleapis.com",
+    ];
+
+    for endpoint in endpoints {
+        if let Some(payload) =
+            load_managed_project_with_endpoint(client, access_token, project_id, endpoint).await?
+        {
+            tracing::debug!(endpoint = %endpoint, "loadCodeAssist succeeded for Antigravity");
+            return Ok(Some(payload));
+        }
+    }
+
+    Ok(None)
+}
+
+async fn onboard_managed_project(
+    client: &CodexHttpClient,
+    access_token: &str,
+    tier_id: &str,
+    project_id: Option<&str>,
+) -> std::io::Result<Option<String>> {
+    for _ in 0..GEMINI_ONBOARD_MAX_ATTEMPTS {
+        let mut body = serde_json::Map::new();
+        body.insert("tierId".to_string(), Value::String(tier_id.to_string()));
+        body.insert("metadata".to_string(), build_gemini_metadata(project_id));
+        if tier_id != "FREE" {
+            let Some(project) = project_id else {
+                return Err(std::io::Error::other(GEMINI_PROJECT_REQUIRED_MESSAGE));
+            };
+            body.insert(
+                "cloudaicompanionProject".to_string(),
+                Value::String(project.to_string()),
+            );
+        } else {
+            body.insert(
+                "cloudaicompanionProject".to_string(),
+                project_id
+                    .map(|project| Value::String(project.to_string()))
+                    .unwrap_or(Value::Null),
+            );
+        }
+
+        let response = client
+            .post(format!(
+                "{GEMINI_CODE_ASSIST_ENDPOINT}/v1internal:onboardUser"
+            ))
+            .bearer_auth(access_token)
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .header(reqwest::header::USER_AGENT, GEMINI_CODE_ASSIST_USER_AGENT)
+            .header("X-Goog-Api-Client", GEMINI_CODE_ASSIST_X_GOOG_API_CLIENT)
+            .header("Client-Metadata", GEMINI_CODE_ASSIST_CLIENT_METADATA)
+            .json(&body)
+            .send()
+            .await
+            .map_err(std::io::Error::other)?;
+
+        if !response.status().is_success() {
+            return Ok(None);
+        }
+
+        let payload: OnboardUserPayload = response.json().await.map_err(std::io::Error::other)?;
+        if payload.done.unwrap_or(false) {
+            if let Some(id) = payload
+                .response
+                .as_ref()
+                .and_then(|response| response.cloudaicompanion_project.as_ref())
+                .and_then(|project| project.id.clone())
+            {
+                return Ok(Some(id));
+            }
+            if let Some(project) = project_id {
+                return Ok(Some(project.to_string()));
+            }
+        }
+
+        sleep(Duration::from_millis(GEMINI_ONBOARD_DELAY_MILLIS)).await;
+    }
+
+    Ok(None)
 }
 
 #[cfg(test)]
@@ -1497,6 +2196,8 @@ mod tests {
                     refresh_token: "test-refresh-token".to_string(),
                     account_id: None,
                 }),
+                gemini_accounts: Vec::new(),
+                antigravity_accounts: Vec::new(),
                 last_refresh: Some(last_refresh),
             },
             auth_dot_json
@@ -1530,6 +2231,8 @@ mod tests {
             auth_mode: Some(ApiAuthMode::ApiKey),
             openai_api_key: Some("sk-test-key".to_string()),
             tokens: None,
+            gemini_accounts: Vec::new(),
+            antigravity_accounts: Vec::new(),
             last_refresh: None,
         };
         super::save_auth(dir.path(), &auth_dot_json, AuthCredentialsStoreMode::File)?;
@@ -1538,6 +2241,125 @@ mod tests {
         assert!(logout(dir.path(), AuthCredentialsStoreMode::File)?);
         assert!(!auth_file.exists());
         Ok(())
+    }
+
+    fn sample_google_tokens(label: &str) -> GeminiTokenData {
+        GeminiTokenData {
+            access_token: format!("access-{label}"),
+            refresh_token: format!("refresh-{label}"),
+            id_token: None,
+            project_id: Some(format!("project-{label}")),
+            managed_project_id: Some(format!("managed-{label}")),
+            email: Some(format!("{label}@example.com")),
+            expires_at: Some(Utc::now() + chrono::Duration::hours(1)),
+        }
+    }
+
+    #[test]
+    fn provider_only_auth_json_does_not_load_primary_auth() {
+        let dir = tempdir().unwrap();
+        let auth_dot_json = AuthDotJson {
+            gemini_accounts: vec![sample_google_tokens("gemini")],
+            antigravity_accounts: vec![sample_google_tokens("antigravity")],
+            ..AuthDotJson::empty()
+        };
+        save_auth(dir.path(), &auth_dot_json, AuthCredentialsStoreMode::File)
+            .expect("provider oauth should save");
+
+        let loaded = load_auth_dot_json(dir.path(), AuthCredentialsStoreMode::File)
+            .expect("provider oauth should load")
+            .expect("auth.json should exist");
+        assert_eq!(loaded, auth_dot_json);
+
+        let auth = CodexAuth::from_auth_storage(dir.path(), AuthCredentialsStoreMode::File)
+            .expect("provider-only auth should load cleanly");
+        assert_eq!(auth, None);
+    }
+
+    #[test]
+    fn login_with_api_key_preserves_provider_accounts() {
+        let dir = tempdir().unwrap();
+        let auth_dot_json = AuthDotJson {
+            gemini_accounts: vec![sample_google_tokens("gemini")],
+            antigravity_accounts: vec![sample_google_tokens("antigravity")],
+            ..AuthDotJson::empty()
+        };
+        save_auth(dir.path(), &auth_dot_json, AuthCredentialsStoreMode::File)
+            .expect("provider oauth should save");
+
+        login_with_api_key(dir.path(), "sk-new", AuthCredentialsStoreMode::File)
+            .expect("api key login should succeed");
+
+        let loaded = load_auth_dot_json(dir.path(), AuthCredentialsStoreMode::File)
+            .expect("auth.json should load")
+            .expect("auth.json should exist");
+        assert_eq!(
+            loaded,
+            AuthDotJson {
+                auth_mode: Some(ApiAuthMode::ApiKey),
+                openai_api_key: Some("sk-new".to_string()),
+                tokens: None,
+                gemini_accounts: auth_dot_json.gemini_accounts,
+                antigravity_accounts: auth_dot_json.antigravity_accounts,
+                last_refresh: None,
+            }
+        );
+    }
+
+    #[test]
+    fn logout_gemini_only_clears_gemini_accounts() {
+        let dir = tempdir().unwrap();
+        let auth_dot_json = AuthDotJson {
+            gemini_accounts: vec![sample_google_tokens("gemini")],
+            antigravity_accounts: vec![sample_google_tokens("antigravity")],
+            ..AuthDotJson::empty()
+        };
+        save_auth(dir.path(), &auth_dot_json, AuthCredentialsStoreMode::File)
+            .expect("provider oauth should save");
+
+        let removed = logout_gemini(dir.path(), AuthCredentialsStoreMode::File)
+            .expect("gemini logout should succeed");
+        assert!(removed);
+
+        let loaded = load_auth_dot_json(dir.path(), AuthCredentialsStoreMode::File)
+            .expect("auth.json should load")
+            .expect("auth.json should exist");
+        assert_eq!(
+            loaded,
+            AuthDotJson {
+                gemini_accounts: Vec::new(),
+                antigravity_accounts: auth_dot_json.antigravity_accounts,
+                ..AuthDotJson::empty()
+            }
+        );
+    }
+
+    #[test]
+    fn logout_antigravity_only_clears_antigravity_accounts() {
+        let dir = tempdir().unwrap();
+        let auth_dot_json = AuthDotJson {
+            gemini_accounts: vec![sample_google_tokens("gemini")],
+            antigravity_accounts: vec![sample_google_tokens("antigravity")],
+            ..AuthDotJson::empty()
+        };
+        save_auth(dir.path(), &auth_dot_json, AuthCredentialsStoreMode::File)
+            .expect("provider oauth should save");
+
+        let removed = logout_antigravity(dir.path(), AuthCredentialsStoreMode::File)
+            .expect("antigravity logout should succeed");
+        assert!(removed);
+
+        let loaded = load_auth_dot_json(dir.path(), AuthCredentialsStoreMode::File)
+            .expect("auth.json should load")
+            .expect("auth.json should exist");
+        assert_eq!(
+            loaded,
+            AuthDotJson {
+                gemini_accounts: auth_dot_json.gemini_accounts,
+                antigravity_accounts: Vec::new(),
+                ..AuthDotJson::empty()
+            }
+        );
     }
 
     struct AuthFileParams {

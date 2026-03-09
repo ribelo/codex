@@ -19,6 +19,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use tracing::warn;
 
+use crate::token_data::GeminiTokenData;
 use crate::token_data::TokenData;
 use codex_app_server_protocol::AuthMode;
 use codex_keyring_store::DefaultKeyringStore;
@@ -51,6 +52,20 @@ pub struct AuthDotJson {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tokens: Option<TokenData>,
+
+    #[serde(
+        default,
+        rename = "GEMINI_ACCOUNTS",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub gemini_accounts: Vec<GeminiTokenData>,
+
+    #[serde(
+        default,
+        rename = "ANTIGRAVITY_ACCOUNTS",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub antigravity_accounts: Vec<GeminiTokenData>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_refresh: Option<DateTime<Utc>>,
@@ -352,6 +367,8 @@ mod tests {
             auth_mode: Some(AuthMode::ApiKey),
             openai_api_key: Some("test-key".to_string()),
             tokens: None,
+            gemini_accounts: Vec::new(),
+            antigravity_accounts: Vec::new(),
             last_refresh: Some(Utc::now()),
         };
 
@@ -372,6 +389,8 @@ mod tests {
             auth_mode: Some(AuthMode::ApiKey),
             openai_api_key: Some("test-key".to_string()),
             tokens: None,
+            gemini_accounts: Vec::new(),
+            antigravity_accounts: Vec::new(),
             last_refresh: Some(Utc::now()),
         };
 
@@ -394,6 +413,8 @@ mod tests {
             auth_mode: Some(AuthMode::ApiKey),
             openai_api_key: Some("sk-test-key".to_string()),
             tokens: None,
+            gemini_accounts: Vec::new(),
+            antigravity_accounts: Vec::new(),
             last_refresh: None,
         };
         let storage = create_auth_storage(dir.path().to_path_buf(), AuthCredentialsStoreMode::File);
@@ -417,6 +438,8 @@ mod tests {
             auth_mode: Some(AuthMode::ApiKey),
             openai_api_key: Some("sk-ephemeral".to_string()),
             tokens: None,
+            gemini_accounts: Vec::new(),
+            antigravity_accounts: Vec::new(),
             last_refresh: Some(Utc::now()),
         };
 
@@ -515,6 +538,8 @@ mod tests {
                 refresh_token: format!("{prefix}-refresh"),
                 account_id: Some(format!("{prefix}-account-id")),
             }),
+            gemini_accounts: Vec::new(),
+            antigravity_accounts: Vec::new(),
             last_refresh: None,
         }
     }
@@ -531,6 +556,8 @@ mod tests {
             auth_mode: Some(AuthMode::ApiKey),
             openai_api_key: Some("sk-test".to_string()),
             tokens: None,
+            gemini_accounts: Vec::new(),
+            antigravity_accounts: Vec::new(),
             last_refresh: None,
         };
         seed_keyring_with_auth(
@@ -573,6 +600,8 @@ mod tests {
                 refresh_token: "refresh".to_string(),
                 account_id: Some("account".to_string()),
             }),
+            gemini_accounts: Vec::new(),
+            antigravity_accounts: Vec::new(),
             last_refresh: Some(Utc::now()),
         };
 
