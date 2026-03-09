@@ -920,6 +920,7 @@ fn footer_context_line(
 
 pub(crate) fn default_footer_line(
     summary: &DefaultFooterSummary,
+    sandbox_policy: &SandboxPolicy,
     context_window_percent: Option<i64>,
     context_window_used_tokens: Option<i64>,
     width: u16,
@@ -936,7 +937,7 @@ pub(crate) fn default_footer_line(
     }
 
     let center = default_footer_identity_line(summary)?;
-    let left = default_footer_git_line(summary);
+    let left = Some(default_footer_left_line(summary, sandbox_policy));
 
     centered_default_footer_line(width, left.clone(), center.clone(), right.clone())
         .or_else(|| packed_default_footer_line(width, left, center.clone(), right.clone()))
@@ -954,14 +955,18 @@ fn default_footer_identity_line(summary: &DefaultFooterSummary) -> Option<Line<'
         return None;
     }
 
-    Some(Line::from(summary.identity.join(" • ")).dim())
+    Some(Line::from(vec![summary.identity.join(" • ").dim()]))
 }
 
-fn default_footer_git_line(summary: &DefaultFooterSummary) -> Option<Line<'static>> {
-    summary
-        .git
-        .as_ref()
-        .map(|git| Line::from(git.clone()).dim())
+fn default_footer_left_line(
+    summary: &DefaultFooterSummary,
+    sandbox_policy: &SandboxPolicy,
+) -> Line<'static> {
+    let mut spans = vec![mode_dot(sandbox_policy)];
+    if let Some(git) = summary.git.as_ref() {
+        spans.push(format!(" {git}").dim());
+    }
+    Line::from(spans)
 }
 
 fn centered_default_footer_line(
@@ -1312,7 +1317,11 @@ mod tests {
     use pretty_assertions::assert_eq;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+    use ratatui::buffer::Buffer;
+    use ratatui::style::Color;
+    use ratatui::style::Modifier;
     use ratatui::text::Line;
+    use unicode_width::UnicodeWidthStr;
 
     fn base_props() -> FooterProps {
         FooterProps {
@@ -1351,6 +1360,19 @@ mod tests {
             .iter()
             .map(|span| span.content.as_ref())
             .collect::<String>()
+    }
+
+    fn buffer_row_text(buf: &Buffer, area: Rect) -> String {
+        let mut line = String::new();
+        for col in 0..area.width {
+            line.push_str(buf[(area.x + col, area.y)].symbol());
+        }
+        line
+    }
+
+    fn display_column(text: &str, needle: &str) -> u16 {
+        let idx = text.find(needle).expect("needle in text");
+        text[..idx].width() as u16
     }
 
     #[test]
@@ -1458,6 +1480,7 @@ mod tests {
                     "plan".to_string(),
                 ],
             },
+            &SandboxPolicy::new_read_only_policy(),
             Some(50),
             None,
             76,
@@ -1465,6 +1488,38 @@ mod tests {
         .expect("default footer line");
 
         assert_snapshot!("default_footer_line", line_text(&line));
+    }
+
+    #[test]
+    fn default_footer_line_preserves_dot_color_and_dim_sections() {
+        let area = Rect::new(0, 0, 76, 1);
+        let line = default_footer_line(
+            &DefaultFooterSummary {
+                git: Some("codex:main +0/-0".to_string()),
+                identity: vec![
+                    "openai".to_string(),
+                    "gpt-5.4".to_string(),
+                    "high".to_string(),
+                ],
+            },
+            &SandboxPolicy::new_read_only_policy(),
+            Some(50),
+            None,
+            area.width,
+        )
+        .expect("default footer line");
+        let mut buf = Buffer::empty(area);
+        line.render(area, &mut buf);
+        let text = buffer_row_text(&buf, area);
+
+        let dot_x = display_column(&text, "•");
+        let git_x = display_column(&text, "codex:main");
+        let identity_x = display_column(&text, "openai");
+
+        assert_eq!(buf[(dot_x, 0)].fg, Color::Green);
+        assert!(!buf[(dot_x, 0)].modifier.contains(Modifier::DIM));
+        assert!(buf[(git_x, 0)].modifier.contains(Modifier::DIM));
+        assert!(buf[(identity_x, 0)].modifier.contains(Modifier::DIM));
     }
 }
 

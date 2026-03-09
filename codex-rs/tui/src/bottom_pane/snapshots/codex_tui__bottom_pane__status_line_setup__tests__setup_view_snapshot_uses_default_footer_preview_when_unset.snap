@@ -17,5 +17,5 @@ expression: "render_lines(&view, 72)"
   [ ] project-name          Current project or repository name (omitt…  
   [ ] project-root          Project root directory (omitted when unav…  
                                                                         
-  codex:main +0/-0      openai • gpt-5.4 • high               50% left  
+  • codex:main +0/-0    openai • gpt-5.4 • high               50% left  
   Use ↑↓ to navigate, ←→ to move, space to select, enter to confirm, esc

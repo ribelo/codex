@@ -19,6 +19,7 @@
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
+use ratatui::style::Stylize;
 use ratatui::text::Line;
 use std::collections::BTreeMap;
 use std::collections::HashSet;
@@ -36,6 +37,7 @@ use crate::bottom_pane::footer::default_footer_line;
 use crate::bottom_pane::multi_select_picker::MultiSelectItem;
 use crate::bottom_pane::multi_select_picker::MultiSelectPicker;
 use crate::render::renderable::Renderable;
+use codex_protocol::protocol::SandboxPolicy;
 
 /// Available items that can be displayed in the status line.
 ///
@@ -177,6 +179,7 @@ pub(crate) struct StatusLinePreviewData {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct DefaultFooterPreview {
     summary: DefaultFooterSummary,
+    sandbox_policy: SandboxPolicy,
     context_window_percent: Option<i64>,
     context_window_used_tokens: Option<i64>,
 }
@@ -195,11 +198,13 @@ impl StatusLinePreviewData {
     pub(crate) fn with_default_footer_preview(
         mut self,
         summary: DefaultFooterSummary,
+        sandbox_policy: SandboxPolicy,
         context_window_percent: Option<i64>,
         context_window_used_tokens: Option<i64>,
     ) -> Self {
         self.default_footer = Some(DefaultFooterPreview {
             summary,
+            sandbox_policy,
             context_window_percent,
             context_window_used_tokens,
         });
@@ -217,7 +222,7 @@ impl StatusLinePreviewData {
         if preview.is_empty() {
             self.default_footer_line(width)
         } else {
-            Some(Line::from(preview))
+            Some(Line::from(preview).dim())
         }
     }
 
@@ -225,6 +230,7 @@ impl StatusLinePreviewData {
         let preview = self.default_footer.as_ref()?;
         default_footer_line(
             &preview.summary,
+            &preview.sandbox_policy,
             preview.context_window_percent,
             preview.context_window_used_tokens,
             width,
@@ -386,7 +392,7 @@ mod tests {
 
         assert_eq!(
             preview_data.line_for_items(&items, 80),
-            Some(Line::from("gpt-5 · /repo"))
+            Some(Line::from("gpt-5 · /repo").dim())
         );
     }
 
@@ -411,7 +417,7 @@ mod tests {
 
         assert_eq!(
             preview_data.line_for_items(&items, 80),
-            Some(Line::from("gpt-5"))
+            Some(Line::from("gpt-5").dim())
         );
     }
 
@@ -428,6 +434,7 @@ mod tests {
                             "high".to_string(),
                         ],
                     },
+                    SandboxPolicy::new_read_only_policy(),
                     Some(50),
                     None,
                 );
@@ -490,6 +497,7 @@ mod tests {
                             "high".to_string(),
                         ],
                     },
+                    SandboxPolicy::new_read_only_policy(),
                     Some(50),
                     None,
                 ),

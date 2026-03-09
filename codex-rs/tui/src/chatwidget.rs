@@ -5386,6 +5386,7 @@ impl ChatWidget {
         if self.config.tui_status_line.is_none() {
             preview_data = preview_data.with_default_footer_preview(
                 default_footer_summary,
+                self.config.permissions.sandbox_policy.get().clone(),
                 self.status_line_context_remaining_percent(),
                 None,
             );
