@@ -3340,14 +3340,20 @@ impl App {
             }
             AppEvent::StatusLineSetup { items } => {
                 let ids = items.iter().map(ToString::to_string).collect::<Vec<_>>();
-                let edit = codex_core::config::edit::status_line_items_edit(&ids);
+                let edit = if ids.is_empty() {
+                    ConfigEdit::ClearPath {
+                        segments: vec!["tui".to_string(), "status_line".to_string()],
+                    }
+                } else {
+                    codex_core::config::edit::status_line_items_edit(&ids)
+                };
                 let apply_result = ConfigEditsBuilder::new(&self.config.codex_home)
                     .with_edits([edit])
                     .apply()
                     .await;
                 match apply_result {
                     Ok(()) => {
-                        self.config.tui_status_line = Some(ids.clone());
+                        self.config.tui_status_line = (!ids.is_empty()).then_some(ids.clone());
                         self.chat_widget.setup_status_line(items);
                     }
                     Err(err) => {

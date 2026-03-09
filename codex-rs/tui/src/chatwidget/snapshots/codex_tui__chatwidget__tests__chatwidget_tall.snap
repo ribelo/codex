@@ -1,7 +1,9 @@
 ---
 source: tui/src/chatwidget/tests.rs
+assertion_line: 9873
 expression: term.backend().vt100().screen().contents()
 ---
+
 • Working (0s • esc to interrupt)
 
 • Queued follow-up messages
@@ -24,4 +26,4 @@ expression: term.backend().vt100().screen().contents()
 
 › Ask Codex to do anything
 
-  • openai • gpt-5.3-codex                                           100% left
+  • openai • gpt-5.3-codex • default                                 100% left

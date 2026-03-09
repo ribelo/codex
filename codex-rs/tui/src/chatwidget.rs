@@ -310,9 +310,6 @@ use strum::IntoEnumIterator;
 const USER_SHELL_COMMAND_HELP_TITLE: &str = "Prefix a command with ! to run it locally";
 const USER_SHELL_COMMAND_HELP_HINT: &str = "Example: !ls";
 const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
-const FAST_STATUS_MODEL: &str = "gpt-5.4";
-const DEFAULT_STATUS_LINE_ITEMS: [&str; 3] =
-    ["model-with-reasoning", "context-remaining", "current-dir"];
 // Track information about an in-flight exec command.
 struct RunningCommand {
     command: Vec<String>,
@@ -1133,11 +1130,7 @@ impl ChatWidget {
         }
 
         let cwd = self.status_line_cwd().to_path_buf();
-        self.sync_status_line_branch_state(&cwd);
-        if !self.status_line_branch_lookup_complete {
-            self.request_status_line_branch(cwd.clone());
-        }
-        self.set_default_footer_summary(self.default_footer_summary());
+        self.sync_default_footer_summary(&cwd);
 
         let enabled = self
             .config
@@ -1179,11 +1172,11 @@ impl ChatWidget {
 
     /// Applies status-line item selection from the setup view to in-memory config.
     ///
-    /// An empty selection persists as an explicit empty list.
+    /// An empty selection clears the custom override and restores the built-in footer.
     pub(crate) fn setup_status_line(&mut self, items: Vec<StatusLineItem>) {
         tracing::info!("status line setup confirmed with items: {items:#?}");
-        let ids = items.iter().map(ToString::to_string).collect::<Vec<_>>();
-        self.config.tui_status_line = Some(ids);
+        self.config.tui_status_line =
+            (!items.is_empty()).then(|| items.iter().map(ToString::to_string).collect::<Vec<_>>());
         self.refresh_status_line();
     }
 
@@ -1297,7 +1290,7 @@ impl ChatWidget {
         self.sync_personality_command_enabled();
         self.refresh_plugin_mentions();
         let startup_tooltip_override = self.startup_tooltip_override.take();
-        let show_fast_status = self.should_show_fast_status(&model_for_header, event.service_tier);
+        let show_fast_status = self.should_show_fast_status(event.service_tier);
         let session_info_cell = history_cell::new_session_info(
             &self.config,
             &model_for_header,
@@ -5388,13 +5381,23 @@ impl ChatWidget {
     }
 
     fn open_status_line_setup(&mut self) {
-        let configured_status_line_items = self.configured_status_line_items();
-        let view = StatusLineSetupView::new(
-            Some(configured_status_line_items.as_slice()),
+        let default_footer_summary = self.default_footer_summary();
+        let mut preview_data =
             StatusLinePreviewData::from_iter(StatusLineItem::iter().filter_map(|item| {
                 self.status_line_value_for_item(&item)
                     .map(|value| (item, value))
-            })),
+            }));
+        if self.config.tui_status_line.is_none() {
+            preview_data = preview_data.with_default_footer_preview(
+                default_footer_summary,
+                self.config.permissions.sandbox_policy.get().clone(),
+                self.status_line_context_remaining_percent(),
+                None,
+            );
+        }
+        let view = StatusLineSetupView::new(
+            self.config.tui_status_line.as_deref(),
+            preview_data,
             self.app_event_tx.clone(),
         );
         self.bottom_pane.show_view(Box::new(view));
@@ -5435,12 +5438,7 @@ impl ChatWidget {
     }
 
     fn configured_status_line_items(&self) -> Vec<String> {
-        self.config.tui_status_line.clone().unwrap_or_else(|| {
-            DEFAULT_STATUS_LINE_ITEMS
-                .iter()
-                .map(ToString::to_string)
-                .collect()
-        })
+        self.config.tui_status_line.clone().unwrap_or_default()
     }
 
     fn default_footer_summary(&self) -> DefaultFooterSummary {
@@ -5510,6 +5508,14 @@ impl ChatWidget {
         })
     }
 
+    fn sync_default_footer_summary(&mut self, cwd: &Path) {
+        self.sync_status_line_branch_state(cwd);
+        if !self.status_line_branch_lookup_complete {
+            self.request_status_line_branch(cwd.to_path_buf());
+        }
+        self.set_default_footer_summary(self.default_footer_summary());
+    }
+
     /// Resets git-branch cache state when the status-line cwd changes.
     ///
     /// The branch cache is keyed by cwd because branch lookup is performed relative to that path.
@@ -5561,9 +5567,7 @@ impl ChatWidget {
             StatusLineItem::ModelWithReasoning => {
                 let label =
                     Self::status_line_reasoning_effort_label(self.effective_reasoning_effort());
-                let fast_label = if self
-                    .should_show_fast_status(self.current_model(), self.config.service_tier)
-                {
+                let fast_label = if self.should_show_fast_status(self.config.service_tier) {
                     " fast"
                 } else {
                     ""
@@ -7559,13 +7563,8 @@ impl ChatWidget {
         self.config.service_tier
     }
 
-    pub(crate) fn should_show_fast_status(
-        &self,
-        model: &str,
-        service_tier: Option<ServiceTier>,
-    ) -> bool {
-        model == FAST_STATUS_MODEL
-            && matches!(service_tier, Some(ServiceTier::Fast))
+    pub(crate) fn should_show_fast_status(&self, service_tier: Option<ServiceTier>) -> bool {
+        matches!(service_tier, Some(ServiceTier::Fast))
             && self
                 .auth_manager
                 .auth_cached()
@@ -7790,8 +7789,8 @@ impl ChatWidget {
         self.bottom_pane.set_reasoning_effort(reasoning_effort);
         self.bottom_pane
             .set_sandbox_policy(self.config.permissions.sandbox_policy.get().clone());
-        self.bottom_pane
-            .set_default_footer_summary(self.default_footer_summary());
+        let cwd = self.status_line_cwd().to_path_buf();
+        self.sync_default_footer_summary(&cwd);
     }
 
     fn model_display_name(&self) -> &str {

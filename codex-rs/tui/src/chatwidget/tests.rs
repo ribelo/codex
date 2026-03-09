@@ -9804,6 +9804,19 @@ async fn idle_footer_default_summary_snapshot() {
 }
 
 #[tokio::test]
+async fn sync_bottom_pane_footer_state_requests_git_metadata_for_default_footer() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+    let (_repo_guard, repo_path) = create_footer_test_repo("codex");
+    chat.current_cwd = Some(repo_path.clone());
+
+    chat.sync_bottom_pane_footer_state();
+
+    assert_eq!(chat.status_line_branch_cwd, Some(repo_path));
+    assert!(chat.status_line_branch_pending);
+    assert!(!chat.status_line_branch_lookup_complete);
+}
+
+#[tokio::test]
 async fn idle_footer_plan_summary_snapshot() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
     let cwd = tempdir().expect("tempdir");
@@ -9826,12 +9839,15 @@ async fn idle_footer_plan_summary_snapshot() {
 async fn idle_footer_git_summary_snapshot() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
     let (_repo_guard, repo_path) = create_footer_test_repo("codex");
-    chat.current_cwd = Some(repo_path);
+    chat.current_cwd = Some(repo_path.clone());
     chat.status_line_branch = Some("main".to_string());
     chat.status_line_diff_stats = Some(GitDiffStats {
         added: 0,
         removed: 0,
     });
+    chat.status_line_branch_cwd = Some(repo_path);
+    chat.status_line_branch_pending = false;
+    chat.status_line_branch_lookup_complete = true;
     chat.set_reasoning_effort(Some(ReasoningEffortConfig::High));
     chat.sync_bottom_pane_footer_state();
 
@@ -9846,12 +9862,15 @@ async fn idle_footer_git_summary_truncates_before_context_snapshot() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
     let (_repo_guard, repo_path) =
         create_footer_test_repo("extremely-long-repository-name-for-footer");
-    chat.current_cwd = Some(repo_path);
+    chat.current_cwd = Some(repo_path.clone());
     chat.status_line_branch = Some("feature/super-long-branch-name-for-truncation".to_string());
     chat.status_line_diff_stats = Some(GitDiffStats {
         added: 12,
         removed: 34,
     });
+    chat.status_line_branch_cwd = Some(repo_path);
+    chat.status_line_branch_pending = false;
+    chat.status_line_branch_lookup_complete = true;
     chat.set_reasoning_effort(Some(ReasoningEffortConfig::High));
     chat.sync_bottom_pane_footer_state();
 
@@ -9877,6 +9896,28 @@ async fn configured_status_line_override_snapshot() {
 }
 
 #[tokio::test]
+async fn empty_status_line_setup_restores_default_footer_summary() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+    let cwd = tempdir().expect("tempdir");
+    chat.current_cwd = Some(cwd.path().to_path_buf());
+    chat.set_reasoning_effort(Some(ReasoningEffortConfig::High));
+    chat.config.tui_status_line = Some(vec!["model-name".to_string()]);
+
+    chat.setup_status_line(Vec::new());
+
+    assert_eq!(chat.config.tui_status_line, None);
+    let expected_identity = format!(
+        "{} • {} • high",
+        chat.config.model_provider_id,
+        chat.model_display_name()
+    );
+    assert!(
+        render_chat_footer_row(&mut chat, 80).contains(&expected_identity),
+        "expected built-in footer summary after clearing custom status line"
+    );
+}
+
+#[tokio::test]
 async fn empty_configured_status_line_does_not_fall_back_to_default_summary() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
     let cwd = tempdir().expect("tempdir");
@@ -9884,7 +9925,15 @@ async fn empty_configured_status_line_does_not_fall_back_to_default_summary() {
     chat.config.tui_status_line = Some(vec!["git-branch".to_string()]);
     chat.refresh_status_line();
 
-    assert_eq!(render_chat_footer_row(&mut chat, 80).trim(), "");
+    let rendered = render_chat_footer_row(&mut chat, 80);
+    assert!(
+        !rendered.contains("openai"),
+        "expected no default footer summary when custom status line resolves to nothing: {rendered:?}"
+    );
+    assert!(
+        !rendered.contains("% left"),
+        "expected no context footer when custom status line resolves to nothing: {rendered:?}"
+    );
 }
 
 #[tokio::test]
