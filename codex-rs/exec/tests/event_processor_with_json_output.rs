@@ -1278,6 +1278,7 @@ fn task_complete_produces_turn_completed_with_usage() {
     let usage = codex_protocol::protocol::TokenUsage {
         input_tokens: 1200,
         cached_input_tokens: 200,
+        cache_write_input_tokens: 25,
         output_tokens: 345,
         reasoning_output_tokens: 0,
         total_tokens: 0,
@@ -1311,6 +1312,7 @@ fn task_complete_produces_turn_completed_with_usage() {
             usage: Usage {
                 input_tokens: 1200,
                 cached_input_tokens: 200,
+                cache_write_input_tokens: 25,
                 output_tokens: 345,
             },
         })]

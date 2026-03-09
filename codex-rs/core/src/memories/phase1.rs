@@ -4,7 +4,6 @@ use crate::codex::Session;
 use crate::codex::TurnContext;
 use crate::config::Config;
 use crate::config::types::MemoriesConfig;
-use crate::contextual_user_message::is_memory_excluded_contextual_user_fragment;
 use crate::error::CodexErr;
 use crate::memories::metrics;
 use crate::memories::phase_one;
@@ -97,7 +96,7 @@ pub(in crate::memories) async fn run(session: &Arc<Session>, config: &Config) {
     if claimed_candidates.is_empty() {
         session.services.session_telemetry.counter(
             metrics::MEMORY_PHASE_ONE_JOBS,
-            /*inc*/ 1,
+            1,
             &[("status", "skipped_no_candidates")],
         );
         return;
@@ -211,7 +210,7 @@ async fn claim_startup_jobs(
             warn!("state db claim_stage1_jobs_for_startup failed during memories startup: {err}");
             session.services.session_telemetry.counter(
                 metrics::MEMORY_PHASE_ONE_JOBS,
-                /*inc*/ 1,
+                1,
                 &[("status", "failed_claim")],
             );
             None
@@ -464,14 +463,16 @@ mod job {
     }
 
     /// Serializes filtered stage-1 memory items for prompt inclusion.
-    pub(super) fn serialize_filtered_rollout_response_items(
+    fn serialize_filtered_rollout_response_items(
         items: &[RolloutItem],
     ) -> crate::error::Result<String> {
         let filtered = items
             .iter()
             .filter_map(|item| {
-                if let RolloutItem::ResponseItem(item) = item {
-                    sanitize_response_item_for_memories(item)
+                if let RolloutItem::ResponseItem(item) = item
+                    && should_persist_response_item_for_memories(item)
+                {
+                    Some(item.clone())
                 } else {
                     None
                 }
@@ -479,44 +480,6 @@ mod job {
             .collect::<Vec<_>>();
         serde_json::to_string(&filtered).map_err(|err| {
             CodexErr::InvalidRequest(format!("failed to serialize rollout memory: {err}"))
-        })
-    }
-
-    fn sanitize_response_item_for_memories(item: &ResponseItem) -> Option<ResponseItem> {
-        let ResponseItem::Message {
-            id,
-            role,
-            content,
-            end_turn,
-            phase,
-        } = item
-        else {
-            return should_persist_response_item_for_memories(item).then(|| item.clone());
-        };
-
-        if role == "developer" {
-            return None;
-        }
-
-        if role != "user" {
-            return Some(item.clone());
-        }
-
-        let content = content
-            .iter()
-            .filter(|content_item| !is_memory_excluded_contextual_user_fragment(content_item))
-            .cloned()
-            .collect::<Vec<_>>();
-        if content.is_empty() {
-            return None;
-        }
-
-        Some(ResponseItem::Message {
-            id: id.clone(),
-            role: role.clone(),
-            content,
-            end_turn: *end_turn,
-            phase: phase.clone(),
         })
     }
 }
@@ -603,6 +566,11 @@ fn emit_metrics(session: &Session, counts: &Stats) {
         );
         session.services.session_telemetry.histogram(
             metrics::MEMORY_PHASE_ONE_TOKEN_USAGE,
+            token_usage.cache_write_input(),
+            &[("token_type", "cache_write_input")],
+        );
+        session.services.session_telemetry.histogram(
+            metrics::MEMORY_PHASE_ONE_TOKEN_USAGE,
             token_usage.output_tokens.max(0),
             &[("token_type", "output")],
         );
@@ -615,5 +583,75 @@ fn emit_metrics(session: &Session, counts: &Stats) {
 }
 
 #[cfg(test)]
-#[path = "phase1_tests.rs"]
-mod tests;
+mod tests {
+    use super::JobOutcome;
+    use super::JobResult;
+    use super::aggregate_stats;
+    use codex_protocol::protocol::TokenUsage;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn count_outcomes_sums_token_usage_across_all_jobs() {
+        let counts = aggregate_stats(vec![
+            JobResult {
+                outcome: JobOutcome::SucceededWithOutput,
+                token_usage: Some(TokenUsage {
+                    input_tokens: 10,
+                    cached_input_tokens: 2,
+                    cache_write_input_tokens: 1,
+                    output_tokens: 3,
+                    reasoning_output_tokens: 1,
+                    total_tokens: 13,
+                }),
+            },
+            JobResult {
+                outcome: JobOutcome::SucceededNoOutput,
+                token_usage: Some(TokenUsage {
+                    input_tokens: 7,
+                    cached_input_tokens: 1,
+                    cache_write_input_tokens: 2,
+                    output_tokens: 2,
+                    reasoning_output_tokens: 0,
+                    total_tokens: 9,
+                }),
+            },
+            JobResult {
+                outcome: JobOutcome::Failed,
+                token_usage: None,
+            },
+        ]);
+
+        assert_eq!(counts.claimed, 3);
+        assert_eq!(counts.succeeded_with_output, 1);
+        assert_eq!(counts.succeeded_no_output, 1);
+        assert_eq!(counts.failed, 1);
+        assert_eq!(
+            counts.total_token_usage,
+            Some(TokenUsage {
+                input_tokens: 17,
+                cached_input_tokens: 3,
+                cache_write_input_tokens: 3,
+                output_tokens: 5,
+                reasoning_output_tokens: 1,
+                total_tokens: 22,
+            })
+        );
+    }
+
+    #[test]
+    fn count_outcomes_keeps_usage_empty_when_no_job_reports_it() {
+        let counts = aggregate_stats(vec![
+            JobResult {
+                outcome: JobOutcome::SucceededWithOutput,
+                token_usage: None,
+            },
+            JobResult {
+                outcome: JobOutcome::Failed,
+                token_usage: None,
+            },
+        ]);
+
+        assert_eq!(counts.claimed, 2);
+        assert_eq!(counts.total_token_usage, None);
+    }
+}

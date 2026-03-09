@@ -1785,6 +1785,8 @@ pub struct TokenUsage {
     #[ts(type = "number")]
     pub cached_input_tokens: i64,
     #[ts(type = "number")]
+    pub cache_write_input_tokens: i64,
+    #[ts(type = "number")]
     pub output_tokens: i64,
     #[ts(type = "number")]
     pub reasoning_output_tokens: i64,
@@ -1906,6 +1908,10 @@ impl TokenUsage {
         self.cached_input_tokens.max(0)
     }
 
+    pub fn cache_write_input(&self) -> i64 {
+        self.cache_write_input_tokens.max(0)
+    }
+
     pub fn non_cached_input(&self) -> i64 {
         (self.input_tokens - self.cached_input()).max(0)
     }
@@ -1946,6 +1952,7 @@ impl TokenUsage {
     pub fn add_assign(&mut self, other: &TokenUsage) {
         self.input_tokens += other.input_tokens;
         self.cached_input_tokens += other.cached_input_tokens;
+        self.cache_write_input_tokens += other.cache_write_input_tokens;
         self.output_tokens += other.output_tokens;
         self.reasoning_output_tokens += other.reasoning_output_tokens;
         self.total_tokens += other.total_tokens;
@@ -1972,13 +1979,24 @@ impl fmt::Display for FinalOutput {
             "Token usage: total={} input={}{} output={}{}",
             format_with_separators(token_usage.blended_total()),
             format_with_separators(token_usage.non_cached_input()),
-            if token_usage.cached_input() > 0 {
-                format!(
-                    " (+ {} cached)",
+            match (
+                token_usage.cached_input() > 0,
+                token_usage.cache_write_input() > 0,
+            ) {
+                (false, false) => String::new(),
+                (true, false) => format!(
+                    " (+ {} cached read)",
                     format_with_separators(token_usage.cached_input())
-                )
-            } else {
-                String::new()
+                ),
+                (false, true) => format!(
+                    " (+ {} cache write)",
+                    format_with_separators(token_usage.cache_write_input())
+                ),
+                (true, true) => format!(
+                    " (+ {} cached read, + {} cache write)",
+                    format_with_separators(token_usage.cached_input()),
+                    format_with_separators(token_usage.cache_write_input())
+                ),
             },
             format_with_separators(token_usage.output_tokens),
             if token_usage.reasoning_output_tokens > 0 {
@@ -4558,6 +4576,7 @@ mod tests {
         let last = Some(TokenUsage {
             input_tokens: 10,
             cached_input_tokens: 0,
+            cache_write_input_tokens: 0,
             output_tokens: 0,
             reasoning_output_tokens: 0,
             total_tokens: 10,
@@ -4579,6 +4598,7 @@ mod tests {
         let last = Some(TokenUsage {
             input_tokens: 10,
             cached_input_tokens: 0,
+            cache_write_input_tokens: 0,
             output_tokens: 0,
             reasoning_output_tokens: 0,
             total_tokens: 10,
@@ -4588,5 +4608,22 @@ mod tests {
             .expect("new_or_append should return info");
 
         assert_eq!(info.model_context_window, Some(258_400));
+    }
+
+    #[test]
+    fn final_output_display_includes_cache_write_tokens() {
+        let output = FinalOutput::from(TokenUsage {
+            input_tokens: 120,
+            cached_input_tokens: 40,
+            cache_write_input_tokens: 8,
+            output_tokens: 30,
+            reasoning_output_tokens: 0,
+            total_tokens: 150,
+        });
+
+        assert_eq!(
+            output.to_string(),
+            "Token usage: total=110 input=80 (+ 40 cached read, + 8 cache write) output=30"
+        );
     }
 }

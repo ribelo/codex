@@ -993,6 +993,7 @@ pub(crate) async fn process_gemini_sse(
             usage = Some(TokenUsage {
                 input_tokens: metadata.prompt_token_count.unwrap_or(0),
                 cached_input_tokens: 0,
+                cache_write_input_tokens: 0,
                 output_tokens: metadata.candidates_token_count.unwrap_or(0),
                 reasoning_output_tokens: metadata.thoughts_token_count.unwrap_or(0),
                 total_tokens: metadata.total_token_count.unwrap_or(0),
