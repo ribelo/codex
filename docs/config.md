@@ -6,6 +6,70 @@ For advanced configuration instructions, see [this documentation](https://develo
 
 For a full configuration reference, see [this documentation](https://developers.openai.com/codex/config-reference).
 
+## Provider compatibility
+
+This fork keeps upstream’s canonical provider selection shape:
+
+- `model_provider = "openai" | "anthropic" | "gemini" | "<custom-id>"`
+- `model = "<raw-model-slug>"`
+
+Built-in native providers:
+
+- `anthropic`
+  - default base URL: `https://api.anthropic.com/v1`
+  - default key env var: `ANTHROPIC_API_KEY`
+  - native wire protocol: `wire_api = "anthropic"`
+- `gemini`
+  - default base URL: `https://generativelanguage.googleapis.com/v1beta`
+  - default key env var: `GEMINI_API_KEY`
+  - native wire protocol: `wire_api = "gemini"`
+
+Non-Responses providers must set `model` explicitly. Codex does not refresh `/models` for
+`wire_api = "chat"`, `wire_api = "anthropic"`, or `wire_api = "gemini"`.
+
+Custom providers can opt into the supported wire protocols under `[model_providers.<id>]`:
+
+```toml
+model_provider = "anthropic"
+model = "claude-3-7-sonnet-latest"
+```
+
+```toml
+model_provider = "gemini"
+model = "gemini-2.5-pro"
+```
+
+```toml
+model_provider = "my-chat-endpoint"
+model = "gpt-4.1-mini"
+
+[model_providers.my-chat-endpoint]
+name = "My Chat Endpoint"
+base_url = "https://example.com/v1"
+wire_api = "chat"
+env_key = "MY_API_KEY"
+```
+
+Anthropic-compatible and Gemini-compatible endpoints can also use bearer auth instead of their
+provider-specific API key headers:
+
+```toml
+model_provider = "my-anthropic-gateway"
+model = "claude-3-7-sonnet-latest"
+
+[model_providers.my-anthropic-gateway]
+name = "Anthropic Gateway"
+base_url = "https://gateway.example.com/v1"
+wire_api = "anthropic"
+env_key = "GATEWAY_TOKEN"
+use_bearer_auth = true
+version = "2023-06-01"
+beta = "tools-2024-05-16"
+```
+
+Some features remain Responses-only. Conversation compaction, memory summarization, realtime, and
+Responses WebSocket transport are only available with `wire_api = "responses"`.
+
 ## Connecting to MCP servers
 
 Codex can connect to MCP servers configured in `~/.codex/config.toml`. See the configuration reference for the latest MCP server options:

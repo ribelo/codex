@@ -21,8 +21,6 @@ use crate::config::types::SandboxWorkspaceWrite;
 use crate::config::types::ShellEnvironmentPolicy;
 use crate::config::types::ShellEnvironmentPolicyToml;
 use crate::config::types::SkillsConfig;
-use crate::config::types::ToolSuggestConfig;
-use crate::config::types::ToolSuggestDiscoverable;
 use crate::config::types::Tui;
 use crate::config::types::UriBasedFileOpener;
 use crate::config::types::WindowsSandboxModeToml;
@@ -31,7 +29,6 @@ use crate::config_loader::CloudRequirementsLoader;
 use crate::config_loader::ConfigLayerStack;
 use crate::config_loader::ConfigLayerStackOrdering;
 use crate::config_loader::ConfigRequirements;
-use crate::config_loader::ConfigRequirementsToml;
 use crate::config_loader::ConstrainedWithSource;
 use crate::config_loader::LoaderOverrides;
 use crate::config_loader::McpServerIdentity;
@@ -39,6 +36,10 @@ use crate::config_loader::McpServerRequirement;
 use crate::config_loader::ResidencyRequirement;
 use crate::config_loader::Sourced;
 use crate::config_loader::load_config_layers_state;
+use crate::features::Feature;
+use crate::features::FeatureOverrides;
+use crate::features::Features;
+use crate::features::FeaturesToml;
 use crate::git_info::resolve_root_git_project_for_trust;
 use crate::memories::memory_root;
 use crate::model_provider_info::LEGACY_OLLAMA_CHAT_PROVIDER_ID;
@@ -47,6 +48,7 @@ use crate::model_provider_info::ModelProviderInfo;
 use crate::model_provider_info::OLLAMA_CHAT_PROVIDER_REMOVED_ERROR;
 use crate::model_provider_info::OLLAMA_OSS_PROVIDER_ID;
 use crate::model_provider_info::OPENAI_PROVIDER_ID;
+use crate::model_provider_info::WireApi;
 use crate::model_provider_info::built_in_model_providers;
 use crate::path_utils::normalize_for_native_workdir;
 use crate::project_doc::DEFAULT_PROJECT_DOC_FILENAME;
@@ -61,11 +63,6 @@ use crate::windows_sandbox::resolve_windows_sandbox_mode;
 use crate::windows_sandbox::resolve_windows_sandbox_private_desktop;
 use codex_app_server_protocol::Tools;
 use codex_app_server_protocol::UserSavedConfig;
-use codex_features::Feature;
-use codex_features::FeatureConfigSource;
-use codex_features::FeatureOverrides;
-use codex_features::Features;
-use codex_features::FeaturesToml;
 use codex_protocol::config_types::AltScreenMode;
 use codex_protocol::config_types::ForcedLoginMethod;
 use codex_protocol::config_types::Personality;
@@ -79,6 +76,7 @@ use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::config_types::WebSearchToolConfig;
 use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::models::MacOsSeatbeltProfileExtensions;
+use codex_protocol::openai_models::ModelMetadataOverrides;
 use codex_protocol::openai_models::ModelsResponse;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::permissions::FileSystemSandboxPolicy;
@@ -253,6 +251,9 @@ pub struct Config {
     /// Token usage threshold triggering auto-compaction of conversation history.
     pub model_auto_compact_token_limit: Option<i64>,
 
+    /// User-configured model metadata overrides resolved from config and profiles.
+    pub model_metadata: Option<ModelMetadataOverrides>,
+
     /// Key into the model_providers map that specifies which provider to use.
     pub model_provider_id: String,
 
@@ -292,9 +293,6 @@ pub struct Config {
 
     /// Developer instructions override injected as a separate message.
     pub developer_instructions: Option<String>,
-
-    /// Guardian-specific developer instructions override from requirements.toml.
-    pub guardian_developer_instructions: Option<String>,
 
     /// Compact prompt override.
     pub compact_prompt: Option<String>,
@@ -356,14 +354,9 @@ pub struct Config {
 
     /// Ordered list of status line item identifiers for the TUI.
     ///
-    /// When set, the TUI renders the selected items as a custom status line override.
-    /// When unset, the TUI uses the built-in footer summary instead.
+    /// When unset, the TUI defaults to: `model-with-reasoning`, `context-remaining`, and
+    /// `current-dir`.
     pub tui_status_line: Option<Vec<String>>,
-
-    /// Ordered list of terminal title item identifiers for the TUI.
-    ///
-    /// When unset, the TUI defaults to: `project` and `spinner`.
-    pub tui_terminal_title: Option<Vec<String>>,
 
     /// Syntax highlighting theme override (kebab-case name).
     pub tui_theme: Option<String>,
@@ -499,10 +492,6 @@ pub struct Config {
     /// Base URL for requests to ChatGPT (as opposed to the OpenAI API).
     pub chatgpt_base_url: String,
 
-    /// Experimental / do not use. Overrides the URL used when connecting to
-    /// a remote exec server.
-    pub experimental_exec_server_url: Option<String>,
-
     /// Machine-local realtime audio device preferences used by realtime voice.
     pub realtime_audio: RealtimeAudioConfig,
 
@@ -592,9 +581,6 @@ pub struct Config {
     /// When `false`, disables feedback collection across Codex product surfaces.
     /// Defaults to `true`.
     pub feedback_enabled: bool,
-
-    /// Configured discoverable tools for tool suggestions.
-    pub tool_suggest: ToolSuggestConfig,
 
     /// OTEL configuration (exporter type, endpoint, headers, etc.).
     pub otel: crate::config::types::OtelConfig,
@@ -1206,7 +1192,7 @@ pub fn set_default_oss_provider(codex_home: &Path, provider: &str) -> std::io::R
 pub struct ConfigToml {
     /// Optional override of model selection.
     pub model: Option<String>,
-    /// Review model override used by the `/review` feature.
+    /// Review model override used by `/review` and as the default reviewer-role model.
     pub review_model: Option<String>,
 
     /// Provider to use from the model_providers map.
@@ -1217,6 +1203,8 @@ pub struct ConfigToml {
 
     /// Token usage threshold triggering auto-compaction of conversation history.
     pub model_auto_compact_token_limit: Option<i64>,
+
+    pub model_metadata: Option<ModelMetadataOverrides>,
 
     /// Default approval policy for executing commands.
     pub approval_policy: Option<AskForApproval>,
@@ -1403,10 +1391,6 @@ pub struct ConfigToml {
     /// Base URL override for the built-in `openai` model provider.
     pub openai_base_url: Option<String>,
 
-    /// Experimental / do not use. Overrides the URL used when connecting to
-    /// a remote exec server.
-    pub experimental_exec_server_url: Option<String>,
-
     /// Machine-local realtime audio device preferences used by realtime voice.
     #[serde(default)]
     pub audio: Option<RealtimeAudioToml>,
@@ -1442,9 +1426,6 @@ pub struct ConfigToml {
 
     /// Nested tools section for feature toggles
     pub tools: Option<ToolsToml>,
-
-    /// Additional discoverable tools that can be suggested for installation.
-    pub tool_suggest: Option<ToolSuggestConfig>,
 
     /// Agent-related settings (thread limits, etc.).
     pub agents: Option<AgentsToml>,
@@ -1641,28 +1622,6 @@ where
         }
         Some(WebSearchToolConfigInput::Config(config)) => Some(config),
     })
-}
-
-fn resolve_tool_suggest_config(config_toml: &ConfigToml) -> ToolSuggestConfig {
-    let discoverables = config_toml
-        .tool_suggest
-        .as_ref()
-        .into_iter()
-        .flat_map(|tool_suggest| tool_suggest.discoverables.iter())
-        .filter_map(|discoverable| {
-            let trimmed = discoverable.id.trim();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(ToolSuggestDiscoverable {
-                    kind: discoverable.kind,
-                    id: trimmed.to_string(),
-                })
-            }
-        })
-        .collect();
-
-    ToolSuggestConfig { discoverables }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
@@ -2001,6 +1960,62 @@ where
     Ok(model_providers)
 }
 
+fn validate_model_provider_configuration(
+    model_provider_id: &str,
+    model_provider: &ModelProviderInfo,
+) -> std::io::Result<()> {
+    if model_provider.wire_api != WireApi::Bedrock {
+        return Ok(());
+    }
+
+    let mut unsupported = Vec::new();
+    if model_provider.env_key.is_some() {
+        unsupported.push("env_key");
+    }
+    if model_provider.env_key_instructions.is_some() {
+        unsupported.push("env_key_instructions");
+    }
+    if model_provider.experimental_bearer_token.is_some() {
+        unsupported.push("experimental_bearer_token");
+    }
+    if model_provider.version.is_some() {
+        unsupported.push("version");
+    }
+    if model_provider.beta.is_some() {
+        unsupported.push("beta");
+    }
+    if model_provider.use_bearer_auth {
+        unsupported.push("use_bearer_auth");
+    }
+    if model_provider.query_params.is_some() {
+        unsupported.push("query_params");
+    }
+    if model_provider.http_headers.is_some() {
+        unsupported.push("http_headers");
+    }
+    if model_provider.env_http_headers.is_some() {
+        unsupported.push("env_http_headers");
+    }
+    if model_provider.requires_openai_auth {
+        unsupported.push("requires_openai_auth");
+    }
+    if model_provider.supports_websockets {
+        unsupported.push("supports_websockets");
+    }
+
+    if unsupported.is_empty() {
+        return Ok(());
+    }
+
+    Err(std::io::Error::new(
+        ErrorKind::InvalidInput,
+        format!(
+            "model_provider `{model_provider_id}` uses wire_api = \"bedrock\" and does not support {}",
+            unsupported.join(", ")
+        ),
+    ))
+}
+
 /// Resolves the OSS provider from CLI override, profile config, or global config.
 /// Returns `None` if no provider is configured at any level.
 pub fn resolve_oss_provider(
@@ -2068,6 +2083,22 @@ fn resolve_web_search_config(
     }
 }
 
+fn apply_legacy_model_metadata_aliases(
+    model_metadata: &mut ModelMetadataOverrides,
+    context_window: Option<i64>,
+    auto_compact_token_limit: Option<i64>,
+    supports_reasoning_summaries: Option<bool>,
+) {
+    if let Some(context_window) = context_window {
+        model_metadata.context_window = Some(context_window);
+    }
+    if let Some(auto_compact_token_limit) = auto_compact_token_limit {
+        model_metadata.auto_compact_token_limit = Some(auto_compact_token_limit);
+    }
+    if let Some(supports_reasoning_summaries) = supports_reasoning_summaries {
+        model_metadata.supports_reasoning_summaries = Some(supports_reasoning_summaries);
+    }
+}
 pub(crate) fn resolve_web_search_mode_for_turn(
     web_search_mode: &Constrained<WebSearchMode>,
     sandbox_policy: &SandboxPolicy,
@@ -2184,29 +2215,38 @@ impl Config {
                 .clone(),
             None => ConfigProfile::default(),
         };
-        let tool_suggest = resolve_tool_suggest_config(&cfg);
+        let mut model_metadata = cfg.model_metadata.clone().unwrap_or_default();
+        apply_legacy_model_metadata_aliases(
+            &mut model_metadata,
+            cfg.model_context_window,
+            cfg.model_auto_compact_token_limit,
+            cfg.model_supports_reasoning_summaries,
+        );
+        if let Some(profile_model_metadata) = &config_profile.model_metadata {
+            model_metadata.merge(profile_model_metadata);
+        }
+        apply_legacy_model_metadata_aliases(
+            &mut model_metadata,
+            config_profile.model_context_window,
+            config_profile.model_auto_compact_token_limit,
+            config_profile.model_supports_reasoning_summaries,
+        );
+        let model_metadata = (!model_metadata.is_empty()).then_some(model_metadata);
+        let model_context_window = model_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.context_window);
+        let model_auto_compact_token_limit = model_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.auto_compact_token_limit);
+        let model_supports_reasoning_summaries = model_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.supports_reasoning_summaries);
         let feature_overrides = FeatureOverrides {
             include_apply_patch_tool: include_apply_patch_tool_override,
             web_search_request: override_tools_web_search_request,
         };
 
-        let configured_features = Features::from_sources(
-            FeatureConfigSource {
-                features: cfg.features.as_ref(),
-                include_apply_patch_tool: None,
-                experimental_use_freeform_apply_patch: cfg.experimental_use_freeform_apply_patch,
-                experimental_use_unified_exec_tool: cfg.experimental_use_unified_exec_tool,
-            },
-            FeatureConfigSource {
-                features: config_profile.features.as_ref(),
-                include_apply_patch_tool: config_profile.include_apply_patch_tool,
-                experimental_use_freeform_apply_patch: config_profile
-                    .experimental_use_freeform_apply_patch,
-                experimental_use_unified_exec_tool: config_profile
-                    .experimental_use_unified_exec_tool,
-            },
-            feature_overrides,
-        );
+        let configured_features = Features::from_config(&cfg, &config_profile, feature_overrides);
         let features = ManagedFeatures::from_configured(configured_features, feature_requirements)?;
         let windows_sandbox_mode = resolve_windows_sandbox_mode(&cfg, &config_profile);
         let windows_sandbox_private_desktop =
@@ -2406,8 +2446,8 @@ impl Config {
 
         let mut model_providers = built_in_model_providers(effective_openai_base_url);
         // Merge user-defined providers into the built-in list.
-        for (key, provider) in cfg.model_providers.into_iter() {
-            model_providers.entry(key).or_insert(provider);
+        for (key, provider) in cfg.model_providers.clone().into_iter() {
+            model_providers.insert(key, provider);
         }
 
         let model_provider_id = model_provider
@@ -2425,6 +2465,7 @@ impl Config {
                 std::io::Error::new(std::io::ErrorKind::NotFound, message)
             })?
             .clone();
+        validate_model_provider_configuration(&model_provider_id, &model_provider)?;
 
         let shell_environment_policy = cfg.shell_environment_policy.into();
         let allow_login_shell = cfg.allow_login_shell.unwrap_or(true);
@@ -2516,8 +2557,16 @@ impl Config {
             });
 
         let forced_login_method = cfg.forced_login_method;
-
         let model = model.or(config_profile.model).or(cfg.model);
+        if model.is_none() && model_provider.wire_api != WireApi::Responses {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "model must be set when using model_provider `{model_provider_id}` because `{}` providers do not support built-in model discovery",
+                    model_provider.wire_api.as_str(),
+                ),
+            ));
+        }
         let service_tier = service_tier_override
             .unwrap_or_else(|| config_profile.service_tier.or(cfg.service_tier));
         let service_tier = match service_tier {
@@ -2550,9 +2599,6 @@ impl Config {
             Self::try_read_non_empty_file(model_instructions_path, "model instructions file")?;
         let base_instructions = base_instructions.or(file_base_instructions);
         let developer_instructions = developer_instructions.or(cfg.developer_instructions);
-        let guardian_developer_instructions = guardian_developer_instructions_from_requirements(
-            config_layer_stack.requirements_toml(),
-        );
         let personality = personality
             .or(config_profile.personality)
             .or(cfg.personality)
@@ -2679,12 +2725,14 @@ impl Config {
             } else {
                 NetworkSandboxPolicy::from(&effective_sandbox_policy)
             };
+
         let config = Self {
             model,
             service_tier,
             review_model,
-            model_context_window: cfg.model_context_window,
-            model_auto_compact_token_limit: cfg.model_auto_compact_token_limit,
+            model_context_window,
+            model_auto_compact_token_limit,
+            model_metadata,
             model_provider_id,
             model_provider,
             cwd: resolved_cwd,
@@ -2758,7 +2806,6 @@ impl Config {
                 .show_raw_agent_reasoning
                 .or(show_raw_agent_reasoning)
                 .unwrap_or(false),
-            guardian_developer_instructions,
             model_reasoning_effort: config_profile
                 .model_reasoning_effort
                 .or(cfg.model_reasoning_effort),
@@ -2768,14 +2815,13 @@ impl Config {
             model_reasoning_summary: config_profile
                 .model_reasoning_summary
                 .or(cfg.model_reasoning_summary),
-            model_supports_reasoning_summaries: cfg.model_supports_reasoning_summaries,
+            model_supports_reasoning_summaries,
             model_catalog,
             model_verbosity: config_profile.model_verbosity.or(cfg.model_verbosity),
             chatgpt_base_url: config_profile
                 .chatgpt_base_url
                 .or(cfg.chatgpt_base_url)
                 .unwrap_or("https://chatgpt.com/backend-api/".to_string()),
-            experimental_exec_server_url: cfg.experimental_exec_server_url,
             realtime_audio: cfg
                 .audio
                 .map_or_else(RealtimeAudioConfig::default, |audio| RealtimeAudioConfig {
@@ -2821,7 +2867,6 @@ impl Config {
                 .as_ref()
                 .and_then(|feedback| feedback.enabled)
                 .unwrap_or(true),
-            tool_suggest,
             tui_notifications: cfg
                 .tui
                 .as_ref()
@@ -2845,7 +2890,6 @@ impl Config {
                 .map(|t| t.alternate_screen)
                 .unwrap_or_default(),
             tui_status_line: cfg.tui.as_ref().and_then(|t| t.status_line.clone()),
-            tui_terminal_title: cfg.tui.as_ref().and_then(|t| t.terminal_title.clone()),
             tui_theme: cfg.tui.as_ref().and_then(|t| t.theme.clone()),
             otel: {
                 let t: OtelConfigToml = cfg.otel.unwrap_or_default();
@@ -2955,18 +2999,6 @@ pub(crate) fn uses_deprecated_instructions_file(config_layer_stack: &ConfigLayer
         .layers_high_to_low()
         .into_iter()
         .any(|layer| toml_uses_deprecated_instructions_file(&layer.config))
-}
-
-fn guardian_developer_instructions_from_requirements(
-    requirements_toml: &ConfigRequirementsToml,
-) -> Option<String> {
-    requirements_toml
-        .guardian_developer_instructions
-        .as_deref()
-        .and_then(|value| {
-            let trimmed = value.trim();
-            (!trimmed.is_empty()).then(|| trimmed.to_string())
-        })
 }
 
 fn toml_uses_deprecated_instructions_file(value: &TomlValue) -> bool {

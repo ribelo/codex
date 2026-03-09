@@ -1731,6 +1731,33 @@ fn responses_websocket_features_do_not_change_wire_api() -> std::io::Result<()> 
 }
 
 #[test]
+fn non_responses_provider_requires_explicit_model() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    let cfg = ConfigToml {
+        model_provider: Some("anthropic".to_string()),
+        ..Default::default()
+    };
+
+    let err = Config::load_from_base_config_with_overrides(
+        cfg,
+        ConfigOverrides::default(),
+        codex_home.path().to_path_buf(),
+    )
+    .expect_err("native providers should require an explicit model");
+
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert!(
+        err.to_string().contains("model must be set"),
+        "unexpected error: {err}"
+    );
+    assert!(
+        err.to_string().contains("anthropic"),
+        "unexpected error: {err}"
+    );
+    Ok(())
+}
+
+#[test]
 fn config_honors_explicit_file_oauth_store_mode() -> std::io::Result<()> {
     let codex_home = TempDir::new()?;
     let cfg = ConfigToml {
@@ -4189,6 +4216,9 @@ model_verbosity = "high"
         base_url: Some("https://api.openai.com/v1".to_string()),
         env_key: Some("OPENAI_API_KEY".to_string()),
         wire_api: crate::WireApi::Responses,
+        version: None,
+        beta: None,
+        use_bearer_auth: false,
         env_key_instructions: None,
         experimental_bearer_token: None,
         query_params: None,

@@ -2,7 +2,7 @@
 //!
 //! `ModelClient` is intended to live for the lifetime of a Codex session and holds the stable
 //! configuration and state needed to talk to a provider (auth, provider selection, conversation id,
-//! and transport fallback state).
+//! and feature-gated request behavior).
 //!
 //! Per-turn settings (model selection, reasoning controls, telemetry context, and turn metadata)
 //! are passed explicitly to streaming and unary methods so that the turn lifetime is visible at the
@@ -59,9 +59,7 @@ use codex_api::common::ResponsesWsRequest;
 use codex_api::create_text_param_for_request;
 use codex_api::error::ApiError;
 use codex_api::requests::responses::Compression;
-use codex_api::response_create_client_metadata;
 use codex_otel::SessionTelemetry;
-use codex_otel::current_span_w3c_trace_context;
 
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
@@ -71,7 +69,6 @@ use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use codex_protocol::protocol::SessionSource;
-use codex_protocol::protocol::W3cTraceContext;
 use eventsource_stream::Event;
 use eventsource_stream::EventStreamError;
 use futures::StreamExt;
@@ -97,12 +94,19 @@ use crate::auth::RefreshTokenError;
 use crate::client_common::Prompt;
 use crate::client_common::ResponseEvent;
 use crate::client_common::ResponseStream;
+use crate::config::Config;
 use crate::default_client::build_reqwest_client;
 use crate::error::CodexErr;
 use crate::error::Result;
 use crate::flags::CODEX_RS_SSE_FIXTURE;
 use crate::model_provider_info::ModelProviderInfo;
 use crate::model_provider_info::WireApi;
+use crate::provider_adapters::AdapterContext;
+use crate::provider_adapters::anthropic::stream_anthropic_messages;
+use crate::provider_adapters::antigravity::stream_antigravity_generate_content;
+use crate::provider_adapters::bedrock::stream_bedrock_converse;
+use crate::provider_adapters::chat::stream_chat_completions;
+use crate::provider_adapters::gemini::stream_gemini_generate_content;
 use crate::response_debug_context::extract_response_debug_context;
 use crate::response_debug_context::extract_response_debug_context_from_api_error;
 use crate::response_debug_context::telemetry_api_error_message;
@@ -124,6 +128,14 @@ const MEMORIES_SUMMARIZE_ENDPOINT: &str = "/memories/trace_summarize";
 #[cfg(test)]
 pub(crate) const WEBSOCKET_CONNECT_TIMEOUT: Duration =
     Duration::from_millis(crate::model_provider_info::DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS);
+pub fn ws_version_from_features(config: &Config) -> bool {
+    config
+        .features
+        .enabled(crate::features::Feature::ResponsesWebsockets)
+        || config
+            .features
+            .enabled(crate::features::Feature::ResponsesWebsocketsV2)
+}
 
 /// Session-scoped state shared by all [`ModelClient`] clones.
 ///
@@ -137,6 +149,7 @@ struct ModelClientState {
     auth_env_telemetry: AuthEnvTelemetry,
     session_source: SessionSource,
     model_verbosity: Option<VerbosityConfig>,
+    responses_websockets_enabled_by_feature: bool,
     enable_request_compression: bool,
     include_timing_metrics: bool,
     beta_features_header: Option<String>,
@@ -168,7 +181,8 @@ impl RequestRouteTelemetry {
 /// A session-scoped client for model-provider API calls.
 ///
 /// This holds configuration and state that should be shared across turns within a Codex session
-/// (auth, provider selection, conversation id, and transport fallback state).
+/// (auth, provider selection, conversation id, feature-gated request behavior, and transport
+/// fallback state).
 ///
 /// WebSocket fallback is session-scoped: once a turn activates the HTTP fallback, subsequent turns
 /// will also use HTTP for the remainder of the session.
@@ -257,6 +271,7 @@ impl ModelClient {
         provider: ModelProviderInfo,
         session_source: SessionSource,
         model_verbosity: Option<VerbosityConfig>,
+        responses_websockets_enabled_by_feature: bool,
         enable_request_compression: bool,
         include_timing_metrics: bool,
         beta_features_header: Option<String>,
@@ -273,6 +288,7 @@ impl ModelClient {
                 auth_env_telemetry,
                 session_source,
                 model_verbosity,
+                responses_websockets_enabled_by_feature,
                 enable_request_compression,
                 include_timing_metrics,
                 beta_features_header,
@@ -314,9 +330,9 @@ impl ModelClient {
     pub(crate) fn force_http_fallback(
         &self,
         session_telemetry: &SessionTelemetry,
-        _model_info: &ModelInfo,
+        model_info: &ModelInfo,
     ) -> bool {
-        let websocket_enabled = self.responses_websocket_enabled();
+        let websocket_enabled = self.responses_websocket_enabled(model_info);
         let activated =
             websocket_enabled && !self.state.disable_websockets.swap(true, Ordering::Relaxed);
         if activated {
@@ -507,16 +523,19 @@ impl ModelClient {
 
     /// Returns whether the Responses-over-WebSocket transport is active for this session.
     ///
-    /// WebSocket use is controlled by provider capability and session-scoped fallback state.
-    pub fn responses_websocket_enabled(&self) -> bool {
+    /// This combines provider capability and feature gating; both must be true for websocket paths
+    /// to be eligible.
+    ///
+    /// If websockets are only enabled via model preference (no explicit feature flag), prefer the
+    /// current v2 behavior.
+    pub fn responses_websocket_enabled(&self, model_info: &ModelInfo) -> bool {
         if !self.state.provider.supports_websockets
             || self.state.disable_websockets.load(Ordering::Relaxed)
-            || (*CODEX_RS_SSE_FIXTURE).is_some()
         {
             return false;
         }
 
-        true
+        self.state.responses_websockets_enabled_by_feature || model_info.prefer_websockets
     }
 
     /// Returns auth + provider configuration resolved from the current session auth state.
@@ -855,9 +874,9 @@ impl ModelClientSession {
     pub async fn preconnect_websocket(
         &mut self,
         session_telemetry: &SessionTelemetry,
-        _model_info: &ModelInfo,
+        model_info: &ModelInfo,
     ) -> std::result::Result<(), ApiError> {
-        if !self.client.responses_websocket_enabled() {
+        if !self.client.responses_websocket_enabled(model_info) {
             return Ok(());
         }
         if self.websocket_session.connection.is_some() {
@@ -1102,7 +1121,6 @@ impl ModelClientSession {
         service_tier: Option<ServiceTier>,
         turn_metadata_header: Option<&str>,
         warmup: bool,
-        request_trace: Option<W3cTraceContext>,
     ) -> Result<WebsocketStreamOutcome> {
         let auth_manager = self.client.state.auth_manager.clone();
 
@@ -1129,10 +1147,7 @@ impl ModelClientSession {
                 service_tier,
             )?;
             let mut ws_payload = ResponseCreateWsRequest {
-                client_metadata: response_create_client_metadata(
-                    build_ws_client_metadata(turn_metadata_header),
-                    request_trace.as_ref(),
-                ),
+                client_metadata: build_ws_client_metadata(turn_metadata_header),
                 ..ResponseCreateWsRequest::from(&request)
             };
             if warmup {
@@ -1239,7 +1254,7 @@ impl ModelClientSession {
         service_tier: Option<ServiceTier>,
         turn_metadata_header: Option<&str>,
     ) -> Result<()> {
-        if !self.client.responses_websocket_enabled() {
+        if !self.client.responses_websocket_enabled(model_info) {
             return Ok(());
         }
         if self.websocket_session.last_request.is_some() {
@@ -1256,7 +1271,6 @@ impl ModelClientSession {
                 service_tier,
                 turn_metadata_header,
                 /*warmup*/ true,
-                current_span_w3c_trace_context(),
             )
             .await
         {
@@ -1284,8 +1298,8 @@ impl ModelClientSession {
     ///
     /// The caller is responsible for passing per-turn settings explicitly (model selection,
     /// reasoning settings, telemetry context, and turn metadata). This method will prefer the
-    /// Responses WebSocket transport when the provider supports it and it remains healthy, and will
-    /// fall back to the HTTP Responses API transport otherwise.
+    /// Responses WebSocket transport when enabled and healthy, and will fall back to the HTTP
+    /// Responses API transport otherwise.
     pub async fn stream(
         &mut self,
         prompt: &Prompt,
@@ -1299,8 +1313,7 @@ impl ModelClientSession {
         let wire_api = self.client.state.provider.wire_api;
         match wire_api {
             WireApi::Responses => {
-                if self.client.responses_websocket_enabled() {
-                    let request_trace = current_span_w3c_trace_context();
+                if self.client.responses_websocket_enabled(model_info) {
                     match self
                         .stream_responses_websocket(
                             prompt,
@@ -1311,7 +1324,6 @@ impl ModelClientSession {
                             service_tier,
                             turn_metadata_header,
                             /*warmup*/ false,
-                            request_trace,
                         )
                         .await?
                     {
@@ -1330,6 +1342,90 @@ impl ModelClientSession {
                     summary,
                     service_tier,
                     turn_metadata_header,
+                )
+                .await
+            }
+            WireApi::Chat => {
+                let client_setup = self.client.current_client_setup().await?;
+                let http_client = build_reqwest_client();
+                let ctx = AdapterContext {
+                    http_client: &http_client,
+                    provider: &self.client.state.provider,
+                    api_provider: &client_setup.api_provider,
+                    api_auth: &client_setup.api_auth,
+                    auth_manager: self.client.state.auth_manager.as_deref(),
+                    conversation_id: &self.client.state.conversation_id,
+                    session_source: &self.client.state.session_source,
+                };
+                stream_chat_completions(&ctx, prompt, model_info, session_telemetry).await
+            }
+            WireApi::Anthropic => {
+                let client_setup = self.client.current_client_setup().await?;
+                let http_client = build_reqwest_client();
+                let ctx = AdapterContext {
+                    http_client: &http_client,
+                    provider: &self.client.state.provider,
+                    api_provider: &client_setup.api_provider,
+                    api_auth: &client_setup.api_auth,
+                    auth_manager: self.client.state.auth_manager.as_deref(),
+                    conversation_id: &self.client.state.conversation_id,
+                    session_source: &self.client.state.session_source,
+                };
+                stream_anthropic_messages(
+                    &ctx,
+                    prompt,
+                    model_info,
+                    effort,
+                    summary,
+                    session_telemetry,
+                )
+                .await
+            }
+            WireApi::Gemini => {
+                let client_setup = self.client.current_client_setup().await?;
+                let http_client = build_reqwest_client();
+                let ctx = AdapterContext {
+                    http_client: &http_client,
+                    provider: &self.client.state.provider,
+                    api_provider: &client_setup.api_provider,
+                    api_auth: &client_setup.api_auth,
+                    auth_manager: self.client.state.auth_manager.as_deref(),
+                    conversation_id: &self.client.state.conversation_id,
+                    session_source: &self.client.state.session_source,
+                };
+                stream_gemini_generate_content(&ctx, prompt, model_info, effort, session_telemetry)
+                    .await
+            }
+            WireApi::Antigravity => {
+                let client_setup = self.client.current_client_setup().await?;
+                let http_client = build_reqwest_client();
+                let ctx = AdapterContext {
+                    http_client: &http_client,
+                    provider: &self.client.state.provider,
+                    api_provider: &client_setup.api_provider,
+                    api_auth: &client_setup.api_auth,
+                    auth_manager: self.client.state.auth_manager.as_deref(),
+                    conversation_id: &self.client.state.conversation_id,
+                    session_source: &self.client.state.session_source,
+                };
+                stream_antigravity_generate_content(
+                    &ctx,
+                    prompt,
+                    model_info,
+                    effort,
+                    session_telemetry,
+                )
+                .await
+            }
+            WireApi::Bedrock => {
+                stream_bedrock_converse(
+                    &self.client.state.provider,
+                    prompt,
+                    model_info,
+                    effort,
+                    summary,
+                    service_tier,
+                    session_telemetry,
                 )
                 .await
             }
@@ -1530,7 +1626,7 @@ impl AuthRequestTelemetryContext {
         Self {
             auth_mode: auth_mode.map(|mode| match mode {
                 AuthMode::ApiKey => "ApiKey",
-                AuthMode::Chatgpt | AuthMode::ChatgptAuthTokens => "Chatgpt",
+                AuthMode::Chatgpt => "Chatgpt",
             }),
             auth_header_attached: api_auth.auth_header_attached(),
             auth_header_name: api_auth.auth_header_name(),

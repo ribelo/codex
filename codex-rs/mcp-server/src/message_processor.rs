@@ -68,6 +68,7 @@ impl MessageProcessor {
                     .features
                     .enabled(Feature::DefaultModeRequestUserInput),
             },
+            config.model_provider.clone(),
         ));
         Self {
             outgoing,

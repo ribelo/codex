@@ -828,6 +828,7 @@ async fn prefers_apikey_when_config_prefers_apikey_even_with_chatgpt_tokens() {
                 .features
                 .enabled(Feature::DefaultModeRequestUserInput),
         },
+        config.model_provider.clone(),
     );
     let NewThread { thread: codex, .. } = thread_manager
         .start_thread(config)
@@ -1790,6 +1791,9 @@ async fn azure_responses_request_includes_store_and_reasoning_ids() {
         env_key_instructions: None,
         experimental_bearer_token: None,
         wire_api: WireApi::Responses,
+        version: None,
+        beta: None,
+        use_bearer_auth: false,
         query_params: None,
         http_headers: None,
         env_http_headers: None,
@@ -2391,6 +2395,9 @@ async fn azure_overrides_assign_properties_used_for_responses_url() {
         )])),
         env_key_instructions: None,
         wire_api: WireApi::Responses,
+        version: None,
+        beta: None,
+        use_bearer_auth: false,
         http_headers: Some(std::collections::HashMap::from([(
             "Custom-Header".to_string(),
             "Value".to_string(),
@@ -2476,6 +2483,9 @@ async fn env_var_overrides_loaded_auth() {
         env_key_instructions: None,
         experimental_bearer_token: None,
         wire_api: WireApi::Responses,
+        version: None,
+        beta: None,
+        use_bearer_auth: false,
         http_headers: Some(std::collections::HashMap::from([(
             "Custom-Header".to_string(),
             "Value".to_string(),

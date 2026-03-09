@@ -1,4 +1,5 @@
 use codex_protocol::config_types::ReasoningSummary;
+use codex_protocol::openai_models::ApplyPatchToolType;
 use codex_protocol::openai_models::ConfigShellToolType;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ModelInstructionsVariables;
@@ -10,9 +11,10 @@ use codex_protocol::openai_models::WebSearchToolType;
 use codex_protocol::openai_models::default_input_modalities;
 
 use crate::config::Config;
+use crate::features::Feature;
+use crate::model_provider_info::WireApi;
 use crate::truncate::approx_bytes_for_tokens;
-use codex_features::Feature;
-use tracing::warn;
+use tracing::debug;
 
 pub const BASE_INSTRUCTIONS: &str = include_str!("../../prompt.md");
 const DEFAULT_PERSONALITY_HEADER: &str = "You are Codex, a coding agent based on GPT-5. You and the user share the same workspace and collaborate to achieve the user's goals.";
@@ -22,6 +24,9 @@ const LOCAL_PRAGMATIC_TEMPLATE: &str = "You are a deeply pragmatic, effective so
 const PERSONALITY_PLACEHOLDER: &str = "{{ personality }}";
 
 pub(crate) fn with_config_overrides(mut model: ModelInfo, config: &Config) -> ModelInfo {
+    if let Some(model_metadata) = &config.model_metadata {
+        model_metadata.apply_to(&mut model);
+    }
     if let Some(supports_reasoning_summaries) = config.model_supports_reasoning_summaries
         && supports_reasoning_summaries
     {
@@ -59,7 +64,7 @@ pub(crate) fn with_config_overrides(mut model: ModelInfo, config: &Config) -> Mo
 
 /// Build a minimal fallback model descriptor for missing/unknown slugs.
 pub(crate) fn model_info_from_slug(slug: &str) -> ModelInfo {
-    warn!("Unknown model {slug} is used. This will use fallback model metadata.");
+    debug!("Unknown model {slug} is using inferred metadata.");
     ModelInfo {
         slug: slug.to_string(),
         display_name: slug.to_string(),
@@ -80,7 +85,7 @@ pub(crate) fn model_info_from_slug(slug: &str) -> ModelInfo {
         default_verbosity: None,
         apply_patch_tool_type: None,
         web_search_tool_type: WebSearchToolType::Text,
-        truncation_policy: TruncationPolicyConfig::bytes(/*limit*/ 10_000),
+        truncation_policy: TruncationPolicyConfig::bytes(10_000),
         supports_parallel_tool_calls: false,
         supports_image_detail_original: false,
         context_window: Some(272_000),
@@ -88,9 +93,48 @@ pub(crate) fn model_info_from_slug(slug: &str) -> ModelInfo {
         effective_context_window_percent: 95,
         experimental_supported_tools: Vec::new(),
         input_modalities: default_input_modalities(),
+        prefer_websockets: false,
         used_fallback_model_metadata: true, // this is the fallback model metadata
         supports_search_tool: false,
     }
+}
+
+pub(crate) fn model_info_from_slug_for_provider(slug: &str, wire_api: WireApi) -> ModelInfo {
+    let mut model = model_info_from_slug(slug);
+    match wire_api {
+        WireApi::Responses => {}
+        WireApi::Chat => {
+            model.apply_patch_tool_type = Some(ApplyPatchToolType::Function);
+        }
+        WireApi::Anthropic => {
+            model.supports_reasoning_summaries = true;
+            model.apply_patch_tool_type = Some(ApplyPatchToolType::Function);
+        }
+        WireApi::Gemini => {
+            model.supports_reasoning_summaries = true;
+            model.apply_patch_tool_type = Some(ApplyPatchToolType::Function);
+            model.shell_type = ConfigShellToolType::ShellCommand;
+        }
+        WireApi::Antigravity => {
+            model.shell_type = ConfigShellToolType::ShellCommand;
+            let slug_lower = slug.to_ascii_lowercase();
+            if slug_lower.contains("claude") || slug_lower.contains("gemini") {
+                model.supports_reasoning_summaries = true;
+                model.apply_patch_tool_type = Some(ApplyPatchToolType::Function);
+            }
+        }
+        WireApi::Bedrock => {
+            if is_bedrock_claude_slug(slug) {
+                model.supports_reasoning_summaries = true;
+                model.apply_patch_tool_type = Some(ApplyPatchToolType::Function);
+            }
+        }
+    }
+    model
+}
+
+pub(crate) fn is_bedrock_claude_slug(slug: &str) -> bool {
+    slug.starts_with("anthropic.claude-") || slug.starts_with("claude")
 }
 
 fn local_personality_messages_for_slug(slug: &str) -> Option<ModelMessages> {
@@ -110,5 +154,103 @@ fn local_personality_messages_for_slug(slug: &str) -> Option<ModelMessages> {
 }
 
 #[cfg(test)]
-#[path = "model_info_tests.rs"]
-mod tests;
+mod tests {
+    use super::*;
+    use crate::config::test_config;
+    use codex_protocol::openai_models::ModelMetadataOverrides;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn reasoning_summaries_override_true_enables_support() {
+        let model = model_info_from_slug("unknown-model");
+        let mut config = test_config();
+        config.model_supports_reasoning_summaries = Some(true);
+
+        let updated = with_config_overrides(model.clone(), &config);
+        let mut expected = model;
+        expected.supports_reasoning_summaries = true;
+
+        assert_eq!(updated, expected);
+    }
+
+    #[test]
+    fn reasoning_summaries_override_false_does_not_disable_support() {
+        let mut model = model_info_from_slug("unknown-model");
+        model.supports_reasoning_summaries = true;
+        let mut config = test_config();
+        config.model_supports_reasoning_summaries = Some(false);
+
+        let updated = with_config_overrides(model.clone(), &config);
+
+        assert_eq!(updated, model);
+    }
+
+    #[test]
+    fn reasoning_summaries_override_false_is_noop_when_model_is_false() {
+        let model = model_info_from_slug("unknown-model");
+        let mut config = test_config();
+        config.model_supports_reasoning_summaries = Some(false);
+
+        let updated = with_config_overrides(model.clone(), &config);
+
+        assert_eq!(updated, model);
+    }
+
+    #[test]
+    fn model_metadata_overrides_apply_before_runtime_instruction_overrides() {
+        let model = model_info_from_slug("unknown-model");
+        let mut config = test_config();
+        config.model_metadata = Some(ModelMetadataOverrides {
+            display_name: Some("Custom Display".to_string()),
+            supports_parallel_tool_calls: Some(true),
+            context_window: Some(262_144),
+            base_instructions: Some("metadata instructions".to_string()),
+            ..Default::default()
+        });
+        config.base_instructions = Some("runtime instructions".to_string());
+
+        let updated = with_config_overrides(model.clone(), &config);
+        let mut expected = model;
+        expected.display_name = "Custom Display".to_string();
+        expected.supports_parallel_tool_calls = true;
+        expected.context_window = Some(262_144);
+        expected.base_instructions = "runtime instructions".to_string();
+        expected.model_messages = None;
+
+        assert_eq!(updated, expected);
+    }
+
+    #[test]
+    fn bedrock_claude_slugs_get_provider_aware_defaults() {
+        let model = model_info_from_slug_for_provider(
+            "anthropic.claude-3-7-sonnet-20250219-v1:0",
+            WireApi::Bedrock,
+        );
+
+        assert!(model.supports_reasoning_summaries);
+        assert_eq!(
+            model.apply_patch_tool_type,
+            Some(ApplyPatchToolType::Function)
+        );
+    }
+
+    #[test]
+    fn non_claude_bedrock_slugs_keep_conservative_defaults() {
+        let model = model_info_from_slug_for_provider("amazon.nova-lite-v1:0", WireApi::Bedrock);
+
+        assert!(!model.supports_reasoning_summaries);
+        assert_eq!(model.apply_patch_tool_type, None);
+    }
+
+    #[test]
+    fn antigravity_claude_slugs_get_reasoning_defaults() {
+        let model =
+            model_info_from_slug_for_provider("claude-opus-4-5-thinking", WireApi::Antigravity);
+
+        assert!(model.supports_reasoning_summaries);
+        assert_eq!(
+            model.apply_patch_tool_type,
+            Some(ApplyPatchToolType::Function)
+        );
+    }
+}
