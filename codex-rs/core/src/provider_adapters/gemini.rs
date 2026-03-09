@@ -26,6 +26,7 @@ use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use codex_protocol::protocol::TokenUsage;
 use eventsource_stream::Eventsource;
 use futures::StreamExt;
+use regex_lite::Regex;
 use reqwest::StatusCode;
 use serde::Deserialize;
 use serde::Serialize;
@@ -38,6 +39,7 @@ use uuid::Uuid;
 
 const DEFAULT_MAX_OUTPUT_TOKENS: i64 = 64_000;
 const SYNTHETIC_THOUGHT_SIGNATURE: &str = "skip_thought_signature_validator";
+const GEMINI_CODE_ASSIST_REQUEST_USER_AGENT: &str = "pi-coding-agent";
 const GEMINI_MODEL_FALLBACKS: &[(&str, &str)] = &[
     ("gemini-2.5-flash-image", "gemini-2.5-flash"),
     ("gemini-3-pro", "gemini-3-pro-preview"),
@@ -121,6 +123,8 @@ struct GeminiFunctionDeclaration {
     description: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     parameters: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parameters_json_schema: Option<Value>,
 }
 
 #[derive(Serialize)]
@@ -151,7 +155,10 @@ struct GeminiGenerationConfig {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct GeminiThinkingConfig {
-    thinking_budget: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking_budget: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking_level: Option<String>,
     include_thoughts: bool,
 }
 
@@ -330,12 +337,11 @@ pub(crate) async fn stream_gemini_generate_content(
             }
             Ok(response) => {
                 let status = response.status();
+                let retry_delay = retry_delay_from_response(response.headers(), "");
                 let body = response.text().await.unwrap_or_default();
-                let is_retryable = status == StatusCode::TOO_MANY_REQUESTS
-                    || status == StatusCode::REQUEST_TIMEOUT
-                    || status == StatusCode::CONFLICT
-                    || status.is_server_error();
-                if !is_retryable || attempt > max_retries {
+                let retry_delay =
+                    retry_delay.or_else(|| retry_delay_from_response_headers(None, &body));
+                if !is_retryable_status_or_body(status, &body) || attempt > max_retries {
                     return Err(CodexErr::UnexpectedStatus(UnexpectedResponseError {
                         status,
                         body,
@@ -344,7 +350,7 @@ pub(crate) async fn stream_gemini_generate_content(
                         request_id: None,
                     }));
                 }
-                tokio::time::sleep(backoff(attempt)).await;
+                tokio::time::sleep(retry_delay.unwrap_or_else(|| backoff(attempt))).await;
             }
             Err(source) => {
                 if attempt > max_retries {
@@ -421,10 +427,13 @@ fn build_gemini_request<'a>(
             project_id,
         } => {
             #[derive(Serialize)]
+            #[serde(rename_all = "camelCase")]
             struct CodeAssistRequest<'a> {
                 project: &'a str,
                 model: &'a str,
                 request: &'a GeminiRequest,
+                user_agent: &'a str,
+                request_id: String,
             }
 
             ctx.http_client
@@ -439,6 +448,8 @@ fn build_gemini_request<'a>(
                     project: project_id,
                     model: model_name,
                     request: payload,
+                    user_agent: GEMINI_CODE_ASSIST_REQUEST_USER_AGENT,
+                    request_id: code_assist_request_id("pi"),
                 })
         }
     }
@@ -455,7 +466,7 @@ pub(crate) fn build_payload(
     curate_gemini_history(&mut contents);
     apply_synthetic_thought_signatures(&mut contents, &model_name);
 
-    let tools = build_tools(&prompt.tools)?;
+    let tools = build_tools(&prompt.tools, model_name.starts_with("claude-"))?;
     let tool_config = tools.as_ref().map(|_| GeminiToolConfig {
         function_calling_config: GeminiFunctionCallingConfig {
             mode: "AUTO".to_string(),
@@ -463,12 +474,9 @@ pub(crate) fn build_payload(
     });
     let generation_config = GeminiGenerationConfig {
         max_output_tokens: Some(max_output_tokens(model_info, DEFAULT_MAX_OUTPUT_TOKENS)),
-        thinking_config: model_info
-            .supports_reasoning_summaries
-            .then_some(GeminiThinkingConfig {
-                thinking_budget: thinking_budget(effort.or(model_info.default_reasoning_level)),
-                include_thoughts: true,
-            }),
+        thinking_config: model_info.supports_reasoning_summaries.then(|| {
+            thinking_config_for_model(&model_name, effort.or(model_info.default_reasoning_level))
+        }),
         response_mime_type: prompt
             .output_schema
             .as_ref()
@@ -673,7 +681,7 @@ fn build_messages(
     Ok((messages, system_instruction))
 }
 
-fn build_tools(tools: &[ToolSpec]) -> Result<Option<Vec<GeminiTool>>> {
+fn build_tools(tools: &[ToolSpec], use_legacy_parameters: bool) -> Result<Option<Vec<GeminiTool>>> {
     let mut declarations = Vec::new();
     for tool in tools {
         if let ToolSpec::Function(spec) = tool {
@@ -682,7 +690,8 @@ fn build_tools(tools: &[ToolSpec]) -> Result<Option<Vec<GeminiTool>>> {
             declarations.push(GeminiFunctionDeclaration {
                 name: spec.name.clone(),
                 description: spec.description.clone(),
-                parameters: Some(parameters),
+                parameters: use_legacy_parameters.then_some(parameters.clone()),
+                parameters_json_schema: (!use_legacy_parameters).then_some(parameters),
             });
         }
     }
@@ -712,6 +721,50 @@ fn strip_additional_properties(value: &mut Value) {
     }
 }
 
+fn thinking_config_for_model(
+    model_name: &str,
+    effort: Option<ReasoningEffortConfig>,
+) -> GeminiThinkingConfig {
+    if is_gemini_3_model(model_name) {
+        GeminiThinkingConfig {
+            thinking_budget: None,
+            thinking_level: Some(gemini_3_thinking_level(model_name, effort)),
+            include_thoughts: true,
+        }
+    } else {
+        GeminiThinkingConfig {
+            thinking_budget: Some(thinking_budget(effort)),
+            thinking_level: None,
+            include_thoughts: true,
+        }
+    }
+}
+
+fn is_gemini_3_model(model_name: &str) -> bool {
+    model_name.starts_with("gemini-3")
+}
+
+fn gemini_3_thinking_level(model_name: &str, effort: Option<ReasoningEffortConfig>) -> String {
+    let effort = effort.unwrap_or(ReasoningEffortConfig::Medium);
+    if model_name.contains("pro") {
+        return match effort {
+            ReasoningEffortConfig::None
+            | ReasoningEffortConfig::Minimal
+            | ReasoningEffortConfig::Low => "LOW".to_string(),
+            ReasoningEffortConfig::Medium
+            | ReasoningEffortConfig::High
+            | ReasoningEffortConfig::XHigh => "HIGH".to_string(),
+        };
+    }
+
+    match effort {
+        ReasoningEffortConfig::None | ReasoningEffortConfig::Minimal => "MINIMAL".to_string(),
+        ReasoningEffortConfig::Low => "LOW".to_string(),
+        ReasoningEffortConfig::Medium => "MEDIUM".to_string(),
+        ReasoningEffortConfig::High | ReasoningEffortConfig::XHigh => "HIGH".to_string(),
+    }
+}
+
 fn thinking_budget(effort: Option<ReasoningEffortConfig>) -> i64 {
     match effort.unwrap_or(ReasoningEffortConfig::Medium) {
         ReasoningEffortConfig::None | ReasoningEffortConfig::Minimal => 0,
@@ -720,6 +773,150 @@ fn thinking_budget(effort: Option<ReasoningEffortConfig>) -> i64 {
         ReasoningEffortConfig::High => 16_384,
         ReasoningEffortConfig::XHigh => 32_768,
     }
+}
+
+pub(crate) fn code_assist_request_id(prefix: &str) -> String {
+    format!("{prefix}-{}", Uuid::new_v4())
+}
+
+pub(crate) fn is_retryable_status_or_body(status: StatusCode, body: &str) -> bool {
+    if status == StatusCode::TOO_MANY_REQUESTS
+        || status == StatusCode::REQUEST_TIMEOUT
+        || status == StatusCode::CONFLICT
+        || status.is_server_error()
+    {
+        return true;
+    }
+
+    let lower = body.to_ascii_lowercase();
+    [
+        "resource exhausted",
+        "resourceexhausted",
+        "rate limit",
+        "ratelimit",
+        "overloaded",
+        "service unavailable",
+        "other side closed",
+        "othersideclosed",
+    ]
+    .iter()
+    .any(|pattern| lower.contains(pattern))
+}
+
+pub(crate) fn retry_delay_from_response(
+    headers: &reqwest::header::HeaderMap,
+    body: &str,
+) -> Option<Duration> {
+    retry_delay_from_response_headers(Some(headers), body)
+}
+
+pub(crate) fn retry_delay_from_response_headers(
+    headers: Option<&reqwest::header::HeaderMap>,
+    body: &str,
+) -> Option<Duration> {
+    let normalize_millis = |millis: u64| Duration::from_millis(millis.saturating_add(1_000));
+
+    if let Some(headers) = headers {
+        if let Some(value) = headers
+            .get("retry-after-ms")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u64>().ok())
+        {
+            return Some(normalize_millis(value));
+        }
+
+        if let Some(value) = headers
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u64>().ok())
+        {
+            return Some(Duration::from_secs(value.saturating_add(1)));
+        }
+
+        if let Some(value) = headers
+            .get("x-ratelimit-reset-after")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<f64>().ok())
+            .filter(|value| value.is_finite() && *value > 0.0)
+        {
+            return Some(normalize_millis((value * 1_000.0).ceil() as u64));
+        }
+
+        if let Some(value) = headers
+            .get("x-ratelimit-reset")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u64>().ok())
+        {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()
+                .map(|duration| duration.as_secs())
+                .unwrap_or(0);
+            if value > now {
+                return Some(Duration::from_secs(
+                    value.saturating_sub(now).saturating_add(1),
+                ));
+            }
+        }
+    }
+
+    if let Some(captures) = Regex::new(r"reset after (?:(\d+)h)?(?:(\d+)m)?(\d+(?:\.\d+)?)s")
+        .ok()?
+        .captures(body)
+    {
+        let hours = captures
+            .get(1)
+            .and_then(|value| value.as_str().parse::<u64>().ok())
+            .unwrap_or(0);
+        let minutes = captures
+            .get(2)
+            .and_then(|value| value.as_str().parse::<u64>().ok())
+            .unwrap_or(0);
+        let seconds = captures
+            .get(3)
+            .and_then(|value| value.as_str().parse::<f64>().ok())
+            .unwrap_or(0.0);
+        let millis = (((hours * 60 + minutes) * 60) as f64 * 1_000.0) + (seconds * 1_000.0);
+        if millis > 0.0 {
+            return Some(normalize_millis(millis.ceil() as u64));
+        }
+    }
+
+    if let Some(captures) = Regex::new(r"Please retry in ([0-9.]+)(ms|s)")
+        .ok()?
+        .captures(body)
+        && let Some(value) = captures
+            .get(1)
+            .and_then(|value| value.as_str().parse::<f64>().ok())
+            .filter(|value| value.is_finite() && *value > 0.0)
+    {
+        let units = captures.get(2).map(|value| value.as_str()).unwrap_or("s");
+        let millis = if units.eq_ignore_ascii_case("ms") {
+            value
+        } else {
+            value * 1_000.0
+        };
+        return Some(normalize_millis(millis.ceil() as u64));
+    }
+
+    if let Some(captures) = Regex::new(r#""retryDelay"\s*:\s*"([0-9.]+)(ms|s)""#)
+        .ok()?
+        .captures(body)
+        && let Some(value) = captures
+            .get(1)
+            .and_then(|value| value.as_str().parse::<f64>().ok())
+            .filter(|value| value.is_finite() && *value > 0.0)
+    {
+        let units = captures.get(2).map(|value| value.as_str()).unwrap_or("s");
+        let millis = if units.eq_ignore_ascii_case("ms") {
+            value
+        } else {
+            value * 1_000.0
+        };
+        return Some(normalize_millis(millis.ceil() as u64));
+    }
+
+    None
 }
 
 fn map_message_content(content: &[ContentItem]) -> Vec<GeminiPart> {
@@ -1203,4 +1400,103 @@ fn ensure_reasoning_item(reasoning_state: &mut Option<ReasoningState>) {
         accumulated_text: String::new(),
         signature: None,
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_tools;
+    use super::gemini_3_thinking_level;
+    use crate::client_common::tools::ResponsesApiTool;
+    use crate::client_common::tools::ToolSpec;
+    use crate::tools::spec::JsonSchema;
+    use codex_protocol::openai_models::ReasoningEffort;
+    use pretty_assertions::assert_eq;
+    use serde_json::json;
+    use std::collections::BTreeMap;
+
+    fn sample_tool() -> ToolSpec {
+        ToolSpec::Function(ResponsesApiTool {
+            name: "shell".to_string(),
+            description: "Run a shell command".to_string(),
+            strict: false,
+            parameters: JsonSchema::Object {
+                properties: BTreeMap::from([(
+                    "cmd".to_string(),
+                    JsonSchema::String { description: None },
+                )]),
+                required: Some(vec!["cmd".to_string()]),
+                additional_properties: Some(false.into()),
+            },
+        })
+    }
+
+    #[test]
+    fn gemini_tools_use_parameters_json_schema() {
+        let tools = build_tools(&[sample_tool()], false)
+            .expect("tools should build")
+            .expect("function tools should serialize");
+        let value = serde_json::to_value(&tools).expect("tools should serialize to json");
+
+        assert_eq!(
+            value,
+            json!([{
+                "functionDeclarations": [{
+                    "name": "shell",
+                    "description": "Run a shell command",
+                    "parametersJsonSchema": {
+                        "type": "object",
+                        "properties": {
+                            "cmd": { "type": "string" }
+                        },
+                        "required": ["cmd"]
+                    }
+                }]
+            }])
+        );
+    }
+
+    #[test]
+    fn claude_tools_use_legacy_parameters() {
+        let tools = build_tools(&[sample_tool()], true)
+            .expect("tools should build")
+            .expect("function tools should serialize");
+        let value = serde_json::to_value(&tools).expect("tools should serialize to json");
+
+        assert_eq!(
+            value,
+            json!([{
+                "functionDeclarations": [{
+                    "name": "shell",
+                    "description": "Run a shell command",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "cmd": { "type": "string" }
+                        },
+                        "required": ["cmd"]
+                    }
+                }]
+            }])
+        );
+    }
+
+    #[test]
+    fn gemini_3_thinking_levels_match_model_family() {
+        assert_eq!(
+            gemini_3_thinking_level("gemini-3-pro-preview", Some(ReasoningEffort::Low)),
+            "LOW".to_string()
+        );
+        assert_eq!(
+            gemini_3_thinking_level("gemini-3-pro-preview", Some(ReasoningEffort::Medium)),
+            "HIGH".to_string()
+        );
+        assert_eq!(
+            gemini_3_thinking_level("gemini-3-flash-preview", Some(ReasoningEffort::Minimal)),
+            "MINIMAL".to_string()
+        );
+        assert_eq!(
+            gemini_3_thinking_level("gemini-3-flash-preview", Some(ReasoningEffort::High)),
+            "HIGH".to_string()
+        );
+    }
 }

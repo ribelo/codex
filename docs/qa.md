@@ -68,6 +68,22 @@ Auth/CLI decisions:
   `codex logout antigravity`
 - `login status` reports Gemini and Antigravity OAuth availability even when no OpenAI auth exists
 
+Wire/runtime decisions:
+
+- use `/home/ribelo/projects/ribelo/pi-mono` as the current fork reference for Gemini Code Assist
+  and Antigravity behavior instead of the stale backup branch alone
+- Gemini Code Assist uses the newer cloud-sdk header set plus top-level `userAgent` and
+  `requestId` request fields
+- Gemini 3 models use `thinkingLevel`; older Gemini models keep token-budget-based thinking
+- Gemini tool declarations default to `parametersJsonSchema`, but Claude-on-Code-Assist keeps the
+  legacy `parameters` field
+- Antigravity uses a plain `userAgent = "antigravity"` in the request body, a versioned transport
+  `User-Agent` header controlled by `PI_AI_ANTIGRAVITY_VERSION`, and the dual system-instruction
+  prefix used in `pi-mono`
+- Google project resolution for Gemini and Antigravity should honor
+  `GOOGLE_CLOUD_PROJECT` / `GOOGLE_CLOUD_PROJECT_ID`, with `ANTIGRAVITY_PROJECT_ID` as an
+  Antigravity-specific override
+
 ### How should the built-in footer and `/statusline` relate?
 
 The built-in idle footer is the richer layout:

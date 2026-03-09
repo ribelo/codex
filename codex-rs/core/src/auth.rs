@@ -120,8 +120,8 @@ const REFRESH_TOKEN_UNKNOWN_MESSAGE: &str =
 const REFRESH_TOKEN_ACCOUNT_MISMATCH_MESSAGE: &str = "Your access token could not be refreshed because you have since logged out or signed in to another account. Please sign in again.";
 const REFRESH_TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
 pub const REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR: &str = "CODEX_REFRESH_TOKEN_URL_OVERRIDE";
-const GEMINI_PROJECT_REQUIRED_MESSAGE: &str = "Gemini requires a Google Cloud project. Run `codex login gemini` and supply a project ID with the Gemini API enabled.";
-const ANTIGRAVITY_PROJECT_REQUIRED_MESSAGE: &str = "Antigravity requires a Google Cloud project. Run `codex login antigravity` and supply a project ID with the Gemini API enabled.";
+const GEMINI_PROJECT_REQUIRED_MESSAGE: &str = "Gemini requires a Google Cloud project. Run `codex login gemini` and set `GOOGLE_CLOUD_PROJECT` or `GOOGLE_CLOUD_PROJECT_ID` when your account requires a workspace project.";
+const ANTIGRAVITY_PROJECT_REQUIRED_MESSAGE: &str = "Antigravity requires a Google Cloud project. Run `codex login antigravity` and set `ANTIGRAVITY_PROJECT_ID`, `GOOGLE_CLOUD_PROJECT`, or `GOOGLE_CLOUD_PROJECT_ID` when your account requires a workspace project.";
 const GOOGLE_ACCESS_TOKEN_LEEWAY_SECONDS: i64 = 300;
 const GEMINI_ONBOARD_MAX_ATTEMPTS: usize = 10;
 const GEMINI_ONBOARD_DELAY_MILLIS: u64 = 500;
@@ -1485,6 +1485,7 @@ impl AuthManager {
         index: usize,
         tokens: &GeminiTokenData,
     ) -> std::io::Result<String> {
+        let env_project_id = google_cloud_project_from_env();
         if let Some(project_id) = Self::resolve_project_id(tokens) {
             return Ok(project_id);
         }
@@ -1492,7 +1493,7 @@ impl AuthManager {
         let load_payload = load_managed_project(
             &crate::default_client::create_client(),
             &tokens.access_token,
-            tokens.project_id.as_deref(),
+            env_project_id.as_deref(),
         )
         .await?;
 
@@ -1505,11 +1506,21 @@ impl AuthManager {
                 return Ok(managed_clone);
             }
 
-            let tier_id = select_gemini_tier(&payload)
-                .ok_or_else(|| std::io::Error::other(GEMINI_PROJECT_REQUIRED_MESSAGE))?;
+            if payload.current_tier.is_some() {
+                if let Some(project_id) = env_project_id.clone() {
+                    let project_clone = project_id.clone();
+                    self.update_gemini_account(index, |account| {
+                        account.project_id = Some(project_id);
+                    })?;
+                    return Ok(project_clone);
+                }
+                return Err(std::io::Error::other(GEMINI_PROJECT_REQUIRED_MESSAGE));
+            }
+
+            let tier_id = select_gemini_tier(&payload).unwrap_or_else(|| "FREE".to_string());
             let is_free_tier =
                 tier_id.eq_ignore_ascii_case("FREE") || tier_id.eq_ignore_ascii_case("free-tier");
-            if !is_free_tier {
+            if !is_free_tier && env_project_id.is_none() {
                 return Err(std::io::Error::other(GEMINI_PROJECT_REQUIRED_MESSAGE));
             }
 
@@ -1517,7 +1528,7 @@ impl AuthManager {
                 &crate::default_client::create_client(),
                 &tokens.access_token,
                 &tier_id,
-                tokens.project_id.as_deref(),
+                env_project_id.as_deref(),
             )
             .await?
             {
@@ -1526,6 +1537,14 @@ impl AuthManager {
                     account.managed_project_id = Some(managed_id);
                 })?;
                 return Ok(managed_clone);
+            }
+
+            if let Some(project_id) = env_project_id.clone() {
+                let project_clone = project_id.clone();
+                self.update_gemini_account(index, |account| {
+                    account.project_id = Some(project_id);
+                })?;
+                return Ok(project_clone);
             }
         }
 
@@ -1537,15 +1556,14 @@ impl AuthManager {
         index: usize,
         tokens: &GeminiTokenData,
     ) -> std::io::Result<String> {
-        if let Ok(env_project) = env::var("ANTIGRAVITY_PROJECT_ID") {
-            let trimmed = env_project.trim();
-            if !trimmed.is_empty() {
-                let project = trimmed.to_string();
-                self.update_antigravity_account(index, |account| {
-                    account.project_id = Some(project.clone());
-                })?;
-                return Ok(project);
-            }
+        if let Some(project) =
+            nonempty_env("ANTIGRAVITY_PROJECT_ID").or_else(google_cloud_project_from_env)
+        {
+            let project_clone = project.clone();
+            self.update_antigravity_account(index, |account| {
+                account.project_id = Some(project);
+            })?;
+            return Ok(project_clone);
         }
 
         if let Some(project_id) = Self::resolve_project_id(tokens) {
@@ -1860,9 +1878,11 @@ struct GeminiTier {
 
 #[derive(Deserialize)]
 struct LoadCodeAssistPayload {
-    #[serde(default)]
+    #[serde(default, rename = "allowedTiers", alias = "tiers")]
     tiers: Option<Vec<GeminiTier>>,
-    #[serde(default)]
+    #[serde(default, rename = "currentTier")]
+    current_tier: Option<GeminiTier>,
+    #[serde(default, rename = "cloudaicompanionProject")]
     cloudaicompanion_project: Option<String>,
 }
 
@@ -1888,10 +1908,27 @@ struct OnboardUserProject {
 
 fn select_gemini_tier(payload: &LoadCodeAssistPayload) -> Option<String> {
     payload
-        .tiers
+        .current_tier
         .as_ref()
-        .and_then(|tiers| tiers.iter().find(|tier| tier.is_default.unwrap_or(false)))
         .and_then(|tier| tier.id.clone())
+        .or_else(|| {
+            payload
+                .tiers
+                .as_ref()
+                .and_then(|tiers| tiers.iter().find(|tier| tier.is_default.unwrap_or(false)))
+                .and_then(|tier| tier.id.clone())
+        })
+}
+
+fn nonempty_env(name: &str) -> Option<String> {
+    env::var(name)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn google_cloud_project_from_env() -> Option<String> {
+    nonempty_env("GOOGLE_CLOUD_PROJECT").or_else(|| nonempty_env("GOOGLE_CLOUD_PROJECT_ID"))
 }
 
 fn build_gemini_metadata(project_id: Option<&str>) -> Value {
@@ -2253,6 +2290,27 @@ mod tests {
             email: Some(format!("{label}@example.com")),
             expires_at: Some(Utc::now() + chrono::Duration::hours(1)),
         }
+    }
+
+    #[test]
+    fn load_code_assist_payload_supports_current_and_allowed_tiers() {
+        let payload: LoadCodeAssistPayload = serde_json::from_value(serde_json::json!({
+            "currentTier": { "id": "standard" },
+            "allowedTiers": [{ "id": "free", "isDefault": true }],
+            "cloudaicompanionProject": "managed-project",
+        }))
+        .expect("payload should deserialize");
+        assert_eq!(
+            payload.cloudaicompanion_project,
+            Some("managed-project".to_string())
+        );
+        assert_eq!(select_gemini_tier(&payload), Some("standard".to_string()));
+
+        let payload: LoadCodeAssistPayload = serde_json::from_value(serde_json::json!({
+            "tiers": [{ "id": "free-tier", "isDefault": true }],
+        }))
+        .expect("legacy payload should deserialize");
+        assert_eq!(select_gemini_tier(&payload), Some("free-tier".to_string()));
     }
 
     #[test]
