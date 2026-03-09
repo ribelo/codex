@@ -4237,6 +4237,14 @@ impl ChatComposer {
                 };
                 let available_width =
                     hint_rect.width.saturating_sub(FOOTER_INDENT_COLS as u16) as usize;
+                let status_line_candidate = footer_props.status_line_enabled
+                    && match footer_props.mode {
+                        FooterMode::ComposerEmpty => true,
+                        FooterMode::ComposerHasDraft => !footer_props.is_task_running,
+                        FooterMode::QuitShortcutReminder
+                        | FooterMode::ShortcutOverlay
+                        | FooterMode::EscHint => false,
+                    };
                 let status_line_active = uses_passive_footer_status_layout(&footer_props);
                 let combined_status_line = if status_line_active {
                     passive_footer_status_line(&footer_props).map(ratatui::prelude::Stylize::dim)
@@ -4346,9 +4354,11 @@ impl ChatComposer {
                     can_show_left_with_context(hint_rect, left_width, right_width);
                 let has_override =
                     self.footer_flash_visible() || self.footer_hint_override.is_some();
-                let single_line_layout = if has_override || status_line_active {
-                    None
-                } else if default_summary_active {
+                let single_line_layout = if has_override
+                    || status_line_candidate
+                    || status_line_active
+                    || default_summary_active
+                {
                     None
                 } else {
                     match footer_props.mode {
@@ -4371,12 +4381,22 @@ impl ChatComposer {
                         | FooterMode::ShortcutOverlay => None,
                     }
                 };
+                let generic_footer_active = !has_override
+                    && !status_line_candidate
+                    && !status_line_active
+                    && !default_summary_active
+                    && single_line_layout.is_none();
+                let default_single_line_active =
+                    matches!(single_line_layout, Some((SummaryLeft::Default, _)));
                 let show_right = if matches!(
                     footer_props.mode,
                     FooterMode::EscHint
                         | FooterMode::QuitShortcutReminder
                         | FooterMode::ShortcutOverlay
-                ) {
+                ) || status_line_candidate && !status_line_active
+                    || generic_footer_active
+                    || default_single_line_active
+                {
                     false
                 } else {
                     single_line_layout
@@ -4413,6 +4433,9 @@ impl ChatComposer {
                     if let Some(line) = truncated_status_line {
                         render_footer_line(hint_rect, buf, line);
                     }
+                } else if status_line_candidate {
+                    // A configured status-line override owns this footer row even
+                    // when the selected items are currently unavailable.
                 } else if let Some(line) = truncated_default_summary {
                     render_footer_line(hint_rect, buf, line);
                 } else {

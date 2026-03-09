@@ -1,7 +1,35 @@
 ---
 source: tui/src/chatwidget/tests.rs
+assertion_line: 9750
 expression: term.backend().vt100().screen().contents()
 ---
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 • I’m going to search the repo for where “Change Approved” is rendered to update
   that view.
 
@@ -14,4 +42,4 @@ expression: term.backend().vt100().screen().contents()
 
 › Summarize recent commits
 
-  • openai • gpt-5.3-codex                                           100% left
+  • openai/gpt-5.3-codex 100% left

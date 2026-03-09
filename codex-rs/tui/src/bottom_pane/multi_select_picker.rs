@@ -83,7 +83,8 @@ pub type CancelCallback = Box<dyn Fn(&AppEventSender) + Send + Sync>;
 
 /// Callback to generate an optional preview line based on current item states.
 /// Returns `None` to hide the preview area.
-pub type PreviewCallback = Box<dyn Fn(&[MultiSelectItem]) -> Option<Line<'static>> + Send + Sync>;
+pub type PreviewCallback =
+    Box<dyn Fn(&[MultiSelectItem], u16) -> Option<Line<'static>> + Send + Sync>;
 
 /// A single selectable item in the multi-select picker.
 ///
@@ -386,7 +387,7 @@ impl MultiSelectPicker {
         self.preview_line = self
             .preview_builder
             .as_ref()
-            .and_then(|builder| builder(&self.items));
+            .and_then(|builder| builder(&self.items, 80));
     }
 
     /// Closes the picker without confirming, invoking the `on_cancel` callback.
@@ -587,9 +588,13 @@ impl Renderable for MultiSelectPicker {
                 height: preview_area.height,
             };
             let max_preview_width = preview_area.width.saturating_sub(2) as usize;
-            let preview_line =
-                truncate_line_with_ellipsis_if_overflow(preview_line.clone(), max_preview_width);
-            preview_line.render(preview_area, buf);
+            let preview_line = self
+                .preview_builder
+                .as_ref()
+                .and_then(|builder| builder(&self.items, max_preview_width as u16))
+                .unwrap_or_else(|| preview_line.clone());
+            truncate_line_with_ellipsis_if_overflow(preview_line, max_preview_width)
+                .render(preview_area, buf);
             hint_area
         } else {
             footer_area
@@ -676,7 +681,7 @@ impl MultiSelectPickerBuilder {
     /// or `None` to hide the preview area.
     pub fn on_preview<F>(mut self, callback: F) -> Self
     where
-        F: Fn(&[MultiSelectItem]) -> Option<Line<'static>> + Send + Sync + 'static,
+        F: Fn(&[MultiSelectItem], u16) -> Option<Line<'static>> + Send + Sync + 'static,
     {
         self.preview_builder = Some(Box::new(callback));
         self
