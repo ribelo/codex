@@ -4283,6 +4283,7 @@ impl ChatComposer {
                 let built_in_footer_line = if default_summary_candidate {
                     default_footer_line(
                         &footer_props.default_summary,
+                        &footer_props.sandbox_policy,
                         footer_props.context_window_percent,
                         footer_props.context_window_used_tokens,
                         default_footer_width,

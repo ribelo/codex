@@ -6,11 +6,12 @@
 
 The built-in idle footer is the richer layout:
 
-- left: `project:branch +A/-D` when git data is available
+- left: colored sandbox dot, then `project:branch +A/-D` when git data is available
 - center: `provider • model • reasoning`, plus `• plan` in Plan mode
 - right: context text such as `50% left`
 
 `/statusline` remains a backward-compatible flat ordered override. It does not get left/center/right slots.
+The sandbox dot belongs to the built-in footer only, not to custom `/statusline` overrides.
 
 ### What should `/statusline` expose?
 
