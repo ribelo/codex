@@ -26,6 +26,7 @@ use codex_protocol::config_types::TrustLevel;
 use codex_protocol::config_types::WebSearchContextSize;
 use codex_protocol::config_types::WebSearchLocation;
 use codex_protocol::config_types::WebSearchToolConfig;
+use codex_protocol::openai_models::ModelMetadataOverrides;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use pretty_assertions::assert_eq;
@@ -219,13 +220,22 @@ location = { country = "US", city = "New York", timezone = "America/New_York" }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn config_read_ignores_bool_web_search_tool_config() -> Result<()> {
+async fn config_read_includes_model_metadata() -> Result<()> {
     let codex_home = TempDir::new()?;
     write_config(
         &codex_home,
         r#"
-[tools]
-web_search = true
+[model_metadata]
+display_name = "Root Display"
+supports_parallel_tool_calls = true
+
+[profiles.custom]
+model_context_window = 262144
+model_supports_reasoning_summaries = true
+
+[profiles.custom.model_metadata]
+display_name = "Profile Display"
+context_window = 262144
 "#,
     )?;
 
@@ -244,8 +254,26 @@ web_search = true
     )
     .await??;
     let ConfigReadResponse { config, .. } = to_response(resp)?;
+    let profile = config.profiles.get("custom").expect("profile present");
 
-    assert_eq!(config.tools.expect("tools present").web_search, None,);
+    assert_eq!(
+        config.model_metadata,
+        Some(ModelMetadataOverrides {
+            display_name: Some("Root Display".to_string()),
+            supports_parallel_tool_calls: Some(true),
+            ..Default::default()
+        })
+    );
+    assert_eq!(profile.model_context_window, Some(262_144));
+    assert_eq!(profile.model_supports_reasoning_summaries, Some(true));
+    assert_eq!(
+        profile.model_metadata,
+        Some(ModelMetadataOverrides {
+            display_name: Some("Profile Display".to_string()),
+            context_window: Some(262_144),
+            ..Default::default()
+        })
+    );
 
     Ok(())
 }

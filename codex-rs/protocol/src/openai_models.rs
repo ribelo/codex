@@ -4,7 +4,6 @@
 //! are used to preserve compatibility when older payloads omit newly introduced attributes.
 
 use std::collections::HashMap;
-use std::str::FromStr;
 
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -47,15 +46,6 @@ pub enum ReasoningEffort {
     Medium,
     High,
     XHigh,
-}
-
-impl FromStr for ReasoningEffort {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        serde_json::from_value(serde_json::Value::String(s.to_string()))
-            .map_err(|_| format!("invalid reasoning_effort: {s}"))
-    }
 }
 
 /// Canonical user-input modality tags advertised by a model.
@@ -239,6 +229,212 @@ const fn default_effective_context_window_percent() -> i64 {
     95
 }
 
+/// User-configurable overrides for model metadata.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Default, TS, JsonSchema)]
+pub struct ModelMetadataOverrides {
+    pub display_name: Option<String>,
+    pub description: Option<String>,
+    pub default_reasoning_level: Option<ReasoningEffort>,
+    pub supported_reasoning_levels: Option<Vec<ReasoningEffortPreset>>,
+    pub shell_type: Option<ConfigShellToolType>,
+    pub visibility: Option<ModelVisibility>,
+    pub supported_in_api: Option<bool>,
+    pub priority: Option<i32>,
+    pub availability_nux: Option<ModelAvailabilityNux>,
+    pub upgrade: Option<ModelInfoUpgrade>,
+    pub base_instructions: Option<String>,
+    pub model_messages: Option<ModelMessages>,
+    pub supports_reasoning_summaries: Option<bool>,
+    pub default_reasoning_summary: Option<ReasoningSummary>,
+    pub support_verbosity: Option<bool>,
+    pub default_verbosity: Option<Verbosity>,
+    pub apply_patch_tool_type: Option<ApplyPatchToolType>,
+    pub web_search_tool_type: Option<WebSearchToolType>,
+    pub truncation_policy: Option<TruncationPolicyConfig>,
+    pub supports_parallel_tool_calls: Option<bool>,
+    pub supports_image_detail_original: Option<bool>,
+    pub context_window: Option<i64>,
+    pub auto_compact_token_limit: Option<i64>,
+    pub effective_context_window_percent: Option<i64>,
+    pub experimental_supported_tools: Option<Vec<String>>,
+    pub input_modalities: Option<Vec<InputModality>>,
+    pub prefer_websockets: Option<bool>,
+}
+
+impl ModelMetadataOverrides {
+    pub fn merge(&mut self, other: &Self) {
+        if other.display_name.is_some() {
+            self.display_name = other.display_name.clone();
+        }
+        if other.description.is_some() {
+            self.description = other.description.clone();
+        }
+        if other.default_reasoning_level.is_some() {
+            self.default_reasoning_level = other.default_reasoning_level;
+        }
+        if other.supported_reasoning_levels.is_some() {
+            self.supported_reasoning_levels = other.supported_reasoning_levels.clone();
+        }
+        if other.shell_type.is_some() {
+            self.shell_type = other.shell_type;
+        }
+        if other.visibility.is_some() {
+            self.visibility = other.visibility;
+        }
+        if other.supported_in_api.is_some() {
+            self.supported_in_api = other.supported_in_api;
+        }
+        if other.priority.is_some() {
+            self.priority = other.priority;
+        }
+        if other.availability_nux.is_some() {
+            self.availability_nux = other.availability_nux.clone();
+        }
+        if other.upgrade.is_some() {
+            self.upgrade = other.upgrade.clone();
+        }
+        if other.base_instructions.is_some() {
+            self.base_instructions = other.base_instructions.clone();
+        }
+        if other.model_messages.is_some() {
+            self.model_messages = other.model_messages.clone();
+        }
+        if other.supports_reasoning_summaries.is_some() {
+            self.supports_reasoning_summaries = other.supports_reasoning_summaries;
+        }
+        if other.default_reasoning_summary.is_some() {
+            self.default_reasoning_summary = other.default_reasoning_summary;
+        }
+        if other.support_verbosity.is_some() {
+            self.support_verbosity = other.support_verbosity;
+        }
+        if other.default_verbosity.is_some() {
+            self.default_verbosity = other.default_verbosity;
+        }
+        if other.apply_patch_tool_type.is_some() {
+            self.apply_patch_tool_type = other.apply_patch_tool_type.clone();
+        }
+        if other.web_search_tool_type.is_some() {
+            self.web_search_tool_type = other.web_search_tool_type;
+        }
+        if other.truncation_policy.is_some() {
+            self.truncation_policy = other.truncation_policy;
+        }
+        if other.supports_parallel_tool_calls.is_some() {
+            self.supports_parallel_tool_calls = other.supports_parallel_tool_calls;
+        }
+        if other.supports_image_detail_original.is_some() {
+            self.supports_image_detail_original = other.supports_image_detail_original;
+        }
+        if other.context_window.is_some() {
+            self.context_window = other.context_window;
+        }
+        if other.auto_compact_token_limit.is_some() {
+            self.auto_compact_token_limit = other.auto_compact_token_limit;
+        }
+        if other.effective_context_window_percent.is_some() {
+            self.effective_context_window_percent = other.effective_context_window_percent;
+        }
+        if other.experimental_supported_tools.is_some() {
+            self.experimental_supported_tools = other.experimental_supported_tools.clone();
+        }
+        if other.input_modalities.is_some() {
+            self.input_modalities = other.input_modalities.clone();
+        }
+        if other.prefer_websockets.is_some() {
+            self.prefer_websockets = other.prefer_websockets;
+        }
+    }
+
+    pub fn apply_to(&self, model: &mut ModelInfo) {
+        if let Some(display_name) = &self.display_name {
+            model.display_name = display_name.clone();
+        }
+        if let Some(description) = &self.description {
+            model.description = Some(description.clone());
+        }
+        if let Some(default_reasoning_level) = self.default_reasoning_level {
+            model.default_reasoning_level = Some(default_reasoning_level);
+        }
+        if let Some(supported_reasoning_levels) = &self.supported_reasoning_levels {
+            model.supported_reasoning_levels = supported_reasoning_levels.clone();
+        }
+        if let Some(shell_type) = self.shell_type {
+            model.shell_type = shell_type;
+        }
+        if let Some(visibility) = self.visibility {
+            model.visibility = visibility;
+        }
+        if let Some(supported_in_api) = self.supported_in_api {
+            model.supported_in_api = supported_in_api;
+        }
+        if let Some(priority) = self.priority {
+            model.priority = priority;
+        }
+        if let Some(availability_nux) = &self.availability_nux {
+            model.availability_nux = Some(availability_nux.clone());
+        }
+        if let Some(upgrade) = &self.upgrade {
+            model.upgrade = Some(upgrade.clone());
+        }
+        if let Some(base_instructions) = &self.base_instructions {
+            model.base_instructions = base_instructions.clone();
+        }
+        if let Some(model_messages) = &self.model_messages {
+            model.model_messages = Some(model_messages.clone());
+        }
+        if let Some(supports_reasoning_summaries) = self.supports_reasoning_summaries {
+            model.supports_reasoning_summaries = supports_reasoning_summaries;
+        }
+        if let Some(default_reasoning_summary) = self.default_reasoning_summary {
+            model.default_reasoning_summary = default_reasoning_summary;
+        }
+        if let Some(support_verbosity) = self.support_verbosity {
+            model.support_verbosity = support_verbosity;
+        }
+        if let Some(default_verbosity) = self.default_verbosity {
+            model.default_verbosity = Some(default_verbosity);
+        }
+        if let Some(apply_patch_tool_type) = &self.apply_patch_tool_type {
+            model.apply_patch_tool_type = Some(apply_patch_tool_type.clone());
+        }
+        if let Some(web_search_tool_type) = self.web_search_tool_type {
+            model.web_search_tool_type = web_search_tool_type;
+        }
+        if let Some(truncation_policy) = self.truncation_policy {
+            model.truncation_policy = truncation_policy;
+        }
+        if let Some(supports_parallel_tool_calls) = self.supports_parallel_tool_calls {
+            model.supports_parallel_tool_calls = supports_parallel_tool_calls;
+        }
+        if let Some(supports_image_detail_original) = self.supports_image_detail_original {
+            model.supports_image_detail_original = supports_image_detail_original;
+        }
+        if let Some(context_window) = self.context_window {
+            model.context_window = Some(context_window);
+        }
+        if let Some(auto_compact_token_limit) = self.auto_compact_token_limit {
+            model.auto_compact_token_limit = Some(auto_compact_token_limit);
+        }
+        if let Some(effective_context_window_percent) = self.effective_context_window_percent {
+            model.effective_context_window_percent = effective_context_window_percent;
+        }
+        if let Some(experimental_supported_tools) = &self.experimental_supported_tools {
+            model.experimental_supported_tools = experimental_supported_tools.clone();
+        }
+        if let Some(input_modalities) = &self.input_modalities {
+            model.input_modalities = input_modalities.clone();
+        }
+        if let Some(prefer_websockets) = self.prefer_websockets {
+            model.prefer_websockets = prefer_websockets;
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
 /// Model metadata returned by the Codex backend `/models` endpoint.
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, TS, JsonSchema)]
 pub struct ModelInfo {
@@ -289,8 +485,6 @@ pub struct ModelInfo {
     #[schemars(skip)]
     #[ts(skip)]
     pub used_fallback_model_metadata: bool,
-    #[serde(default)]
-    pub supports_search_tool: bool,
 }
 
 impl ModelInfo {
@@ -546,7 +740,6 @@ mod tests {
             experimental_supported_tools: vec![],
             input_modalities: default_input_modalities(),
             used_fallback_model_metadata: false,
-            supports_search_tool: false,
         }
     }
 
@@ -559,17 +752,50 @@ mod tests {
     }
 
     #[test]
-    fn reasoning_effort_from_str_accepts_known_values() {
-        assert_eq!("high".parse(), Ok(ReasoningEffort::High));
-        assert_eq!("minimal".parse(), Ok(ReasoningEffort::Minimal));
+    fn model_metadata_overrides_merge_last_writer_wins() {
+        let mut base = ModelMetadataOverrides {
+            display_name: Some("Base".to_string()),
+            supports_parallel_tool_calls: Some(false),
+            ..Default::default()
+        };
+        let overlay = ModelMetadataOverrides {
+            supports_parallel_tool_calls: Some(true),
+            context_window: Some(262_144),
+            ..Default::default()
+        };
+
+        base.merge(&overlay);
+
+        assert_eq!(
+            base,
+            ModelMetadataOverrides {
+                display_name: Some("Base".to_string()),
+                supports_parallel_tool_calls: Some(true),
+                context_window: Some(262_144),
+                ..Default::default()
+            }
+        );
     }
 
     #[test]
-    fn reasoning_effort_from_str_rejects_unknown_values() {
-        assert_eq!(
-            "unsupported".parse::<ReasoningEffort>(),
-            Err("invalid reasoning_effort: unsupported".to_string())
-        );
+    fn model_metadata_overrides_apply_to_model_info() {
+        let mut model = test_model(None);
+        let overrides = ModelMetadataOverrides {
+            display_name: Some("Custom".to_string()),
+            supports_reasoning_summaries: Some(true),
+            context_window: Some(128_000),
+            default_reasoning_level: Some(ReasoningEffort::High),
+            ..Default::default()
+        };
+
+        overrides.apply_to(&mut model);
+
+        let mut expected = test_model(None);
+        expected.display_name = "Custom".to_string();
+        expected.supports_reasoning_summaries = true;
+        expected.context_window = Some(128_000);
+        expected.default_reasoning_level = Some(ReasoningEffort::High);
+        assert_eq!(model, expected);
     }
 
     #[test]
@@ -754,7 +980,6 @@ mod tests {
         assert_eq!(model.availability_nux, None);
         assert!(!model.supports_image_detail_original);
         assert_eq!(model.web_search_tool_type, WebSearchToolType::Text);
-        assert!(!model.supports_search_tool);
     }
 
     #[test]

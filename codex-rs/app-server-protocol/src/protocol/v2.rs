@@ -43,6 +43,7 @@ use codex_protocol::models::PermissionProfile as CorePermissionProfile;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::InputModality;
 use codex_protocol::openai_models::ModelAvailabilityNux as CoreModelAvailabilityNux;
+use codex_protocol::openai_models::ModelMetadataOverrides;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::openai_models::default_input_modalities;
 use codex_protocol::parse_command::ParsedCommand as CoreParsedCommand;
@@ -591,6 +592,8 @@ impl<'de> Deserialize<'de> for DynamicToolSpec {
 pub struct ProfileV2 {
     pub model: Option<String>,
     pub model_provider: Option<String>,
+    pub model_context_window: Option<i64>,
+    pub model_auto_compact_token_limit: Option<i64>,
     #[experimental(nested)]
     pub approval_policy: Option<AskForApproval>,
     /// [UNSTABLE] Optional profile-level override for where approval requests
@@ -602,6 +605,8 @@ pub struct ProfileV2 {
     pub model_reasoning_effort: Option<ReasoningEffort>,
     pub model_reasoning_summary: Option<ReasoningSummary>,
     pub model_verbosity: Option<Verbosity>,
+    pub model_supports_reasoning_summaries: Option<bool>,
+    pub model_metadata: Option<ModelMetadataOverrides>,
     pub web_search: Option<WebSearchMode>,
     pub tools: Option<ToolsV2>,
     pub chatgpt_base_url: Option<String>,
@@ -694,6 +699,7 @@ pub struct Config {
     pub review_model: Option<String>,
     pub model_context_window: Option<i64>,
     pub model_auto_compact_token_limit: Option<i64>,
+    pub model_metadata: Option<ModelMetadataOverrides>,
     pub model_provider: Option<String>,
     #[experimental(nested)]
     pub approval_policy: Option<AskForApproval>,
@@ -717,6 +723,7 @@ pub struct Config {
     pub model_reasoning_effort: Option<ReasoningEffort>,
     pub model_reasoning_summary: Option<ReasoningSummary>,
     pub model_verbosity: Option<Verbosity>,
+    pub model_supports_reasoning_summaries: Option<bool>,
     pub service_tier: Option<ServiceTier>,
     pub analytics: Option<AnalyticsConfig>,
     #[experimental("config/read.apps")]

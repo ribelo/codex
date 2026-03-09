@@ -1204,6 +1204,7 @@ pub struct ConfigToml {
     /// Token usage threshold triggering auto-compaction of conversation history.
     pub model_auto_compact_token_limit: Option<i64>,
 
+    /// Optional model metadata overrides applied to the configured model.
     pub model_metadata: Option<ModelMetadataOverrides>,
 
     /// Default approval policy for executing commands.

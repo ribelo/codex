@@ -127,6 +127,45 @@ Optional Bedrock notes:
 Some features remain Responses-only. Conversation compaction, memory summarization, realtime, and
 Responses WebSocket transport are only available with `wire_api = "responses"`.
 
+## Custom model metadata
+
+Custom models are a normal supported case in this fork. If a model slug is not present in a
+catalog, Codex now uses provider-inferred defaults instead of treating that as a warning-worthy
+failure.
+
+When you know more about a model, set its metadata directly in config or in a profile:
+
+```toml
+[model_metadata]
+context_window = 262144
+supports_parallel_tool_calls = true
+shell_type = "shell_command"
+
+[profiles.kimi-k2-5]
+model_provider = "kimi"
+model = "k2p5"
+
+[profiles.kimi-k2-5.model_metadata]
+display_name = "Kimi K2.5"
+context_window = 262144
+supports_reasoning_summaries = true
+```
+
+`model_metadata` mirrors the public model metadata surface used internally by Codex, including
+fields like `display_name`, `context_window`, `truncation_policy`, `input_modalities`,
+`supports_parallel_tool_calls`, `support_verbosity`, `default_verbosity`, and tool-type defaults.
+
+Legacy compatibility aliases remain supported for the most common metadata overrides:
+
+```toml
+model_context_window = 262144
+model_auto_compact_token_limit = 200000
+model_supports_reasoning_summaries = true
+```
+
+The same aliases now work inside profiles as well. `model_catalog_json` remains optional for exact
+catalog/picker data, but it is no longer the normal path for custom models.
+
 ## Connecting to MCP servers
 
 Codex can connect to MCP servers configured in `~/.codex/config.toml`. See the configuration reference for the latest MCP server options:
