@@ -15,6 +15,7 @@ use reqwest::RequestBuilder;
 use url::Url;
 
 pub(crate) mod anthropic;
+pub(crate) mod bedrock;
 pub(crate) mod chat;
 pub(crate) mod gemini;
 

@@ -1794,6 +1794,8 @@ async fn azure_responses_request_includes_store_and_reasoning_ids() {
         version: None,
         beta: None,
         use_bearer_auth: false,
+        aws_region: None,
+        aws_profile: None,
         query_params: None,
         http_headers: None,
         env_http_headers: None,
@@ -2398,6 +2400,8 @@ async fn azure_overrides_assign_properties_used_for_responses_url() {
         version: None,
         beta: None,
         use_bearer_auth: false,
+        aws_region: None,
+        aws_profile: None,
         http_headers: Some(std::collections::HashMap::from([(
             "Custom-Header".to_string(),
             "Value".to_string(),
@@ -2486,6 +2490,8 @@ async fn env_var_overrides_loaded_auth() {
         version: None,
         beta: None,
         use_bearer_auth: false,
+        aws_region: None,
+        aws_profile: None,
         http_headers: Some(std::collections::HashMap::from([(
             "Custom-Header".to_string(),
             "Value".to_string(),

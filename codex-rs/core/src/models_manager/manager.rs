@@ -509,6 +509,8 @@ mod tests {
             version: None,
             beta: None,
             use_bearer_auth: false,
+            aws_region: None,
+            aws_profile: None,
             query_params: None,
             http_headers: None,
             env_http_headers: None,

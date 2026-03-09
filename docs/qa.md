@@ -6,10 +6,10 @@
 
 Keep upstream’s canonical config shape: `model_provider` selects the provider and `model` stays a
 raw model slug. Restore additional protocols additively through `wire_api = "chat" |
-"anthropic" | "gemini"`.
+"anthropic" | "gemini" | "bedrock"`.
 
 Built-in native providers are `anthropic` and `gemini`. Custom providers can use `chat`,
-`responses`, `anthropic`, or `gemini` depending on the endpoint they expose.
+`responses`, `anthropic`, `gemini`, or `bedrock` depending on the endpoint they expose.
 
 Non-Responses providers do not use remote `/models` discovery. They require an explicit `model`
 name and only use `model_catalog` metadata when the user provides it.
@@ -22,6 +22,23 @@ Native compatibility knobs stay small and protocol-specific:
 
 Responses-only features stay explicit. Conversation compaction, memory summarization, realtime,
 and websocket transport are only supported when `wire_api = "responses"`.
+
+### How should Bedrock fit the restored provider architecture?
+
+Bedrock stays custom-provider-only in v1. Do not add a built-in `model_provider = "bedrock"`
+entry.
+
+Use the native AWS Rust SDK `ConverseStream` path with `wire_api = "bedrock"`. Bedrock auth uses
+the AWS credential chain plus optional `aws_region` and `aws_profile` provider fields; it does not
+use `env_key`, bearer tokens, query params, or custom auth headers.
+
+Bedrock-specific behavior:
+
+- `base_url` is only an endpoint override for LocalStack or private gateways
+- explicit `model` is required and `/models` discovery is skipped
+- Claude-on-Bedrock model ids get Anthropic-like fallback metadata
+- `ServiceTier::Fast` maps to Bedrock `priority`, and `ServiceTier::Flex` maps to Bedrock `flex`
+- structured output uses Bedrock Converse `output_config` with a JSON schema string
 
 ### How should the built-in footer and `/statusline` relate?
 

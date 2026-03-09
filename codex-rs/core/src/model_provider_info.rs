@@ -45,6 +45,8 @@ pub enum WireApi {
     Anthropic,
     /// Gemini `streamGenerateContent` SSE API.
     Gemini,
+    /// Amazon Bedrock `ConverseStream` API.
+    Bedrock,
 }
 
 impl WireApi {
@@ -54,6 +56,7 @@ impl WireApi {
             Self::Chat => "chat",
             Self::Anthropic => "anthropic",
             Self::Gemini => "gemini",
+            Self::Bedrock => "bedrock",
         }
     }
 }
@@ -69,9 +72,10 @@ impl<'de> Deserialize<'de> for WireApi {
             "chat" => Ok(Self::Chat),
             "anthropic" => Ok(Self::Anthropic),
             "gemini" => Ok(Self::Gemini),
+            "bedrock" => Ok(Self::Bedrock),
             _ => Err(serde::de::Error::unknown_variant(
                 &value,
-                &["responses", "chat", "anthropic", "gemini"],
+                &["responses", "chat", "anthropic", "gemini", "bedrock"],
             )),
         }
     }
@@ -112,6 +116,12 @@ pub struct ModelProviderInfo {
     /// specific API key header.
     #[serde(default)]
     pub use_bearer_auth: bool,
+
+    /// AWS region override used by Bedrock providers.
+    pub aws_region: Option<String>,
+
+    /// AWS profile override used by Bedrock providers.
+    pub aws_profile: Option<String>,
 
     /// Optional query parameters to append to the base URL.
     pub query_params: Option<HashMap<String, String>>,
@@ -286,6 +296,8 @@ impl ModelProviderInfo {
             version: None,
             beta: None,
             use_bearer_auth: false,
+            aws_region: None,
+            aws_profile: None,
             query_params: None,
             http_headers: Some(
                 [("version".to_string(), env!("CARGO_PKG_VERSION").to_string())]
@@ -353,6 +365,8 @@ pub fn built_in_model_providers() -> HashMap<String, ModelProviderInfo> {
                 version: Some("2023-06-01".to_string()),
                 beta: None,
                 use_bearer_auth: false,
+                aws_region: None,
+                aws_profile: None,
                 query_params: None,
                 http_headers: None,
                 env_http_headers: None,
@@ -375,6 +389,8 @@ pub fn built_in_model_providers() -> HashMap<String, ModelProviderInfo> {
                 version: None,
                 beta: None,
                 use_bearer_auth: false,
+                aws_region: None,
+                aws_profile: None,
                 query_params: None,
                 http_headers: None,
                 env_http_headers: None,
@@ -429,6 +445,8 @@ pub fn create_oss_provider_with_base_url(base_url: &str, wire_api: WireApi) -> M
         version: None,
         beta: None,
         use_bearer_auth: false,
+        aws_region: None,
+        aws_profile: None,
         query_params: None,
         http_headers: None,
         env_http_headers: None,
@@ -461,6 +479,8 @@ base_url = "http://localhost:11434/v1"
             version: None,
             beta: None,
             use_bearer_auth: false,
+            aws_region: None,
+            aws_profile: None,
             query_params: None,
             http_headers: None,
             env_http_headers: None,
@@ -493,6 +513,8 @@ query_params = { api-version = "2025-04-01-preview" }
             version: None,
             beta: None,
             use_bearer_auth: false,
+            aws_region: None,
+            aws_profile: None,
             query_params: Some(maplit::hashmap! {
                 "api-version".to_string() => "2025-04-01-preview".to_string(),
             }),
@@ -528,6 +550,8 @@ env_http_headers = { "X-Example-Env-Header" = "EXAMPLE_ENV_VAR" }
             version: None,
             beta: None,
             use_bearer_auth: false,
+            aws_region: None,
+            aws_profile: None,
             query_params: None,
             http_headers: Some(maplit::hashmap! {
                 "X-Example-Header".to_string() => "example-value".to_string(),
@@ -557,6 +581,21 @@ wire_api = "chat"
 
         let provider = toml::from_str::<ModelProviderInfo>(provider_toml).unwrap();
         assert_eq!(provider.wire_api, WireApi::Chat);
+    }
+
+    #[test]
+    fn test_deserialize_bedrock_wire_api() {
+        let provider_toml = r#"
+name = "Bedrock"
+wire_api = "bedrock"
+aws_region = "us-east-1"
+aws_profile = "sandbox"
+        "#;
+
+        let provider = toml::from_str::<ModelProviderInfo>(provider_toml).unwrap();
+        assert_eq!(provider.wire_api, WireApi::Bedrock);
+        assert_eq!(provider.aws_region.as_deref(), Some("us-east-1"));
+        assert_eq!(provider.aws_profile.as_deref(), Some("sandbox"));
     }
 
     #[test]
