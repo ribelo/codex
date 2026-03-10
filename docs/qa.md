@@ -1,5 +1,19 @@
 # QA
 
+## 2026-03-10
+
+### How should Tau's Deep agent live in this Codex repo?
+
+Keep it as a project-defined agent in `.codex/config.toml`, not a Rust built-in.
+
+Implementation decisions:
+
+- expose it as `deep` through the project agent registry
+- give it its own prompt file under `.codex/agents/prompts/deep.md`
+- set `model_reasoning_effort = "high"` to preserve the Deep mode behavior
+- do not hard-wire a provider or model in the project role so the agent still works with the
+  caller's current provider/model selection
+
 ## 2026-03-09
 
 ### How should restored non-Responses providers fit upstream config?
