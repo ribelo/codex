@@ -159,6 +159,8 @@ pub enum Feature {
     DefaultModeRequestUserInput,
     /// Enable automatic review for approval prompts.
     GuardianApproval,
+    /// Allow the main agent to invoke the built-in review tool.
+    ReviewTool,
     /// Enable collaboration modes (Plan, Default).
     /// Kept for config backward compatibility; behavior is always collaboration-modes-enabled.
     CollaborationModes,
@@ -763,6 +765,16 @@ pub const FEATURES: &[FeatureSpec] = &[
             name: "Automatic approval review",
             menu_description: "Dispatch `on-request` approval prompts (for e.g. sandbox escapes or blocked network access) to a carefully-prompted security reviewer subagent rather than blocking the agent on your input.",
             announcement: "",
+        },
+        default_enabled: false,
+    },
+    FeatureSpec {
+        id: Feature::ReviewTool,
+        key: "review_tool",
+        stage: Stage::Experimental {
+            name: "Review tool",
+            menu_description: "Expose a main-agent `review` tool that asks the built-in reviewer for a second opinion during a turn.",
+            announcement: "NEW: Review tool lets Codex request a built-in code review during a turn. Enable in /experimental and restart Codex!",
         },
         default_enabled: false,
     },

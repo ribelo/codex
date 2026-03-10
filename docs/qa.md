@@ -145,3 +145,19 @@ Keep all existing item ids working and add additive items for:
 - `git-summary`
 
 The `/statusline` preview must show the real built-in footer when no override is set.
+
+### How should reviewer delegation work from the main agent?
+
+Prefer a first-class main-agent `review` tool over a dedicated reviewer subagent role.
+
+Implementation decisions:
+
+- add an experimental `review_tool` feature that exposes `review` only to top-level/main-agent
+  sessions
+- keep `/review` as the standalone review-mode workflow with its existing lifecycle events and
+  rollout/history behavior
+- share the actual reviewer-child execution path between `/review` and the tool so both use the
+  same built-in reviewer delegate and `review_model` override
+- the `review` tool returns JSON-serialized `ReviewOutputEvent` data and must not emit
+  `EnteredReviewMode` / `ExitedReviewMode` events or write review history artifacts into the main
+  thread

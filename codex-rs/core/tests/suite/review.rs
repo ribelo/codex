@@ -1,6 +1,7 @@
 use codex_core::CodexThread;
 use codex_core::REVIEW_PROMPT;
 use codex_core::config::Config;
+use codex_core::features::Feature;
 use codex_core::review_format::render_review_output_text;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
@@ -19,9 +20,15 @@ use codex_protocol::protocol::RolloutLine;
 use codex_protocol::user_input::UserInput;
 use core_test_support::load_sse_fixture_with_id_from_str;
 use core_test_support::responses::ResponseMock;
+use core_test_support::responses::ev_assistant_message;
+use core_test_support::responses::ev_completed;
+use core_test_support::responses::ev_function_call;
+use core_test_support::responses::ev_response_created;
 use core_test_support::responses::mount_sse_sequence;
+use core_test_support::responses::sse;
 use core_test_support::responses::start_mock_server;
 use core_test_support::skip_if_no_network;
+use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
 use pretty_assertions::assert_eq;
@@ -868,6 +875,161 @@ async fn review_uses_overridden_cwd_for_base_branch_merge_base() {
         saw_merge_base_sha,
         "expected review prompt to include merge-base sha {head_sha}"
     );
+
+    let _codex_home_guard = codex_home;
+    server.verify().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn review_tool_returns_structured_output_without_review_mode_events() {
+    skip_if_no_network!();
+
+    let call_id = "review-tool-call";
+    let review_args = serde_json::json!({
+        "type": "commit",
+        "sha": "abc123",
+        "title": "Tighten tests",
+    })
+    .to_string();
+    let review_json = serde_json::json!({
+        "findings": [
+            {
+                "title": "Missing regression coverage",
+                "body": "Add a test for the failure path before landing this change.",
+                "confidence_score": 0.82,
+                "priority": 1,
+                "code_location": {
+                    "absolute_file_path": "/tmp/review_tool.rs",
+                    "line_range": {"start": 12, "end": 18}
+                }
+            }
+        ],
+        "overall_correctness": "needs_attention",
+        "overall_explanation": "The change is close, but it still needs a regression test.",
+        "overall_confidence_score": 0.77
+    })
+    .to_string();
+    let expected_output = ReviewOutputEvent {
+        findings: vec![ReviewFinding {
+            title: "Missing regression coverage".to_string(),
+            body: "Add a test for the failure path before landing this change.".to_string(),
+            confidence_score: 0.82,
+            priority: 1,
+            code_location: ReviewCodeLocation {
+                absolute_file_path: PathBuf::from("/tmp/review_tool.rs"),
+                line_range: ReviewLineRange { start: 12, end: 18 },
+            },
+        }],
+        overall_correctness: "needs_attention".to_string(),
+        overall_explanation: "The change is close, but it still needs a regression test."
+            .to_string(),
+        overall_confidence_score: 0.77,
+    };
+
+    let server = start_mock_server().await;
+    let request_log = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_response_created("resp-1"),
+                ev_function_call(call_id, "review", &review_args),
+                ev_completed("resp-1"),
+            ]),
+            sse(vec![
+                ev_response_created("resp-2"),
+                ev_assistant_message("review-msg-1", &review_json),
+                ev_completed("resp-2"),
+            ]),
+            sse(vec![
+                ev_response_created("resp-3"),
+                ev_assistant_message("msg-1", "review acknowledged"),
+                ev_completed("resp-3"),
+            ]),
+        ],
+    )
+    .await;
+
+    let base_url = format!("{}/v1", server.uri());
+    let codex_home = Arc::new(TempDir::new().unwrap());
+    let mut builder = test_codex()
+        .with_home(codex_home.clone())
+        .with_model("gpt-5.1-codex")
+        .with_config(move |config| {
+            config.model_provider.base_url = Some(base_url);
+            config
+                .features
+                .enable(Feature::ReviewTool)
+                .expect("enable review tool");
+            config.review_model = Some("gpt-5.1".to_string());
+        });
+    let TestCodex {
+        codex,
+        cwd,
+        session_configured,
+        ..
+    } = builder.build(&server).await.expect("build test codex");
+
+    codex
+        .submit(Op::UserTurn {
+            items: vec![UserInput::Text {
+                text: "Please sanity-check this patch.".to_string(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            cwd: cwd.path().to_path_buf(),
+            approval_policy: codex_protocol::protocol::AskForApproval::Never,
+            sandbox_policy: codex_protocol::protocol::SandboxPolicy::DangerFullAccess,
+            model: session_configured.model.clone(),
+            effort: None,
+            summary: None,
+            service_tier: None,
+            collaboration_mode: None,
+            personality: None,
+        })
+        .await
+        .expect("submit turn");
+
+    let mut saw_entered_review_mode = false;
+    let mut saw_exited_review_mode = false;
+    let mut saw_turn_aborted = false;
+    loop {
+        match wait_for_event(&codex, |_| true).await {
+            EventMsg::EnteredReviewMode(_) => saw_entered_review_mode = true,
+            EventMsg::ExitedReviewMode(_) => saw_exited_review_mode = true,
+            EventMsg::TurnAborted(_) => saw_turn_aborted = true,
+            EventMsg::TurnComplete(_) => break,
+            _ => {}
+        }
+    }
+
+    assert!(
+        !saw_entered_review_mode,
+        "review tool should not emit EnteredReviewMode"
+    );
+    assert!(
+        !saw_exited_review_mode,
+        "review tool should not emit ExitedReviewMode"
+    );
+    assert!(
+        !saw_turn_aborted,
+        "review tool should not abort the active turn"
+    );
+
+    let requests = request_log.requests();
+    assert_eq!(requests.len(), 3);
+    assert_eq!(
+        requests[0].body_json()["model"].as_str(),
+        Some("gpt-5.1-codex")
+    );
+    assert_eq!(requests[1].body_json()["model"].as_str(), Some("gpt-5.1"));
+    let (content, success) = requests[2]
+        .function_call_output_content_and_success(call_id)
+        .expect("review tool output");
+    assert_eq!(success, Some(true));
+    let content = content.expect("review tool output content");
+    let output: ReviewOutputEvent =
+        serde_json::from_str(&content).expect("deserialize review tool output");
+    assert_eq!(output, expected_output);
 
     let _codex_home_guard = codex_home;
     server.verify().await;

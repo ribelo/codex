@@ -110,6 +110,7 @@ pub(crate) struct ToolsConfig {
     pub artifact_tools: bool,
     pub request_user_input: bool,
     pub default_mode_request_user_input: bool,
+    pub review_tool: bool,
     pub experimental_supported_tools: Vec<String>,
     pub agent_jobs_tools: bool,
     pub agent_jobs_worker_tools: bool,
@@ -140,6 +141,8 @@ impl ToolsConfig {
         let include_request_user_input = !matches!(session_source, SessionSource::SubAgent(_));
         let include_default_mode_request_user_input =
             include_request_user_input && features.enabled(Feature::DefaultModeRequestUserInput);
+        let include_review_tool = features.enabled(Feature::ReviewTool)
+            && !matches!(session_source, SessionSource::SubAgent(_));
         let include_search_tool = features.enabled(Feature::Apps);
         let include_artifact_tools =
             features.enabled(Feature::Artifact) && codex_artifacts::can_manage_artifact_runtime();
@@ -215,6 +218,7 @@ impl ToolsConfig {
             artifact_tools: include_artifact_tools,
             request_user_input: include_request_user_input,
             default_mode_request_user_input: include_default_mode_request_user_input,
+            review_tool: include_review_tool,
             experimental_supported_tools: model_info.experimental_supported_tools.clone(),
             agent_jobs_tools: include_agent_jobs,
             agent_jobs_worker_tools,
@@ -1196,6 +1200,62 @@ fn create_request_permissions_tool() -> ToolSpec {
     })
 }
 
+fn create_review_tool() -> ToolSpec {
+    let properties = BTreeMap::from([
+        (
+            "type".to_string(),
+            JsonSchema::String {
+                description: Some(
+                    "Review target. Use one of: uncommitted_changes, base_branch, commit, custom."
+                        .to_string(),
+                ),
+            },
+        ),
+        (
+            "branch".to_string(),
+            JsonSchema::String {
+                description: Some(
+                    "Base branch to review against when type is base_branch.".to_string(),
+                ),
+            },
+        ),
+        (
+            "sha".to_string(),
+            JsonSchema::String {
+                description: Some("Commit SHA to review when type is commit.".to_string()),
+            },
+        ),
+        (
+            "title".to_string(),
+            JsonSchema::String {
+                description: Some(
+                    "Optional human-readable commit title when type is commit.".to_string(),
+                ),
+            },
+        ),
+        (
+            "instructions".to_string(),
+            JsonSchema::String {
+                description: Some(
+                    "Review instructions to pass to the reviewer when type is custom.".to_string(),
+                ),
+            },
+        ),
+    ]);
+
+    ToolSpec::Function(ResponsesApiTool {
+        name: "review".to_string(),
+        description: "Ask the built-in reviewer for a second opinion on code changes. Returns a JSON-serialized ReviewOutputEvent with prioritized findings."
+            .to_string(),
+        strict: false,
+        parameters: JsonSchema::Object {
+            properties,
+            required: Some(vec!["type".to_string()]),
+            additional_properties: Some(false.into()),
+        },
+    })
+}
+
 fn create_close_agent_tool() -> ToolSpec {
     let mut properties = BTreeMap::new();
     properties.insert(
@@ -2000,6 +2060,7 @@ pub(crate) fn build_specs(
     use crate::tools::handlers::ReadFileHandler;
     use crate::tools::handlers::RequestPermissionsHandler;
     use crate::tools::handlers::RequestUserInputHandler;
+    use crate::tools::handlers::ReviewHandler;
     use crate::tools::handlers::SearchToolBm25Handler;
     use crate::tools::handlers::ShellCommandHandler;
     use crate::tools::handlers::ShellHandler;
@@ -2023,6 +2084,7 @@ pub(crate) fn build_specs(
     let request_user_input_handler = Arc::new(RequestUserInputHandler {
         default_mode_request_user_input: config.default_mode_request_user_input,
     });
+    let review_handler = Arc::new(ReviewHandler);
     let search_tool_handler = Arc::new(SearchToolBm25Handler);
     let code_mode_handler = Arc::new(CodeModeHandler);
     let js_repl_handler = Arc::new(JsReplHandler);
@@ -2178,6 +2240,16 @@ pub(crate) fn build_specs(
             config.code_mode_enabled,
         );
         builder.register_handler("request_permissions", request_permissions_handler);
+    }
+
+    if config.review_tool {
+        push_tool_spec(
+            &mut builder,
+            create_review_tool(),
+            false,
+            config.code_mode_enabled,
+        );
+        builder.register_handler("review", review_handler);
     }
 
     if config.search_tool {
@@ -2976,6 +3048,50 @@ mod tests {
         let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
 
         assert_lacks_tool_name(&tools, "request_permissions");
+    }
+
+    #[test]
+    fn review_tool_requires_feature_flag() {
+        let config = test_config();
+        let model_info =
+            ModelsManager::construct_model_info_offline_for_tests("gpt-5-codex", &config);
+        let mut features = Features::with_defaults();
+        let tools_config = ToolsConfig::new(&ToolsConfigParams {
+            model_info: &model_info,
+            features: &features,
+            web_search_mode: Some(WebSearchMode::Cached),
+            session_source: SessionSource::Cli,
+        });
+        let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
+        assert_lacks_tool_name(&tools, "review");
+
+        features.enable(Feature::ReviewTool);
+        let tools_config = ToolsConfig::new(&ToolsConfigParams {
+            model_info: &model_info,
+            features: &features,
+            web_search_mode: Some(WebSearchMode::Cached),
+            session_source: SessionSource::Cli,
+        });
+        let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
+        assert_contains_tool_names(&tools, &["review"]);
+        assert_eq!(find_tool(&tools, "review").spec, create_review_tool());
+    }
+
+    #[test]
+    fn review_tool_is_hidden_for_subagents() {
+        let config = test_config();
+        let model_info =
+            ModelsManager::construct_model_info_offline_for_tests("gpt-5-codex", &config);
+        let mut features = Features::with_defaults();
+        features.enable(Feature::ReviewTool);
+        let tools_config = ToolsConfig::new(&ToolsConfigParams {
+            model_info: &model_info,
+            features: &features,
+            web_search_mode: Some(WebSearchMode::Cached),
+            session_source: SessionSource::SubAgent(SubAgentSource::Review),
+        });
+        let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
+        assert_lacks_tool_name(&tools, "review");
     }
 
     #[test]
