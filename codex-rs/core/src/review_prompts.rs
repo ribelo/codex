@@ -23,7 +23,7 @@ pub fn resolve_review_request(
     request: ReviewRequest,
     cwd: &Path,
 ) -> anyhow::Result<ResolvedReviewRequest> {
-    let target = request.target;
+    let target = normalize_review_target(request.target)?;
     let prompt = review_prompt(&target, cwd)?;
     let user_facing_hint = request
         .user_facing_hint
@@ -34,6 +34,36 @@ pub fn resolve_review_request(
         prompt,
         user_facing_hint,
     })
+}
+
+fn normalize_review_target(target: ReviewTarget) -> anyhow::Result<ReviewTarget> {
+    match target {
+        ReviewTarget::UncommittedChanges => Ok(ReviewTarget::UncommittedChanges),
+        ReviewTarget::BaseBranch { branch } => {
+            let branch = branch.trim().to_string();
+            if branch.is_empty() {
+                anyhow::bail!("branch must not be empty");
+            }
+            Ok(ReviewTarget::BaseBranch { branch })
+        }
+        ReviewTarget::Commit { sha, title } => {
+            let sha = sha.trim().to_string();
+            if sha.is_empty() {
+                anyhow::bail!("sha must not be empty");
+            }
+            let title = title
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty());
+            Ok(ReviewTarget::Commit { sha, title })
+        }
+        ReviewTarget::Custom { instructions } => {
+            let instructions = instructions.trim().to_string();
+            if instructions.is_empty() {
+                anyhow::bail!("instructions must not be empty");
+            }
+            Ok(ReviewTarget::Custom { instructions })
+        }
+    }
 }
 
 pub fn review_prompt(target: &ReviewTarget, cwd: &Path) -> anyhow::Result<String> {
@@ -57,13 +87,7 @@ pub fn review_prompt(target: &ReviewTarget, cwd: &Path) -> anyhow::Result<String
                 Ok(COMMIT_PROMPT.replace("{sha}", sha))
             }
         }
-        ReviewTarget::Custom { instructions } => {
-            let prompt = instructions.trim();
-            if prompt.is_empty() {
-                anyhow::bail!("Review prompt cannot be empty");
-            }
-            Ok(prompt.to_string())
-        }
+        ReviewTarget::Custom { instructions } => Ok(instructions.to_string()),
     }
 }
 
@@ -89,5 +113,84 @@ impl From<ResolvedReviewRequest> for ReviewRequest {
             target: resolved.target,
             user_facing_hint: Some(resolved.user_facing_hint),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn resolve_review_request_trims_commit_fields() {
+        let resolved = resolve_review_request(
+            ReviewRequest {
+                target: ReviewTarget::Commit {
+                    sha: "  abc123  ".to_string(),
+                    title: Some("  tighten tests  ".to_string()),
+                },
+                user_facing_hint: None,
+            },
+            Path::new("."),
+        )
+        .expect("resolve review request");
+
+        assert_eq!(
+            resolved.target,
+            ReviewTarget::Commit {
+                sha: "abc123".to_string(),
+                title: Some("tighten tests".to_string()),
+            }
+        );
+        assert_eq!(resolved.user_facing_hint, "commit abc123: tighten tests");
+    }
+
+    #[test]
+    fn resolve_review_request_rejects_empty_base_branch() {
+        let err = resolve_review_request(
+            ReviewRequest {
+                target: ReviewTarget::BaseBranch {
+                    branch: "   ".to_string(),
+                },
+                user_facing_hint: None,
+            },
+            Path::new("."),
+        )
+        .expect_err("empty branch should fail");
+
+        assert_eq!(err.to_string(), "branch must not be empty");
+    }
+
+    #[test]
+    fn resolve_review_request_rejects_empty_commit_sha() {
+        let err = resolve_review_request(
+            ReviewRequest {
+                target: ReviewTarget::Commit {
+                    sha: "\n\t".to_string(),
+                    title: Some("title".to_string()),
+                },
+                user_facing_hint: None,
+            },
+            Path::new("."),
+        )
+        .expect_err("empty sha should fail");
+
+        assert_eq!(err.to_string(), "sha must not be empty");
+    }
+
+    #[test]
+    fn resolve_review_request_rejects_empty_custom_instructions() {
+        let err = resolve_review_request(
+            ReviewRequest {
+                target: ReviewTarget::Custom {
+                    instructions: "  ".to_string(),
+                },
+                user_facing_hint: None,
+            },
+            Path::new("."),
+        )
+        .expect_err("empty instructions should fail");
+
+        assert_eq!(err.to_string(), "instructions must not be empty");
     }
 }
