@@ -1,4 +1,0 @@
-[agents.deep]
-description = "Deep agent migrated from tau. Uses the Deep prompt and high reasoning."
-config_file = "./agents/deep.toml"
-nickname_candidates = ["Erg"]

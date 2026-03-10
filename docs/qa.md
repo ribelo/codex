@@ -4,15 +4,15 @@
 
 ### How should Tau's Deep agent live in this Codex repo?
 
-Keep it as a project-defined agent in `.codex/config.toml`, not a Rust built-in.
+Do not keep Tau-derived personal agents in repo-local `.codex` config. Keep them in the user's
+`~/.codex` instead.
 
 Implementation decisions:
 
-- expose it as `deep` through the project agent registry
-- give it its own prompt file under `.codex/agents/prompts/deep.md`
-- set `model_reasoning_effort = "high"` to preserve the Deep mode behavior
-- do not hard-wire a provider or model in the project role so the agent still works with the
-  caller's current provider/model selection
+- do not add Rust built-ins for personal user agents
+- prefer user-global agent roles and profiles in `~/.codex`
+- avoid repo-local `.codex` agent overrides for this purpose
+- if the user wants Tau `finder` behavior, shadow the built-in `explorer` role from `~/.codex`
 
 ## 2026-03-09
 
