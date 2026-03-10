@@ -9,6 +9,7 @@ use tokio_util::sync::CancellationToken;
 use crate::codex::Session;
 use crate::codex::TurnContext;
 use crate::function_tool::FunctionCallError;
+use crate::review_execution::ReviewApprovalMode;
 use crate::review_execution::ReviewEventForwarding;
 use crate::review_execution::run_review_delegate;
 use crate::review_prompts::resolve_review_request;
@@ -52,6 +53,10 @@ impl ToolHandler for ReviewHandler {
         ToolKind::Function
     }
 
+    async fn is_mutating(&self, _invocation: &ToolInvocation) -> bool {
+        true
+    }
+
     async fn handle(&self, invocation: ToolInvocation) -> Result<ToolOutput, FunctionCallError> {
         let ToolInvocation {
             session,
@@ -85,6 +90,7 @@ impl ToolHandler for ReviewHandler {
             }],
             cancellation_token,
             ReviewEventForwarding::Suppress,
+            ReviewApprovalMode::InheritParent,
         )
         .await
         .map_err(|err| FunctionCallError::RespondToModel(format!("review failed: {err}")))?
@@ -128,7 +134,10 @@ async fn current_turn_cancellation_token(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::codex::make_session_and_context;
+    use crate::turn_diff_tracker::TurnDiffTracker;
     use pretty_assertions::assert_eq;
+    use std::sync::Arc;
 
     #[test]
     fn review_tool_args_deserialize_commit_variant() {
@@ -161,5 +170,23 @@ mod tests {
                 user_facing_hint: None,
             }
         );
+    }
+
+    #[tokio::test]
+    async fn review_handler_is_mutating() {
+        let (session, turn) = make_session_and_context().await;
+        let handler = ReviewHandler;
+        let invocation = ToolInvocation {
+            session: Arc::new(session),
+            turn: Arc::new(turn),
+            tracker: Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new())),
+            call_id: "call-1".to_string(),
+            tool_name: "review".to_string(),
+            payload: ToolPayload::Function {
+                arguments: r#"{"type":"uncommitted_changes"}"#.to_string(),
+            },
+        };
+
+        assert!(handler.is_mutating(&invocation).await);
     }
 }
