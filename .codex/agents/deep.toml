@@ -1,0 +1,2 @@
+model_reasoning_effort = "high"
+model_instructions_file = "./prompts/deep.md"
