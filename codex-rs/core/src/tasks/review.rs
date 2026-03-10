@@ -11,6 +11,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::codex::Session;
 use crate::codex::TurnContext;
+use crate::review_execution::ReviewApprovalMode;
 use crate::review_execution::ReviewEventForwarding;
 use crate::review_execution::run_review_delegate;
 use crate::review_format::format_review_findings_block;
@@ -58,6 +59,7 @@ impl SessionTask for ReviewTask {
             input,
             cancellation_token.clone(),
             ReviewEventForwarding::ForwardToParent,
+            ReviewApprovalMode::ForceNever,
         )
         .await
         {

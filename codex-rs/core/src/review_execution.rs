@@ -16,6 +16,7 @@ use tokio_util::sync::CancellationToken;
 use crate::codex::Session;
 use crate::codex::TurnContext;
 use crate::codex_delegate::run_codex_thread_one_shot;
+use crate::config::Config;
 use crate::config::Constrained;
 use crate::error::CodexErr;
 use crate::features::Feature;
@@ -26,18 +27,26 @@ pub(crate) enum ReviewEventForwarding {
     Suppress,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ReviewApprovalMode {
+    ForceNever,
+    InheritParent,
+}
+
 pub(crate) async fn run_review_delegate(
     session: Arc<Session>,
     parent_turn_context: Arc<TurnContext>,
     input: Vec<UserInput>,
     cancellation_token: CancellationToken,
     event_forwarding: ReviewEventForwarding,
+    approval_mode: ReviewApprovalMode,
 ) -> Result<Option<ReviewOutputEvent>, CodexErr> {
     let receiver = start_review_conversation(
         Arc::clone(&session),
         Arc::clone(&parent_turn_context),
         input,
         cancellation_token,
+        approval_mode,
     )
     .await?;
 
@@ -49,28 +58,13 @@ async fn start_review_conversation(
     parent_turn_context: Arc<TurnContext>,
     input: Vec<UserInput>,
     cancellation_token: CancellationToken,
+    approval_mode: ReviewApprovalMode,
 ) -> Result<Receiver<Event>, CodexErr> {
-    let config = parent_turn_context.config.clone();
-    let mut sub_agent_config = config.as_ref().clone();
-    // Carry over review-only feature restrictions so the delegate cannot
-    // re-enable blocked tools (web search, collab tools).
-    if let Err(err) = sub_agent_config
-        .web_search_mode
-        .set(WebSearchMode::Disabled)
-    {
-        panic!("by construction Constrained<WebSearchMode> must always support Disabled: {err}");
-    }
-    let _ = sub_agent_config.features.disable(Feature::Collab);
-
-    // Set explicit review rubric for the sub-agent.
-    sub_agent_config.base_instructions = Some(crate::REVIEW_PROMPT.to_string());
-    sub_agent_config.permissions.approval_policy = Constrained::allow_only(AskForApproval::Never);
-
-    let model = config
-        .review_model
-        .clone()
-        .unwrap_or_else(|| parent_turn_context.model_info.slug.clone());
-    sub_agent_config.model = Some(model);
+    let sub_agent_config = build_review_delegate_config(
+        parent_turn_context.config.as_ref(),
+        &parent_turn_context.model_info.slug,
+        approval_mode,
+    );
 
     let io = run_codex_thread_one_shot(
         sub_agent_config,
@@ -85,6 +79,37 @@ async fn start_review_conversation(
     .await?;
 
     Ok(io.rx_event)
+}
+
+fn build_review_delegate_config(
+    parent_config: &Config,
+    parent_model_slug: &str,
+    approval_mode: ReviewApprovalMode,
+) -> Config {
+    let mut sub_agent_config = parent_config.clone();
+    // Carry over review-only feature restrictions so the delegate cannot
+    // re-enable blocked tools (web search, collab tools).
+    if let Err(err) = sub_agent_config
+        .web_search_mode
+        .set(WebSearchMode::Disabled)
+    {
+        panic!("by construction Constrained<WebSearchMode> must always support Disabled: {err}");
+    }
+    let _ = sub_agent_config.features.disable(Feature::Collab);
+
+    // Set explicit review rubric for the sub-agent.
+    sub_agent_config.base_instructions = Some(crate::REVIEW_PROMPT.to_string());
+    if approval_mode == ReviewApprovalMode::ForceNever {
+        sub_agent_config.permissions.approval_policy =
+            Constrained::allow_only(AskForApproval::Never);
+    }
+
+    let model = parent_config
+        .review_model
+        .clone()
+        .unwrap_or_else(|| parent_model_slug.to_string());
+    sub_agent_config.model = Some(model);
+    sub_agent_config
 }
 
 async fn process_review_events(
@@ -157,5 +182,48 @@ pub(crate) fn parse_review_output_event(text: &str) -> ReviewOutputEvent {
     ReviewOutputEvent {
         overall_explanation: text.to_string(),
         ..Default::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::test_config;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn inherited_review_delegate_preserves_parent_approval_policy() {
+        let mut config = test_config();
+        config
+            .permissions
+            .approval_policy
+            .set(AskForApproval::UnlessTrusted)
+            .expect("test config should allow approval policy override");
+
+        let delegate_config =
+            build_review_delegate_config(&config, "gpt-5-codex", ReviewApprovalMode::InheritParent);
+
+        assert_eq!(
+            delegate_config.permissions.approval_policy.value(),
+            AskForApproval::UnlessTrusted
+        );
+    }
+
+    #[test]
+    fn forced_review_delegate_uses_never_approval_policy() {
+        let mut config = test_config();
+        config
+            .permissions
+            .approval_policy
+            .set(AskForApproval::OnRequest)
+            .expect("test config should allow approval policy override");
+
+        let delegate_config =
+            build_review_delegate_config(&config, "gpt-5-codex", ReviewApprovalMode::ForceNever);
+
+        assert_eq!(
+            delegate_config.permissions.approval_policy.value(),
+            AskForApproval::Never
+        );
     }
 }
