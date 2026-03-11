@@ -81,6 +81,9 @@ Work is done only when:
 - Prefer Conventional Commit prefixes like `feat:`, `fix:`, `docs:`, and `chore:`.
 - Never use `git add -A`; stage only the files that belong to the current change.
 - Default to the shared `main` branch unless the user explicitly asks for a feature or backup branch.
+- Keep shared branch history linear. Do not create merge commits on `main` or use merge-based pull/push workflows to avoid a force push after a rebase.
+- Prefer `git pull --rebase` / `git fetch` + `git rebase` when syncing with `upstream/main`.
+- Enable and use Git `rerere` so repeated rebase conflict resolutions are recorded and reused.
 
 In the codex-rs folder where the rust code lives:
 
@@ -290,3 +293,5 @@ These guidelines apply to app-server protocol work in `codex-rs`, especially:
 - NEVER stop before pushing - that leaves work stranded locally
 - NEVER say "ready to push when you are" - YOU must push
 - If push fails, resolve and retry until it succeeds
+- Preserve linear history while doing this. If a rebase rewrites `main`, update `origin/main` with `git push --force-with-lease` rather than introducing merge commits.
+- Keep `rerere` enabled so recurring rebase conflicts are auto-reapplied when possible.
