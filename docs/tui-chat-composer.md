@@ -93,13 +93,14 @@ Built-in slash command availability is centralized in
 `codex-rs/tui/src/bottom_pane/slash_commands.rs` and reused by both the composer and the command
 popup so gating stays in sync.
 
-## Submission flow (Enter/Tab)
+## Submission flow (Enter/Alt+Enter)
 
 There are multiple submission paths, but they share the same core rules:
 
-When steer mode is enabled, `Tab` requests queuing if a task is already running; otherwise it
-submits immediately. `Enter` always submits immediately in this mode. `Tab` does not submit when
-the input starts with `!` (shell command).
+When steer mode is enabled, `Alt+Enter` requests queuing if a task is already running; otherwise
+it submits immediately. `Enter` always submits immediately in this mode. `Alt+Enter` does not
+submit when the input starts with `!` (shell command). Plain `Tab` is handled one level up by the
+chat widget and cycles the current model's reasoning effort when no popup or modal owns input.
 
 ### Normal submit/queue path
 

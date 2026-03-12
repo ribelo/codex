@@ -1,5 +1,22 @@
 # QA
 
+## 2026-03-12
+
+### What should the default TUI shortcuts be for queueing drafts and cycling reasoning?
+
+Keep the shortcut change narrow and hardcoded for now. Do not add config knobs or a general
+keybinding system in this slice.
+
+TUI shortcut decisions:
+
+- plain `Tab` cycles the current model's reasoning effort when the composer is idle and no
+  popup/modal owns input
+- `Alt+Enter` takes over the old "submit or queue" behavior: it queues while a task is running and
+  otherwise submits immediately
+- `Shift+Tab` stays reserved for collaboration-mode cycling
+- popup-local `Tab` behavior (for slash/file/mention selection) keeps priority over the global
+  reasoning-cycle shortcut
+
 ## 2026-03-10
 
 ### How should Tau's Deep agent live in this Codex repo?
