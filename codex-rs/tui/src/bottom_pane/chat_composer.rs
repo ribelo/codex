@@ -31,9 +31,10 @@
 //!
 //! # Submission and Prompt Expansion
 //!
-//! `Enter` submits immediately. `Tab` requests queuing while a task is running; if no task is
-//! running, `Tab` submits just like Enter so input is never dropped.
-//! `Tab` does not submit when entering a `!` shell command.
+//! `Enter` submits immediately. `Alt+Enter` follows the legacy "submit or queue" path: it queues
+//! while a task is running and otherwise submits immediately. Plain `Tab` is reserved for the
+//! higher-level chat widget to cycle reasoning level, so the composer no longer treats it as a
+//! submit key. `Alt+Enter` does not submit when entering a `!` shell command.
 //!
 //! On submit/queue paths, the composer:
 //!
@@ -397,6 +398,7 @@ pub(crate) struct ChatComposer {
     context_window_used_tokens: Option<i64>,
     model: Option<String>,
     reasoning_effort: Option<String>,
+    reasoning_cycle_enabled: bool,
     sandbox_policy: SandboxPolicy,
     skills: Option<Vec<SkillMetadata>>,
     plugins: Option<Vec<PluginCapabilitySummary>>,
@@ -523,6 +525,7 @@ impl ChatComposer {
             context_window_used_tokens: None,
             model: None,
             reasoning_effort: None,
+            reasoning_cycle_enabled: false,
             sandbox_policy: SandboxPolicy::new_read_only_policy(),
             skills: None,
             plugins: None,
@@ -2789,8 +2792,8 @@ impl ChatComposer {
                 self.handle_input_basic(key_event)
             }
             KeyEvent {
-                code: KeyCode::Tab,
-                modifiers: KeyModifiers::NONE,
+                code: KeyCode::Enter,
+                modifiers: KeyModifiers::ALT,
                 kind: KeyEventKind::Press,
                 ..
             } if !self.is_bang_shell_command() => self.handle_submission(self.is_task_running),
@@ -3199,6 +3202,7 @@ impl ChatComposer {
             is_task_running: self.is_task_running,
             quit_shortcut_key: self.quit_shortcut_key,
             collaboration_modes_enabled: self.collaboration_modes_enabled,
+            reasoning_cycle_enabled: self.reasoning_cycle_enabled,
             is_wsl,
             context_window_percent: self.context_window_percent,
             model: self.model.clone(),
@@ -3736,6 +3740,10 @@ impl ChatComposer {
 
     pub(crate) fn set_reasoning_effort(&mut self, effort: Option<String>) {
         self.reasoning_effort = effort;
+    }
+
+    pub(crate) fn set_reasoning_cycle_enabled(&mut self, enabled: bool) {
+        self.reasoning_cycle_enabled = enabled;
     }
 
     pub(crate) fn set_sandbox_policy(&mut self, policy: SandboxPolicy) {
@@ -6938,7 +6946,7 @@ mod tests {
     }
 
     #[test]
-    fn tab_submits_when_no_task_running() {
+    fn alt_enter_submits_when_no_task_running() {
         use crossterm::event::KeyCode;
         use crossterm::event::KeyEvent;
         use crossterm::event::KeyModifiers;
@@ -6956,7 +6964,7 @@ mod tests {
         type_chars_humanlike(&mut composer, &['h', 'i']);
 
         let (result, _needs_redraw) =
-            composer.handle_key_event(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+            composer.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT));
 
         assert!(matches!(
             result,
@@ -6966,7 +6974,7 @@ mod tests {
     }
 
     #[test]
-    fn tab_does_not_submit_for_bang_shell_command() {
+    fn alt_enter_does_not_submit_for_bang_shell_command() {
         use crossterm::event::KeyCode;
         use crossterm::event::KeyEvent;
         use crossterm::event::KeyModifiers;
@@ -6985,12 +6993,12 @@ mod tests {
         type_chars_humanlike(&mut composer, &['!', 'l', 's']);
 
         let (result, _needs_redraw) =
-            composer.handle_key_event(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+            composer.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT));
 
         assert!(matches!(result, InputResult::None));
         assert!(
             composer.textarea.text().starts_with("!ls"),
-            "expected Tab not to submit or clear a `!` command"
+            "expected Alt+Enter not to submit or clear a `!` command"
         );
     }
 
@@ -8856,7 +8864,7 @@ mod tests {
         composer.set_task_running(true);
 
         let (result, _needs_redraw) =
-            composer.handle_key_event(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+            composer.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT));
 
         assert!(matches!(
             result,

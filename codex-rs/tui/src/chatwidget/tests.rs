@@ -3840,7 +3840,7 @@ async fn enqueueing_history_prompt_multiple_times_is_stable() {
         assert_eq!(chat.bottom_pane.composer_text(), "repeat me");
 
         // Queue the prompt while the task is running.
-        chat.handle_key_event(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT));
     }
 
     assert_eq!(chat.queued_user_messages.len(), 3);
@@ -3864,7 +3864,7 @@ async fn streaming_final_answer_keeps_task_running_state() {
 
     chat.bottom_pane
         .set_composer_text("queued submission".to_string(), Vec::new(), Vec::new());
-    chat.handle_key_event(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT));
 
     assert_eq!(chat.queued_user_messages.len(), 1);
     assert_eq!(
@@ -5437,6 +5437,98 @@ async fn collab_mode_shift_tab_cycles_only_when_idle() {
     let before = chat.active_collaboration_mode_kind();
     chat.handle_key_event(KeyEvent::from(KeyCode::BackTab));
     assert_eq!(chat.active_collaboration_mode_kind(), before);
+}
+
+#[tokio::test]
+async fn idle_tab_cycles_reasoning_effort_for_current_model() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.1-codex-max")).await;
+    let preset = get_available_model(&chat, "gpt-5.1-codex-max");
+    let choices = ChatWidget::ordered_reasoning_effort_choices(&preset);
+    let default_choice = ChatWidget::default_reasoning_effort_choice(&preset, &choices)
+        .expect("default reasoning effort");
+    let current_choice = chat
+        .current_reasoning_effort()
+        .filter(|effort| choices.contains(effort))
+        .unwrap_or(default_choice);
+    let current_index = choices
+        .iter()
+        .position(|effort| *effort == current_choice)
+        .expect("current effort");
+    let expected_effort = choices[(current_index + 1) % choices.len()];
+    let _ = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+
+    let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            AppEvent::UpdateReasoningEffort(Some(effort)) if *effort == expected_effort
+        )),
+        "expected reasoning update event; events: {events:?}"
+    );
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            AppEvent::PersistModelSelection {
+                model,
+                effort: Some(effort),
+            } if model == "gpt-5.1-codex-max" && *effort == expected_effort
+        )),
+        "expected persisted model selection; events: {events:?}"
+    );
+}
+
+#[tokio::test]
+async fn idle_tab_reasoning_cycle_is_ignored_while_task_running() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.1-codex-max")).await;
+    chat.on_task_started();
+    let _ = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+
+    let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    assert!(
+        events
+            .iter()
+            .all(|event| !matches!(event, AppEvent::UpdateReasoningEffort(_))),
+        "did not expect reasoning-cycle events while task is running; events: {events:?}"
+    );
+}
+
+#[tokio::test]
+async fn idle_tab_reasoning_cycle_in_plan_mode_opens_scope_prompt() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.1-codex-max")).await;
+    chat.set_feature_enabled(Feature::CollaborationModes, true);
+    let plan_mask = collaboration_modes::plan_mask(chat.models_manager.as_ref())
+        .expect("expected plan collaboration mode");
+    chat.set_collaboration_mask(plan_mask);
+    let _ = drain_insert_history(&mut rx);
+    chat.set_reasoning_effort(Some(ReasoningEffortConfig::High));
+
+    let preset = get_available_model(&chat, "gpt-5.1-codex-max");
+    let choices = ChatWidget::ordered_reasoning_effort_choices(&preset);
+    let default_choice = ChatWidget::default_reasoning_effort_choice(&preset, &choices)
+        .expect("default reasoning effort");
+    let current_choice = chat
+        .current_reasoning_effort()
+        .filter(|effort| choices.contains(effort))
+        .unwrap_or(default_choice);
+    let current_index = choices
+        .iter()
+        .position(|effort| *effort == current_choice)
+        .expect("current effort");
+    let expected_effort = choices[(current_index + 1) % choices.len()];
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::OpenPlanReasoningScopePrompt {
+            model,
+            effort: Some(effort),
+        }) if model == "gpt-5.1-codex-max" && effort == expected_effort
+    );
 }
 
 #[tokio::test]

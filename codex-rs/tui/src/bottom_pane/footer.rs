@@ -73,6 +73,7 @@ pub(crate) struct FooterProps {
     pub(crate) use_shift_enter_hint: bool,
     pub(crate) is_task_running: bool,
     pub(crate) collaboration_modes_enabled: bool,
+    pub(crate) reasoning_cycle_enabled: bool,
     pub(crate) is_wsl: bool,
     /// Which key the user must press again to quit.
     ///
@@ -110,6 +111,8 @@ pub(crate) enum CollaborationModeIndicator {
 }
 
 const MODE_CYCLE_HINT: &str = "shift+tab to cycle";
+const QUEUE_MESSAGE_HINT_KEY: KeyBinding = key_hint::alt(KeyCode::Enter);
+const REASONING_CYCLE_HINT_KEY: KeyBinding = key_hint::plain(KeyCode::Tab);
 const FOOTER_CONTEXT_GAP_COLS: u16 = 1;
 const DEFAULT_FOOTER_SECTION_GAP_COLS: usize = 2;
 
@@ -307,11 +310,11 @@ fn left_side_line(
             line.push_span(" for shortcuts".dim());
         }
         SummaryHintKind::QueueMessage => {
-            line.push_span(key_hint::plain(KeyCode::Tab));
+            line.push_span(QUEUE_MESSAGE_HINT_KEY);
             line.push_span(" to queue message".dim());
         }
         SummaryHintKind::QueueShort => {
-            line.push_span(key_hint::plain(KeyCode::Tab));
+            line.push_span(QUEUE_MESSAGE_HINT_KEY);
             line.push_span(" to queue".dim());
         }
     };
@@ -630,6 +633,7 @@ fn footer_from_props_lines(
                 esc_backtrack_hint: props.esc_backtrack_hint,
                 is_wsl: props.is_wsl,
                 collaboration_modes_enabled: props.collaboration_modes_enabled,
+                reasoning_cycle_enabled: props.reasoning_cycle_enabled,
             };
             shortcut_overlay_lines(state)
         }
@@ -737,6 +741,7 @@ struct ShortcutsState {
     esc_backtrack_hint: bool,
     is_wsl: bool,
     collaboration_modes_enabled: bool,
+    reasoning_cycle_enabled: bool,
 }
 
 fn quit_shortcut_reminder_line(key: KeyBinding, is_task_running: bool) -> Line<'static> {
@@ -771,6 +776,7 @@ fn shortcut_overlay_lines(state: ShortcutsState) -> Vec<Line<'static>> {
     let mut edit_previous = Line::from("");
     let mut quit = Line::from("");
     let mut show_transcript = Line::from("");
+    let mut change_reasoning = Line::from("");
 
     for descriptor in SHORTCUTS {
         if let Some(text) = descriptor.overlay_entry(state) {
@@ -782,6 +788,7 @@ fn shortcut_overlay_lines(state: ShortcutsState) -> Vec<Line<'static>> {
                 ShortcutId::EditPrevious => edit_previous = text,
                 ShortcutId::Quit => quit = text,
                 ShortcutId::ShowTranscript => show_transcript = text,
+                ShortcutId::ChangeReasoning => change_reasoning = text,
                 ShortcutId::ShellCommands
                 | ShortcutId::QueueMessageTab
                 | ShortcutId::ExternalEditor
@@ -797,8 +804,8 @@ fn shortcut_overlay_lines(state: ShortcutsState) -> Vec<Line<'static>> {
         paste_image,
         edit_previous,
         quit,
-        Line::from(""),
         show_transcript,
+        change_reasoning,
     ];
 
     build_columns(ordered)
@@ -1125,6 +1132,7 @@ enum ShortcutId {
     EditPrevious,
     Quit,
     ShowTranscript,
+    ChangeReasoning,
     ChangeMode,
 }
 
@@ -1147,6 +1155,7 @@ enum DisplayCondition {
     WhenNotShiftEnterHint,
     WhenUnderWSL,
     WhenCollaborationModesEnabled,
+    WhenReasoningCycleEnabled,
 }
 
 impl DisplayCondition {
@@ -1157,6 +1166,7 @@ impl DisplayCondition {
             DisplayCondition::WhenNotShiftEnterHint => !state.use_shift_enter_hint,
             DisplayCondition::WhenUnderWSL => state.is_wsl,
             DisplayCondition::WhenCollaborationModesEnabled => state.collaboration_modes_enabled,
+            DisplayCondition::WhenReasoningCycleEnabled => state.reasoning_cycle_enabled,
         }
     }
 }
@@ -1231,7 +1241,7 @@ const SHORTCUTS: &[ShortcutDescriptor] = &[
     ShortcutDescriptor {
         id: ShortcutId::QueueMessageTab,
         bindings: &[ShortcutBinding {
-            key: key_hint::plain(KeyCode::Tab),
+            key: QUEUE_MESSAGE_HINT_KEY,
             condition: DisplayCondition::Always,
         }],
         prefix: "",
@@ -1300,6 +1310,15 @@ const SHORTCUTS: &[ShortcutDescriptor] = &[
         label: " to view transcript",
     },
     ShortcutDescriptor {
+        id: ShortcutId::ChangeReasoning,
+        bindings: &[ShortcutBinding {
+            key: REASONING_CYCLE_HINT_KEY,
+            condition: DisplayCondition::WhenReasoningCycleEnabled,
+        }],
+        prefix: "",
+        label: " to cycle reasoning level",
+    },
+    ShortcutDescriptor {
         id: ShortcutId::ChangeMode,
         bindings: &[ShortcutBinding {
             key: key_hint::shift(KeyCode::Tab),
@@ -1330,6 +1349,7 @@ mod tests {
             use_shift_enter_hint: false,
             is_task_running: false,
             collaboration_modes_enabled: false,
+            reasoning_cycle_enabled: false,
             is_wsl: false,
             quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
             context_window_percent: None,
@@ -1339,6 +1359,7 @@ mod tests {
             context_window_used_tokens: None,
             status_line_value: None,
             status_line_enabled: false,
+            active_agent_label: None,
             default_summary: DefaultFooterSummary::default(),
         }
     }
@@ -1388,6 +1409,7 @@ mod tests {
                 esc_backtrack_hint: true,
                 use_shift_enter_hint: true,
                 collaboration_modes_enabled: true,
+                reasoning_cycle_enabled: true,
                 ..base_props.clone()
             },
         );
@@ -1462,6 +1484,7 @@ mod tests {
     fn footer_height_matches_overlay_rows() {
         let props = FooterProps {
             mode: FooterMode::ShortcutOverlay,
+            reasoning_cycle_enabled: true,
             ..base_props()
         };
 
@@ -2200,6 +2223,7 @@ mod old_tests {
                 esc_backtrack_hint: false,
                 is_wsl,
                 collaboration_modes_enabled: false,
+                reasoning_cycle_enabled: false,
             })
             .expect("shortcut binding")
             .key;

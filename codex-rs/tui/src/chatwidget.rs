@@ -3821,6 +3821,16 @@ impl ChatWidget {
 
         match key_event {
             KeyEvent {
+                code: KeyCode::Tab,
+                modifiers: KeyModifiers::NONE,
+                kind: KeyEventKind::Press,
+                ..
+            } if !self.bottom_pane.is_task_running()
+                && self.bottom_pane.no_modal_or_popup_active() =>
+            {
+                self.cycle_reasoning_effort();
+            }
+            KeyEvent {
                 code: KeyCode::BackTab,
                 kind: KeyEventKind::Press,
                 ..
@@ -6478,6 +6488,31 @@ impl ChatWidget {
             || selected_effort != self.current_collaboration_mode.reasoning_effort()
     }
 
+    fn ordered_reasoning_effort_choices(preset: &ModelPreset) -> Vec<ReasoningEffortConfig> {
+        let mut choices: Vec<ReasoningEffortConfig> = ReasoningEffortConfig::iter()
+            .filter(|effort| {
+                preset
+                    .supported_reasoning_efforts
+                    .iter()
+                    .any(|option| option.effort == *effort)
+            })
+            .collect();
+        if choices.is_empty() {
+            choices.push(preset.default_reasoning_effort);
+        }
+        choices
+    }
+
+    fn default_reasoning_effort_choice(
+        preset: &ModelPreset,
+        choices: &[ReasoningEffortConfig],
+    ) -> Option<ReasoningEffortConfig> {
+        choices
+            .contains(&preset.default_reasoning_effort)
+            .then_some(preset.default_reasoning_effort)
+            .or_else(|| choices.first().copied())
+    }
+
     pub(crate) fn open_plan_reasoning_scope_prompt(
         &mut self,
         model: String,
@@ -6566,8 +6601,7 @@ impl ChatWidget {
 
     /// Open a popup to choose the reasoning effort (stage 2) for the given model.
     pub(crate) fn open_reasoning_popup(&mut self, preset: ModelPreset) {
-        let default_effort: ReasoningEffortConfig = preset.default_reasoning_effort;
-        let supported = preset.supported_reasoning_efforts;
+        let supported = &preset.supported_reasoning_efforts;
         let in_plan_mode =
             self.collaboration_modes_enabled() && self.active_mode_kind() == ModeKind::Plan;
 
@@ -6596,21 +6630,15 @@ impl ChatWidget {
             stored: Option<ReasoningEffortConfig>,
             display: ReasoningEffortConfig,
         }
-        let mut choices: Vec<EffortChoice> = Vec::new();
-        for effort in ReasoningEffortConfig::iter() {
-            if supported.iter().any(|option| option.effort == effort) {
-                choices.push(EffortChoice {
-                    stored: Some(effort),
-                    display: effort,
-                });
-            }
-        }
-        if choices.is_empty() {
-            choices.push(EffortChoice {
-                stored: Some(default_effort),
-                display: default_effort,
-            });
-        }
+        let ordered_choices = Self::ordered_reasoning_effort_choices(&preset);
+        let choices: Vec<EffortChoice> = ordered_choices
+            .iter()
+            .copied()
+            .map(|effort| EffortChoice {
+                stored: Some(effort),
+                display: effort,
+            })
+            .collect();
 
         if choices.len() == 1 {
             let selected_effort = choices.first().and_then(|c| c.stored);
@@ -6627,13 +6655,7 @@ impl ChatWidget {
             return;
         }
 
-        let default_choice: Option<ReasoningEffortConfig> = choices
-            .iter()
-            .any(|choice| choice.stored == Some(default_effort))
-            .then_some(Some(default_effort))
-            .flatten()
-            .or_else(|| choices.iter().find_map(|choice| choice.stored))
-            .or(Some(default_effort));
+        let default_choice = Self::default_reasoning_effort_choice(&preset, &ordered_choices);
 
         let model_slug = preset.model.to_string();
         let is_current_model = self.current_model() == preset.model.as_str();
@@ -6756,6 +6778,54 @@ impl ChatWidget {
         self.apply_model_and_effort_without_persist(model.clone(), effort);
         self.app_event_tx
             .send(AppEvent::PersistModelSelection { model, effort });
+    }
+
+    fn cycle_reasoning_effort(&mut self) {
+        let current_model = self.current_model().to_string();
+        if Self::is_auto_model(&current_model) {
+            return;
+        }
+
+        let Some(preset) = self
+            .models_manager
+            .try_list_models()
+            .ok()
+            .and_then(|models| {
+                models
+                    .into_iter()
+                    .find(|preset| preset.model == current_model)
+            })
+        else {
+            return;
+        };
+
+        let choices = Self::ordered_reasoning_effort_choices(&preset);
+        if choices.len() <= 1 {
+            return;
+        }
+
+        let Some(default_choice) = Self::default_reasoning_effort_choice(&preset, &choices) else {
+            return;
+        };
+        let current_choice = self
+            .effective_reasoning_effort()
+            .filter(|effort| choices.contains(effort))
+            .unwrap_or(default_choice);
+        let Some(current_index) = choices.iter().position(|effort| *effort == current_choice)
+        else {
+            return;
+        };
+        let next_effort = choices[(current_index + 1) % choices.len()];
+
+        if self.should_prompt_plan_mode_reasoning_scope(&current_model, Some(next_effort)) {
+            self.app_event_tx
+                .send(AppEvent::OpenPlanReasoningScopePrompt {
+                    model: current_model,
+                    effort: Some(next_effort),
+                });
+        } else {
+            self.apply_model_and_effort(current_model, Some(next_effort));
+        }
     }
 
     /// Open the permissions popup (alias for /permissions).
@@ -7798,9 +7868,23 @@ impl ChatWidget {
             self.effective_reasoning_effort()
                 .map(|effort| effort.to_string())
         };
+        let reasoning_cycle_enabled = !Self::is_auto_model(current_model)
+            && self
+                .models_manager
+                .try_list_models()
+                .ok()
+                .and_then(|models| {
+                    models
+                        .into_iter()
+                        .find(|preset| preset.model == current_model)
+                        .map(|preset| Self::ordered_reasoning_effort_choices(&preset).len() > 1)
+                })
+                .unwrap_or(false);
 
         self.bottom_pane.set_model(model);
         self.bottom_pane.set_reasoning_effort(reasoning_effort);
+        self.bottom_pane
+            .set_reasoning_cycle_enabled(reasoning_cycle_enabled);
         self.bottom_pane
             .set_sandbox_policy(self.config.permissions.sandbox_policy.get().clone());
         let cwd = self.status_line_cwd().to_path_buf();

@@ -788,6 +788,11 @@ impl BottomPane {
         self.request_redraw();
     }
 
+    pub(crate) fn set_reasoning_cycle_enabled(&mut self, enabled: bool) {
+        self.composer.set_reasoning_cycle_enabled(enabled);
+        self.request_redraw();
+    }
+
     pub(crate) fn set_sandbox_policy(&mut self, policy: codex_protocol::protocol::SandboxPolicy) {
         self.composer.set_sandbox_policy(policy);
         self.request_redraw();
