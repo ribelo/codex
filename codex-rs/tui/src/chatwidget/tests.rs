@@ -10247,7 +10247,7 @@ async fn empty_status_line_setup_restores_default_footer_summary() {
 }
 
 #[tokio::test]
-async fn empty_configured_status_line_does_not_fall_back_to_default_summary() {
+async fn empty_configured_status_line_falls_back_to_default_summary() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
     let cwd = tempdir().expect("tempdir");
     chat.current_cwd = Some(cwd.path().to_path_buf());
@@ -10256,12 +10256,33 @@ async fn empty_configured_status_line_does_not_fall_back_to_default_summary() {
 
     let rendered = render_chat_footer_row(&mut chat, 80);
     assert!(
-        !rendered.contains("openai"),
-        "expected no default footer summary when custom status line resolves to nothing: {rendered:?}"
+        rendered.contains("openai"),
+        "expected built-in footer summary when custom status line resolves to nothing: {rendered:?}"
     );
     assert!(
-        !rendered.contains("% left"),
-        "expected no context footer when custom status line resolves to nothing: {rendered:?}"
+        rendered.contains("% left"),
+        "expected built-in context footer when custom status line resolves to nothing: {rendered:?}"
+    );
+}
+
+#[tokio::test]
+async fn empty_configured_status_line_with_active_agent_label_uses_default_summary() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+    let cwd = tempdir().expect("tempdir");
+    chat.current_cwd = Some(cwd.path().to_path_buf());
+    chat.config.tui_status_line = Some(vec!["git-branch".to_string()]);
+    chat.bottom_pane
+        .set_active_agent_label(Some("Main [default]".to_string()));
+    chat.refresh_status_line();
+
+    let rendered = render_chat_footer_row(&mut chat, 80);
+    assert!(
+        rendered.contains("openai"),
+        "expected built-in footer summary instead of agent-label-only footer: {rendered:?}"
+    );
+    assert!(
+        rendered.contains("% left"),
+        "expected built-in context footer instead of agent-label-only footer: {rendered:?}"
     );
 }
 
