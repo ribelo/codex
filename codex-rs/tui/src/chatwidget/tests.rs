@@ -47,7 +47,9 @@ use codex_protocol::items::AgentMessageItem;
 use codex_protocol::items::PlanItem;
 use codex_protocol::items::TurnItem;
 use codex_protocol::items::UserMessageItem;
+use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::MessagePhase;
+use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::openai_models::ReasoningEffortPreset;
 use codex_protocol::openai_models::default_input_modalities;
@@ -86,6 +88,11 @@ use codex_protocol::protocol::PatchApplyBeginEvent;
 use codex_protocol::protocol::PatchApplyEndEvent;
 use codex_protocol::protocol::PatchApplyStatus as CorePatchApplyStatus;
 use codex_protocol::protocol::RateLimitWindow;
+use codex_protocol::protocol::RawResponseItemEvent;
+use codex_protocol::protocol::ReviewCodeLocation;
+use codex_protocol::protocol::ReviewFinding;
+use codex_protocol::protocol::ReviewLineRange;
+use codex_protocol::protocol::ReviewOutputEvent;
 use codex_protocol::protocol::ReviewRequest;
 use codex_protocol::protocol::ReviewTarget;
 use codex_protocol::protocol::SessionSource;
@@ -1552,6 +1559,176 @@ async fn thread_snapshot_replay_preserves_agent_message_during_review_mode() {
     assert!(lines_to_single_string(&inserted[0]).contains("Review progress update"));
 }
 
+#[tokio::test]
+async fn live_review_tool_output_renders_readable_history_cells() {
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(None).await;
+    let call_id = "review-tool-call";
+    let review_output = serde_json::to_string(&ReviewOutputEvent {
+        findings: vec![ReviewFinding {
+            title: "Missing regression coverage".to_string(),
+            body: "Add a test for the failure path before landing this change.".to_string(),
+            confidence_score: 0.82,
+            priority: 1,
+            code_location: ReviewCodeLocation {
+                absolute_file_path: PathBuf::from("/tmp/review_tool.rs"),
+                line_range: ReviewLineRange { start: 12, end: 18 },
+            },
+        }],
+        overall_correctness: "needs_attention".to_string(),
+        overall_explanation: "The change is close, but it still needs a regression test."
+            .to_string(),
+        overall_confidence_score: 0.77,
+    })
+    .expect("serialize review output");
+
+    chat.handle_codex_event(Event {
+        id: "review-call".into(),
+        msg: EventMsg::RawResponseItem(RawResponseItemEvent {
+            item: ResponseItem::FunctionCall {
+                id: None,
+                name: "review".to_string(),
+                arguments: r#"{"type":"commit","sha":"abc123","title":"Tighten tests"}"#
+                    .to_string(),
+                call_id: call_id.to_string(),
+            },
+        }),
+    });
+    assert!(drain_insert_history(&mut rx).is_empty());
+
+    chat.handle_codex_event(Event {
+        id: "review-output".into(),
+        msg: EventMsg::RawResponseItem(RawResponseItemEvent {
+            item: ResponseItem::FunctionCallOutput {
+                call_id: call_id.to_string(),
+                output: FunctionCallOutputPayload::from_text(review_output),
+            },
+        }),
+    });
+
+    let cells = drain_insert_history(&mut rx);
+    let rendered = cells
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let rendered = rendered
+        .lines()
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_snapshot!("live_review_tool_output_history", rendered);
+}
+
+#[tokio::test]
+async fn malformed_review_tool_output_falls_back_to_plain_text() {
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(None).await;
+    let call_id = "review-tool-call";
+
+    chat.handle_codex_event(Event {
+        id: "review-call".into(),
+        msg: EventMsg::RawResponseItem(RawResponseItemEvent {
+            item: ResponseItem::FunctionCall {
+                id: None,
+                name: "review".to_string(),
+                arguments: r#"{"type":"uncommitted_changes"}"#.to_string(),
+                call_id: call_id.to_string(),
+            },
+        }),
+    });
+    let _ = drain_insert_history(&mut rx);
+
+    chat.handle_codex_event(Event {
+        id: "review-output".into(),
+        msg: EventMsg::RawResponseItem(RawResponseItemEvent {
+            item: ResponseItem::FunctionCallOutput {
+                call_id: call_id.to_string(),
+                output: FunctionCallOutputPayload::from_text(
+                    "plain-text fallback from reviewer".to_string(),
+                ),
+            },
+        }),
+    });
+
+    let cells = drain_insert_history(&mut rx);
+    let rendered = cells
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let rendered = rendered
+        .lines()
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_snapshot!("malformed_review_tool_output_history", rendered);
+}
+
+#[tokio::test]
+async fn replayed_review_tool_output_is_ignored_in_live_only_path() {
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(None).await;
+    let call_id = "review-tool-call";
+
+    chat.handle_codex_event_replay(Event {
+        id: "review-call".into(),
+        msg: EventMsg::RawResponseItem(RawResponseItemEvent {
+            item: ResponseItem::FunctionCall {
+                id: None,
+                name: "review".to_string(),
+                arguments: r#"{"type":"uncommitted_changes"}"#.to_string(),
+                call_id: call_id.to_string(),
+            },
+        }),
+    });
+    chat.handle_codex_event_replay(Event {
+        id: "review-output".into(),
+        msg: EventMsg::RawResponseItem(RawResponseItemEvent {
+            item: ResponseItem::FunctionCallOutput {
+                call_id: call_id.to_string(),
+                output: FunctionCallOutputPayload::from_text(
+                    "{\"overall_explanation\":\"ignored\"}".to_string(),
+                ),
+            },
+        }),
+    });
+
+    assert!(
+        drain_insert_history(&mut rx).is_empty(),
+        "replayed review tool output should remain hidden in the live-only path"
+    );
+}
+
+#[tokio::test]
+async fn non_review_function_tool_output_remains_hidden() {
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(None).await;
+    let call_id = "other-tool-call";
+
+    chat.handle_codex_event(Event {
+        id: "tool-call".into(),
+        msg: EventMsg::RawResponseItem(RawResponseItemEvent {
+            item: ResponseItem::FunctionCall {
+                id: None,
+                name: "search".to_string(),
+                arguments: r#"{"query":"ratatui"}"#.to_string(),
+                call_id: call_id.to_string(),
+            },
+        }),
+    });
+    chat.handle_codex_event(Event {
+        id: "tool-output".into(),
+        msg: EventMsg::RawResponseItem(RawResponseItemEvent {
+            item: ResponseItem::FunctionCallOutput {
+                call_id: call_id.to_string(),
+                output: FunctionCallOutputPayload::from_text("still hidden".to_string()),
+            },
+        }),
+    });
+
+    assert!(
+        drain_insert_history(&mut rx).is_empty(),
+        "non-review function tools should remain unchanged in this slice"
+    );
+}
+
 /// Exiting review restores the pre-review context window indicator.
 #[tokio::test]
 async fn review_restores_context_window_indicator() {
@@ -1844,6 +2021,7 @@ async fn make_chatwidget_manual(
         last_copyable_output: None,
         running_commands: HashMap::new(),
         pending_collab_spawn_requests: HashMap::new(),
+        pending_review_tool_call_ids: HashSet::new(),
         suppressed_exec_calls: HashSet::new(),
         skills_all: Vec::new(),
         skills_initial_state: None,
