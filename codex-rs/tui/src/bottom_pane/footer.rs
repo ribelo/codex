@@ -930,6 +930,7 @@ pub(crate) fn default_footer_line(
     sandbox_policy: &SandboxPolicy,
     context_window_percent: Option<i64>,
     context_window_used_tokens: Option<i64>,
+    active_agent_label: Option<&str>,
     width: u16,
 ) -> Option<Line<'static>> {
     let width = usize::from(width);
@@ -944,7 +945,11 @@ pub(crate) fn default_footer_line(
     }
 
     let center = default_footer_identity_line(summary)?;
-    let left = Some(default_footer_left_line(summary, sandbox_policy));
+    let left = Some(default_footer_left_line(
+        summary,
+        sandbox_policy,
+        active_agent_label,
+    ));
 
     centered_default_footer_line(width, left.clone(), center.clone(), right.clone())
         .or_else(|| packed_default_footer_line(width, left, center.clone(), right.clone()))
@@ -968,10 +973,19 @@ fn default_footer_identity_line(summary: &DefaultFooterSummary) -> Option<Line<'
 fn default_footer_left_line(
     summary: &DefaultFooterSummary,
     sandbox_policy: &SandboxPolicy,
+    active_agent_label: Option<&str>,
 ) -> Line<'static> {
     let mut spans = vec![mode_dot(sandbox_policy)];
     if let Some(git) = summary.git.as_ref() {
         spans.push(format!(" {git}").dim());
+    }
+    if let Some(active_agent_label) = active_agent_label {
+        if summary.git.is_some() {
+            spans.push(" · ".dim());
+        } else {
+            spans.push(" ".into());
+        }
+        spans.push(active_agent_label.to_string().into());
     }
     Line::from(spans)
 }
@@ -1506,6 +1520,7 @@ mod tests {
             &SandboxPolicy::new_read_only_policy(),
             Some(50),
             None,
+            None,
             76,
         )
         .expect("default footer line");
@@ -1527,6 +1542,7 @@ mod tests {
             },
             &SandboxPolicy::new_read_only_policy(),
             Some(50),
+            None,
             None,
             area.width,
         )

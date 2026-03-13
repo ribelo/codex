@@ -10076,6 +10076,22 @@ async fn idle_footer_default_summary_snapshot() {
 }
 
 #[tokio::test]
+async fn idle_footer_default_summary_with_active_agent_label_snapshot() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+    let cwd = tempdir().expect("tempdir");
+    chat.current_cwd = Some(cwd.path().to_path_buf());
+    chat.set_reasoning_effort(Some(ReasoningEffortConfig::High));
+    chat.bottom_pane
+        .set_active_agent_label(Some("Main [default]".to_string()));
+    chat.sync_bottom_pane_footer_state();
+
+    assert_snapshot!(
+        "idle_footer_default_summary_with_active_agent_label",
+        render_chat_footer_row(&mut chat, 80)
+    );
+}
+
+#[tokio::test]
 async fn sync_bottom_pane_footer_state_requests_git_metadata_for_default_footer() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
     let (_repo_guard, repo_path) = create_footer_test_repo("codex");
@@ -10283,6 +10299,10 @@ async fn empty_configured_status_line_with_active_agent_label_uses_default_summa
     assert!(
         rendered.contains("% left"),
         "expected built-in context footer instead of agent-label-only footer: {rendered:?}"
+    );
+    assert!(
+        rendered.contains("Main [default]"),
+        "expected active agent label to be preserved in built-in footer: {rendered:?}"
     );
 }
 
