@@ -233,6 +233,7 @@ impl StatusLinePreviewData {
             &preview.sandbox_policy,
             preview.context_window_percent,
             preview.context_window_used_tokens,
+            None,
             width,
         )
     }

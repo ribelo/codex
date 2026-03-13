@@ -4286,14 +4286,14 @@ impl ChatComposer {
                 let default_summary_candidate = passive_footer_candidate
                     && (footer_props.status_line_enabled
                         && footer_props.status_line_value.is_none()
-                        || !footer_props.status_line_enabled
-                            && footer_props.active_agent_label.is_none());
+                        || !footer_props.status_line_enabled);
                 let built_in_footer_line = if default_summary_candidate {
                     default_footer_line(
                         &footer_props.default_summary,
                         &footer_props.sandbox_policy,
                         footer_props.context_window_percent,
                         footer_props.context_window_used_tokens,
+                        footer_props.active_agent_label.as_deref(),
                         default_footer_width,
                     )
                 } else {
