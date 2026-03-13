@@ -10,6 +10,7 @@ use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ItemCompletedEvent;
 use codex_protocol::protocol::ReviewOutputEvent;
+use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::user_input::UserInput;
 use tokio_util::sync::CancellationToken;
 
@@ -74,6 +75,8 @@ async fn start_review_conversation(
         session,
         parent_turn_context,
         cancellation_token,
+        SubAgentSource::Review,
+        None,
         None,
     )
     .await?;

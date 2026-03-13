@@ -6,7 +6,6 @@ use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ExitedReviewModeEvent;
 use codex_protocol::protocol::ReviewOutputEvent;
-use codex_protocol::protocol::SubAgentSource;
 use tokio_util::sync::CancellationToken;
 
 use crate::codex::Session;

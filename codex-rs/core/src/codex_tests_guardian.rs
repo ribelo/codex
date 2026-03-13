@@ -6,6 +6,7 @@ use crate::exec::ExecParams;
 use crate::exec_policy::ExecPolicyManager;
 use crate::features::Feature;
 use crate::guardian::GUARDIAN_SUBAGENT_NAME;
+use crate::model_provider_info::ModelProviderInfo;
 use crate::protocol::AskForApproval;
 use crate::sandboxing::SandboxPermissions;
 use crate::tools::context::FunctionToolOutput;
@@ -277,6 +278,7 @@ async fn guardian_subagent_does_not_inherit_parent_exec_policy_rules() {
         auth_manager.clone(),
         None,
         CollaborationModesConfig::default(),
+        ModelProviderInfo::create_openai_provider(),
     ));
     let plugins_manager = Arc::new(PluginsManager::new(config.codex_home.clone()));
     let skills_manager = Arc::new(SkillsManager::new(

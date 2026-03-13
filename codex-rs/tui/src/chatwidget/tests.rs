@@ -124,6 +124,7 @@ use pretty_assertions::assert_eq;
 #[cfg(target_os = "windows")]
 use serial_test::serial;
 use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use tempfile::NamedTempFile;
@@ -1593,7 +1594,6 @@ async fn live_review_tool_output_renders_readable_history_cells() {
             },
         }),
     });
-    assert!(drain_insert_history(&mut rx).is_empty());
 
     chat.handle_codex_event(Event {
         id: "review-output".into(),
@@ -1635,7 +1635,6 @@ async fn malformed_review_tool_output_falls_back_to_plain_text() {
             },
         }),
     });
-    let _ = drain_insert_history(&mut rx);
 
     chat.handle_codex_event(Event {
         id: "review-output".into(),
@@ -1664,7 +1663,7 @@ async fn malformed_review_tool_output_falls_back_to_plain_text() {
 }
 
 #[tokio::test]
-async fn replayed_review_tool_output_is_ignored_in_live_only_path() {
+async fn replayed_review_tool_output_renders_history_cells() {
     let (mut chat, mut rx, _ops) = make_chatwidget_manual(None).await;
     let call_id = "review-tool-call";
 
@@ -1691,10 +1690,18 @@ async fn replayed_review_tool_output_is_ignored_in_live_only_path() {
         }),
     });
 
-    assert!(
-        drain_insert_history(&mut rx).is_empty(),
-        "replayed review tool output should remain hidden in the live-only path"
-    );
+    let cells = drain_insert_history(&mut rx);
+    let rendered = cells
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let rendered = rendered
+        .lines()
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_snapshot!("replayed_review_tool_output_history", rendered);
 }
 
 #[tokio::test]
@@ -2021,7 +2028,7 @@ async fn make_chatwidget_manual(
         last_copyable_output: None,
         running_commands: HashMap::new(),
         pending_collab_spawn_requests: HashMap::new(),
-        pending_review_tool_call_ids: HashSet::new(),
+        pending_review_tool_calls: HashMap::new(),
         suppressed_exec_calls: HashSet::new(),
         skills_all: Vec::new(),
         skills_initial_state: None,

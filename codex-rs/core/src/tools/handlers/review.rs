@@ -1,5 +1,4 @@
 use async_trait::async_trait;
-use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::protocol::ReviewRequest;
 use codex_protocol::protocol::ReviewTarget;
 use codex_protocol::user_input::UserInput;
@@ -13,8 +12,8 @@ use crate::review_execution::ReviewApprovalMode;
 use crate::review_execution::ReviewEventForwarding;
 use crate::review_execution::run_review_delegate;
 use crate::review_prompts::resolve_review_request;
+use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolInvocation;
-use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
 use crate::tools::handlers::parse_arguments;
 use crate::tools::registry::ToolHandler;
@@ -49,6 +48,8 @@ impl ReviewToolArgs {
 
 #[async_trait]
 impl ToolHandler for ReviewHandler {
+    type Output = FunctionToolOutput;
+
     fn kind(&self) -> ToolKind {
         ToolKind::Function
     }
@@ -57,7 +58,7 @@ impl ToolHandler for ReviewHandler {
         true
     }
 
-    async fn handle(&self, invocation: ToolInvocation) -> Result<ToolOutput, FunctionCallError> {
+    async fn handle(&self, invocation: ToolInvocation) -> Result<Self::Output, FunctionCallError> {
         let ToolInvocation {
             session,
             turn,
@@ -104,10 +105,7 @@ impl ToolHandler for ReviewHandler {
             FunctionCallError::Fatal(format!("failed to serialize review output: {err}"))
         })?;
 
-        Ok(ToolOutput::Function {
-            body: FunctionCallOutputBody::Text(content),
-            success: Some(true),
-        })
+        Ok(FunctionToolOutput::from_text(content, Some(true)))
     }
 }
 

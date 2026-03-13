@@ -1253,6 +1253,7 @@ fn create_review_tool() -> ToolSpec {
             required: Some(vec!["type".to_string()]),
             additional_properties: Some(false.into()),
         },
+        output_schema: None,
     })
 }
 
