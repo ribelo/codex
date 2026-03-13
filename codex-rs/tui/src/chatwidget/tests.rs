@@ -18,7 +18,6 @@ use crate::test_backend::VT100Backend;
 use crate::tui::FrameRequester;
 use assert_matches::assert_matches;
 use codex_core::CodexAuth;
-use codex_core::config::ApprovalsReviewer;
 use codex_core::config::Config;
 use codex_core::config::ConfigBuilder;
 use codex_core::config::Constrained;
@@ -90,6 +89,10 @@ use codex_protocol::protocol::PatchApplyEndEvent;
 use codex_protocol::protocol::PatchApplyStatus as CorePatchApplyStatus;
 use codex_protocol::protocol::RateLimitWindow;
 use codex_protocol::protocol::RawResponseItemEvent;
+use codex_protocol::protocol::ReviewCodeLocation;
+use codex_protocol::protocol::ReviewFinding;
+use codex_protocol::protocol::ReviewLineRange;
+use codex_protocol::protocol::ReviewOutputEvent;
 use codex_protocol::protocol::ReviewRequest;
 use codex_protocol::protocol::ReviewTarget;
 use codex_protocol::protocol::SessionSource;
@@ -178,7 +181,6 @@ async fn resumed_initial_messages_render_history() {
         model_provider_id: "test-provider".to_string(),
         service_tier: None,
         approval_policy: AskForApproval::Never,
-        approvals_reviewer: ApprovalsReviewer::User,
         sandbox_policy: SandboxPolicy::new_read_only_policy(),
         cwd: PathBuf::from("/home/user/project"),
         reasoning_effort: Some(ReasoningEffortConfig::default()),
@@ -287,7 +289,6 @@ async fn replayed_user_message_preserves_text_elements_and_local_images() {
         model_provider_id: "test-provider".to_string(),
         service_tier: None,
         approval_policy: AskForApproval::Never,
-        approvals_reviewer: ApprovalsReviewer::User,
         sandbox_policy: SandboxPolicy::new_read_only_policy(),
         cwd: PathBuf::from("/home/user/project"),
         reasoning_effort: Some(ReasoningEffortConfig::default()),
@@ -348,7 +349,6 @@ async fn replayed_user_message_preserves_remote_image_urls() {
         model_provider_id: "test-provider".to_string(),
         service_tier: None,
         approval_policy: AskForApproval::Never,
-        approvals_reviewer: ApprovalsReviewer::User,
         sandbox_policy: SandboxPolicy::new_read_only_policy(),
         cwd: PathBuf::from("/home/user/project"),
         reasoning_effort: Some(ReasoningEffortConfig::default()),
@@ -416,7 +416,6 @@ async fn session_configured_syncs_widget_config_permissions_and_cwd() {
         model_provider_id: "test-provider".to_string(),
         service_tier: None,
         approval_policy: AskForApproval::Never,
-        approvals_reviewer: ApprovalsReviewer::User,
         sandbox_policy: expected_sandbox.clone(),
         cwd: expected_cwd.clone(),
         reasoning_effort: Some(ReasoningEffortConfig::default()),
@@ -459,7 +458,6 @@ async fn replayed_user_message_with_only_remote_images_renders_history_cell() {
         model_provider_id: "test-provider".to_string(),
         service_tier: None,
         approval_policy: AskForApproval::Never,
-        approvals_reviewer: ApprovalsReviewer::User,
         sandbox_policy: SandboxPolicy::new_read_only_policy(),
         cwd: PathBuf::from("/home/user/project"),
         reasoning_effort: Some(ReasoningEffortConfig::default()),
@@ -512,7 +510,6 @@ async fn replayed_user_message_with_only_local_images_does_not_render_history_ce
         model_provider_id: "test-provider".to_string(),
         service_tier: None,
         approval_policy: AskForApproval::Never,
-        approvals_reviewer: ApprovalsReviewer::User,
         sandbox_policy: SandboxPolicy::new_read_only_policy(),
         cwd: PathBuf::from("/home/user/project"),
         reasoning_effort: Some(ReasoningEffortConfig::default()),
@@ -624,7 +621,6 @@ async fn submission_preserves_text_elements_and_local_images() {
         model_provider_id: "test-provider".to_string(),
         service_tier: None,
         approval_policy: AskForApproval::Never,
-        approvals_reviewer: ApprovalsReviewer::User,
         sandbox_policy: SandboxPolicy::new_read_only_policy(),
         cwd: PathBuf::from("/home/user/project"),
         reasoning_effort: Some(ReasoningEffortConfig::default()),
@@ -708,7 +704,6 @@ async fn submission_with_remote_and_local_images_keeps_local_placeholder_numberi
         model_provider_id: "test-provider".to_string(),
         service_tier: None,
         approval_policy: AskForApproval::Never,
-        approvals_reviewer: ApprovalsReviewer::User,
         sandbox_policy: SandboxPolicy::new_read_only_policy(),
         cwd: PathBuf::from("/home/user/project"),
         reasoning_effort: Some(ReasoningEffortConfig::default()),
@@ -803,7 +798,6 @@ async fn enter_with_only_remote_images_submits_user_turn() {
         model_provider_id: "test-provider".to_string(),
         service_tier: None,
         approval_policy: AskForApproval::Never,
-        approvals_reviewer: ApprovalsReviewer::User,
         sandbox_policy: SandboxPolicy::new_read_only_policy(),
         cwd: PathBuf::from("/home/user/project"),
         reasoning_effort: Some(ReasoningEffortConfig::default()),
@@ -868,7 +862,6 @@ async fn shift_enter_with_only_remote_images_does_not_submit_user_turn() {
         model_provider_id: "test-provider".to_string(),
         service_tier: None,
         approval_policy: AskForApproval::Never,
-        approvals_reviewer: ApprovalsReviewer::User,
         sandbox_policy: SandboxPolicy::new_read_only_policy(),
         cwd: PathBuf::from("/home/user/project"),
         reasoning_effort: Some(ReasoningEffortConfig::default()),
@@ -908,7 +901,6 @@ async fn enter_with_only_remote_images_does_not_submit_when_modal_is_active() {
         model_provider_id: "test-provider".to_string(),
         service_tier: None,
         approval_policy: AskForApproval::Never,
-        approvals_reviewer: ApprovalsReviewer::User,
         sandbox_policy: SandboxPolicy::new_read_only_policy(),
         cwd: PathBuf::from("/home/user/project"),
         reasoning_effort: Some(ReasoningEffortConfig::default()),
@@ -948,7 +940,6 @@ async fn enter_with_only_remote_images_does_not_submit_when_input_disabled() {
         model_provider_id: "test-provider".to_string(),
         service_tier: None,
         approval_policy: AskForApproval::Never,
-        approvals_reviewer: ApprovalsReviewer::User,
         sandbox_policy: SandboxPolicy::new_read_only_policy(),
         cwd: PathBuf::from("/home/user/project"),
         reasoning_effort: Some(ReasoningEffortConfig::default()),
@@ -989,7 +980,6 @@ async fn submission_prefers_selected_duplicate_skill_path() {
         model_provider_id: "test-provider".to_string(),
         service_tier: None,
         approval_policy: AskForApproval::Never,
-        approvals_reviewer: ApprovalsReviewer::User,
         sandbox_policy: SandboxPolicy::new_read_only_policy(),
         cwd: PathBuf::from("/home/user/project"),
         reasoning_effort: Some(ReasoningEffortConfig::default()),
@@ -1016,7 +1006,6 @@ async fn submission_prefers_selected_duplicate_skill_path() {
             dependencies: None,
             policy: None,
             permission_profile: None,
-            managed_network_override: None,
             path_to_skills_md: repo_skill_path,
             scope: SkillScope::Repo,
         },
@@ -1028,7 +1017,6 @@ async fn submission_prefers_selected_duplicate_skill_path() {
             dependencies: None,
             policy: None,
             permission_profile: None,
-            managed_network_override: None,
             path_to_skills_md: user_skill_path.clone(),
             scope: SkillScope::User,
         },
@@ -1572,6 +1560,147 @@ async fn thread_snapshot_replay_preserves_agent_message_during_review_mode() {
 }
 
 #[tokio::test]
+async fn live_review_tool_output_renders_readable_history_cells() {
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(None).await;
+    let call_id = "review-tool-call";
+    let review_output = serde_json::to_string(&ReviewOutputEvent {
+        findings: vec![ReviewFinding {
+            title: "Missing regression coverage".to_string(),
+            body: "Add a test for the failure path before landing this change.".to_string(),
+            confidence_score: 0.82,
+            priority: 1,
+            code_location: ReviewCodeLocation {
+                absolute_file_path: PathBuf::from("/tmp/review_tool.rs"),
+                line_range: ReviewLineRange { start: 12, end: 18 },
+            },
+        }],
+        overall_correctness: "needs_attention".to_string(),
+        overall_explanation: "The change is close, but it still needs a regression test."
+            .to_string(),
+        overall_confidence_score: 0.77,
+    })
+    .expect("serialize review output");
+
+    chat.handle_codex_event(Event {
+        id: "review-call".into(),
+        msg: EventMsg::RawResponseItem(RawResponseItemEvent {
+            item: ResponseItem::FunctionCall {
+                id: None,
+                name: "review".to_string(),
+                namespace: None,
+                arguments: r#"{"type":"commit","sha":"abc123","title":"Tighten tests"}"#
+                    .to_string(),
+                call_id: call_id.to_string(),
+            },
+        }),
+    });
+    assert!(drain_insert_history(&mut rx).is_empty());
+
+    chat.handle_codex_event(Event {
+        id: "review-output".into(),
+        msg: EventMsg::RawResponseItem(RawResponseItemEvent {
+            item: ResponseItem::FunctionCallOutput {
+                call_id: call_id.to_string(),
+                output: FunctionCallOutputPayload::from_text(review_output),
+            },
+        }),
+    });
+
+    let cells = drain_insert_history(&mut rx);
+    let rendered = cells
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let rendered = rendered
+        .lines()
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_snapshot!("live_review_tool_output_history", rendered);
+}
+
+#[tokio::test]
+async fn malformed_review_tool_output_falls_back_to_plain_text() {
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(None).await;
+    let call_id = "review-tool-call";
+
+    chat.handle_codex_event(Event {
+        id: "review-call".into(),
+        msg: EventMsg::RawResponseItem(RawResponseItemEvent {
+            item: ResponseItem::FunctionCall {
+                id: None,
+                name: "review".to_string(),
+                namespace: None,
+                arguments: r#"{"type":"uncommitted_changes"}"#.to_string(),
+                call_id: call_id.to_string(),
+            },
+        }),
+    });
+    let _ = drain_insert_history(&mut rx);
+
+    chat.handle_codex_event(Event {
+        id: "review-output".into(),
+        msg: EventMsg::RawResponseItem(RawResponseItemEvent {
+            item: ResponseItem::FunctionCallOutput {
+                call_id: call_id.to_string(),
+                output: FunctionCallOutputPayload::from_text(
+                    "plain-text fallback from reviewer".to_string(),
+                ),
+            },
+        }),
+    });
+
+    let cells = drain_insert_history(&mut rx);
+    let rendered = cells
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let rendered = rendered
+        .lines()
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_snapshot!("malformed_review_tool_output_history", rendered);
+}
+
+#[tokio::test]
+async fn replayed_review_tool_output_is_ignored_in_live_only_path() {
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(None).await;
+    let call_id = "review-tool-call";
+
+    chat.handle_codex_event_replay(Event {
+        id: "review-call".into(),
+        msg: EventMsg::RawResponseItem(RawResponseItemEvent {
+            item: ResponseItem::FunctionCall {
+                id: None,
+                name: "review".to_string(),
+                namespace: None,
+                arguments: r#"{"type":"uncommitted_changes"}"#.to_string(),
+                call_id: call_id.to_string(),
+            },
+        }),
+    });
+    chat.handle_codex_event_replay(Event {
+        id: "review-output".into(),
+        msg: EventMsg::RawResponseItem(RawResponseItemEvent {
+            item: ResponseItem::FunctionCallOutput {
+                call_id: call_id.to_string(),
+                output: FunctionCallOutputPayload::from_text(
+                    "{\"overall_explanation\":\"ignored\"}".to_string(),
+                ),
+            },
+        }),
+    });
+
+    assert!(
+        drain_insert_history(&mut rx).is_empty(),
+        "replayed review tool output should remain hidden in the live-only path"
+    );
+}
+
+#[tokio::test]
 async fn non_review_function_tool_output_remains_hidden() {
     let (mut chat, mut rx, _ops) = make_chatwidget_manual(None).await;
     let call_id = "other-tool-call";
@@ -1896,6 +2025,7 @@ async fn make_chatwidget_manual(
         last_copyable_output: None,
         running_commands: HashMap::new(),
         pending_collab_spawn_requests: HashMap::new(),
+        pending_review_tool_call_ids: HashSet::new(),
         suppressed_exec_calls: HashSet::new(),
         skills_all: Vec::new(),
         skills_initial_state: None,
@@ -2151,8 +2281,6 @@ async fn collab_spawn_end_shows_requested_model_and_effort() {
             new_agent_nickname: Some("Robie".to_string()),
             new_agent_role: Some("explorer".to_string()),
             prompt: "Explore the repo".to_string(),
-            model: "gpt-5".to_string(),
-            reasoning_effort: ReasoningEffortConfig::High,
             status: AgentStatus::PendingInit,
         }),
     });
@@ -4381,7 +4509,6 @@ async fn submit_user_message_emits_structured_plugin_mentions_from_bindings() {
         model_provider_id: "test-provider".to_string(),
         service_tier: None,
         approval_policy: AskForApproval::Never,
-        approvals_reviewer: ApprovalsReviewer::User,
         sandbox_policy: SandboxPolicy::new_read_only_policy(),
         cwd: PathBuf::from("/home/user/project"),
         reasoning_effort: Some(ReasoningEffortConfig::default()),
@@ -5734,7 +5861,6 @@ async fn plan_slash_command_with_args_submits_prompt_in_plan_mode() {
         model_provider_id: "test-provider".to_string(),
         service_tier: None,
         approval_policy: AskForApproval::Never,
-        approvals_reviewer: ApprovalsReviewer::User,
         sandbox_policy: SandboxPolicy::new_read_only_policy(),
         cwd: PathBuf::from("/home/user/project"),
         reasoning_effort: Some(ReasoningEffortConfig::default()),
@@ -6204,7 +6330,7 @@ async fn slash_exit_requests_exit() {
 async fn slash_clean_submits_background_terminal_cleanup() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(None).await;
 
-    chat.dispatch_command(SlashCommand::Stop);
+    chat.dispatch_command(SlashCommand::Clean);
 
     assert_matches!(op_rx.try_recv(), Ok(Op::CleanBackgroundTerminals));
     let cells = drain_insert_history(&mut rx);

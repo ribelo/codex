@@ -1,0 +1,13 @@
+---
+source: tui/src/chatwidget/tests.rs
+expression: rendered
+---
+• Review tool result
+
+
+  The change is close, but it still needs a regression test.
+
+  Review comment:
+
+  - Missing regression coverage — /tmp/review_tool.rs:12-18
+    Add a test for the failure path before landing this change.

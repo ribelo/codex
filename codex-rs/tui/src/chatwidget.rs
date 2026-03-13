@@ -57,7 +57,6 @@ use codex_chatgpt::connectors;
 use codex_core::config::Config;
 use codex_core::config::Constrained;
 use codex_core::config::ConstraintResult;
-use codex_core::config::types::ApprovalsReviewer;
 use codex_core::config::types::Notifications;
 use codex_core::config::types::WindowsSandboxModeToml;
 use codex_core::config_loader::ConfigLayerStackOrdering;
@@ -94,6 +93,7 @@ use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::items::AgentMessageContent;
 use codex_protocol::items::AgentMessageItem;
 use codex_protocol::models::MessagePhase;
+use codex_protocol::models::ResponseItem;
 use codex_protocol::models::local_image_label_text;
 use codex_protocol::parse_command::ParsedCommand;
 use codex_protocol::protocol::AgentMessageDeltaEvent;
@@ -131,6 +131,7 @@ use codex_protocol::protocol::Op;
 use codex_protocol::protocol::PatchApplyBeginEvent;
 use codex_protocol::protocol::RateLimitSnapshot;
 use codex_protocol::protocol::RawResponseItemEvent;
+use codex_protocol::protocol::ReviewOutputEvent;
 use codex_protocol::protocol::ReviewRequest;
 use codex_protocol::protocol::ReviewTarget;
 use codex_protocol::protocol::SkillMetadata as ProtocolSkillMetadata;
@@ -585,6 +586,7 @@ pub(crate) struct ChatWidget {
     running_commands: HashMap<String, RunningCommand>,
     pending_collab_spawn_requests: HashMap<String, multi_agents::SpawnRequestSummary>,
     suppressed_exec_calls: HashSet<String>,
+    pending_review_tool_call_ids: HashSet<String>,
     skills_all: Vec<ProtocolSkillMetadata>,
     skills_initial_state: Option<HashMap<PathBuf, bool>>,
     last_unified_wait: Option<UnifiedExecWaitState>,
@@ -1587,6 +1589,7 @@ impl ChatWidget {
         self.turn_runtime_metrics = RuntimeMetricsSummary::default();
         self.session_telemetry.reset_runtime_metrics();
         self.bottom_pane.clear_quit_shortcut_hint();
+        self.pending_review_tool_call_ids.clear();
         self.quit_shortcut_expires_at = None;
         self.quit_shortcut_key = None;
         self.update_task_running_state();
@@ -1645,6 +1648,7 @@ impl ChatWidget {
         self.update_task_running_state();
         self.running_commands.clear();
         self.suppressed_exec_calls.clear();
+        self.pending_review_tool_call_ids.clear();
         self.last_unified_wait = None;
         self.unified_exec_wait_streak = None;
         self.request_redraw();
@@ -1943,6 +1947,7 @@ impl ChatWidget {
         self.update_task_running_state();
         self.running_commands.clear();
         self.suppressed_exec_calls.clear();
+        self.pending_review_tool_call_ids.clear();
         self.last_unified_wait = None;
         self.unified_exec_wait_streak = None;
         self.adaptive_chunking.reset();
@@ -2562,7 +2567,48 @@ impl ChatWidget {
         self.request_redraw();
     }
 
-    fn on_raw_response_item(&mut self, _event: RawResponseItemEvent, _from_replay: bool) {}
+    fn on_raw_response_item(&mut self, event: RawResponseItemEvent) {
+        match event.item {
+            ResponseItem::FunctionCall { name, call_id, .. } if name == "review" => {
+                self.pending_review_tool_call_ids.insert(call_id);
+            }
+            ResponseItem::FunctionCallOutput { call_id, output } => {
+                if !self.pending_review_tool_call_ids.remove(&call_id) {
+                    return;
+                }
+
+                let raw_output = output.body.to_text().unwrap_or_else(|| output.to_string());
+                self.render_review_tool_output(&raw_output);
+            }
+            _ => {}
+        }
+    }
+
+    fn render_review_tool_output(&mut self, raw_output: &str) {
+        self.flush_answer_stream_with_separator();
+        self.flush_interrupt_queue();
+        self.flush_active_cell();
+        self.add_to_history(history_cell::new_info_event(
+            "Review tool result".to_string(),
+            None,
+        ));
+
+        let rendered = match serde_json::from_str::<ReviewOutputEvent>(raw_output) {
+            Ok(output) => codex_core::review_format::render_review_output_text(&output),
+            Err(err) => {
+                warn!(?err, "failed to parse review tool output");
+                let trimmed = raw_output.trim();
+                if trimmed.is_empty() {
+                    "Reviewer failed to output a response.".to_string()
+                } else {
+                    trimmed.to_string()
+                }
+            }
+        };
+
+        self.insert_agent_markdown_history_cell(&rendered);
+        self.request_redraw();
+    }
 
     fn insert_agent_markdown_history_cell(&mut self, markdown: &str) {
         let mut rendered: Vec<ratatui::text::Line<'static>> = vec!["".into()];
@@ -3281,6 +3327,7 @@ impl ChatWidget {
             running_commands: HashMap::new(),
             pending_collab_spawn_requests: HashMap::new(),
             suppressed_exec_calls: HashSet::new(),
+            pending_review_tool_call_ids: HashSet::new(),
             last_unified_wait: None,
             unified_exec_wait_streak: None,
             turn_sleep_inhibitor: SleepInhibitor::new(prevent_idle_sleep),
@@ -3472,6 +3519,7 @@ impl ChatWidget {
             running_commands: HashMap::new(),
             pending_collab_spawn_requests: HashMap::new(),
             suppressed_exec_calls: HashSet::new(),
+            pending_review_tool_call_ids: HashSet::new(),
             last_unified_wait: None,
             unified_exec_wait_streak: None,
             turn_sleep_inhibitor: SleepInhibitor::new(prevent_idle_sleep),
@@ -3655,6 +3703,7 @@ impl ChatWidget {
             running_commands: HashMap::new(),
             pending_collab_spawn_requests: HashMap::new(),
             suppressed_exec_calls: HashSet::new(),
+            pending_review_tool_call_ids: HashSet::new(),
             last_unified_wait: None,
             unified_exec_wait_streak: None,
             turn_sleep_inhibitor: SleepInhibitor::new(prevent_idle_sleep),
@@ -4265,7 +4314,7 @@ impl ChatWidget {
             SlashCommand::Ps => {
                 self.add_ps_output();
             }
-            SlashCommand::Stop => {
+            SlashCommand::Clean => {
                 self.clean_background_terminals();
             }
             SlashCommand::MemoryDrop => {
@@ -5040,6 +5089,7 @@ impl ChatWidget {
             EventMsg::McpListToolsResponse(ev) => self.on_list_mcp_tools(ev),
             EventMsg::ListCustomPromptsResponse(ev) => self.on_list_custom_prompts(ev),
             EventMsg::ListSkillsResponse(ev) => self.on_list_skills(ev),
+            EventMsg::ListRemoteSkillsResponse(_) | EventMsg::RemoteSkillDownloaded(_) => {}
             EventMsg::SkillsUpdateAvailable => {
                 self.submit_op(Op::ListSkills {
                     cwds: Vec::new(),
@@ -5114,7 +5164,11 @@ impl ChatWidget {
                     });
                 }
             }
-            EventMsg::RawResponseItem(event) => self.on_raw_response_item(event, from_replay),
+            EventMsg::RawResponseItem(event) => {
+                if !from_replay {
+                    self.on_raw_response_item(event);
+                }
+            }
             EventMsg::ItemStarted(_)
             | EventMsg::AgentMessageContentDelta(_)
             | EventMsg::ReasoningContentDelta(_)
@@ -5920,7 +5974,6 @@ impl ChatWidget {
             tx.send(AppEvent::CodexOp(Op::OverrideTurnContext {
                 cwd: None,
                 approval_policy: None,
-                approvals_reviewer: None,
                 sandbox_policy: None,
                 windows_sandbox_level: None,
                 model: Some(switch_model_for_events.clone()),
@@ -6042,7 +6095,6 @@ impl ChatWidget {
                     tx.send(AppEvent::CodexOp(Op::OverrideTurnContext {
                         cwd: None,
                         approval_policy: None,
-                        approvals_reviewer: None,
                         sandbox_policy: None,
                         model: None,
                         effort: None,
@@ -6854,8 +6906,6 @@ impl ChatWidget {
         let include_read_only = cfg!(target_os = "windows");
         let current_approval = self.config.permissions.approval_policy.value();
         let current_sandbox = self.config.permissions.sandbox_policy.get();
-        let guardian_approval_enabled = self.config.features.enabled(Feature::GuardianApproval);
-        let current_review_policy = self.config.approvals_reviewer;
         let mut items: Vec<SelectionItem> = Vec::new();
         let presets: Vec<ApprovalPreset> = builtin_approval_presets();
 
@@ -6871,28 +6921,19 @@ impl ChatWidget {
             && windows_degraded_sandbox_enabled
             && presets.iter().any(|preset| preset.id == "auto");
 
-        let guardian_disabled_reason = |enabled: bool| {
-            let mut next_features = self.config.features.get().clone();
-            next_features.set_enabled(Feature::GuardianApproval, enabled);
-            self.config
-                .features
-                .can_set(&next_features)
-                .err()
-                .map(|err| err.to_string())
-        };
-
         for preset in presets.into_iter() {
             if !include_read_only && preset.id == "read-only" {
                 continue;
             }
-            let base_name = if preset.id == "auto" && windows_degraded_sandbox_enabled {
+            let is_current =
+                Self::preset_matches_current(current_approval, current_sandbox, &preset);
+            let name = if preset.id == "auto" && windows_degraded_sandbox_enabled {
                 "Default (non-admin sandbox)".to_string()
             } else {
                 preset.label.to_string()
             };
-            let base_description =
-                Some(preset.description.replace(" (Identical to Agent mode)", ""));
-            let approval_disabled_reason = match self
+            let description = Some(preset.description.replace(" (Identical to Agent mode)", ""));
+            let disabled_reason = match self
                 .config
                 .permissions
                 .approval_policy
@@ -6901,16 +6942,13 @@ impl ChatWidget {
                 Ok(()) => None,
                 Err(err) => Some(err.to_string()),
             };
-            let default_disabled_reason = approval_disabled_reason
-                .clone()
-                .or_else(|| guardian_disabled_reason(false));
             let requires_confirmation = preset.id == "full-access"
                 && !self
                     .config
                     .notices
                     .hide_full_access_warning
                     .unwrap_or(false);
-            let default_actions: Vec<SelectionAction> = if requires_confirmation {
+            let actions: Vec<SelectionAction> = if requires_confirmation {
                 let preset_clone = preset.clone();
                 vec![Box::new(move |tx| {
                     tx.send(AppEvent::OpenFullAccessConfirmation {
@@ -6959,8 +6997,7 @@ impl ChatWidget {
                         Self::approval_preset_actions(
                             preset.approval,
                             preset.sandbox.clone(),
-                            base_name.clone(),
-                            ApprovalsReviewer::User,
+                            name.clone(),
                         )
                     }
                 }
@@ -6969,19 +7006,12 @@ impl ChatWidget {
                     Self::approval_preset_actions(
                         preset.approval,
                         preset.sandbox.clone(),
-                        base_name.clone(),
-                        ApprovalsReviewer::User,
+                        name.clone(),
                     )
                 }
             } else {
-                Self::approval_preset_actions(
-                    preset.approval,
-                    preset.sandbox.clone(),
-                    base_name.clone(),
-                    ApprovalsReviewer::User,
-                )
+                Self::approval_preset_actions(preset.approval, preset.sandbox.clone(), name.clone())
             };
-
             if preset.id == "auto" {
                 items.push(SelectionItem {
                     name: base_name.clone(),
@@ -7078,14 +7108,12 @@ impl ChatWidget {
         approval: AskForApproval,
         sandbox: SandboxPolicy,
         label: String,
-        approvals_reviewer: ApprovalsReviewer,
     ) -> Vec<SelectionAction> {
         vec![Box::new(move |tx| {
             let sandbox_clone = sandbox.clone();
             tx.send(AppEvent::CodexOp(Op::OverrideTurnContext {
                 cwd: None,
                 approval_policy: Some(approval),
-                approvals_reviewer: Some(approvals_reviewer),
                 sandbox_policy: Some(sandbox_clone.clone()),
                 windows_sandbox_level: None,
                 model: None,
@@ -7097,7 +7125,6 @@ impl ChatWidget {
             }));
             tx.send(AppEvent::UpdateAskForApprovalPolicy(approval));
             tx.send(AppEvent::UpdateSandboxPolicy(sandbox_clone));
-            tx.send(AppEvent::UpdateApprovalsReviewer(approvals_reviewer));
             tx.send(AppEvent::InsertHistoryCell(Box::new(
                 history_cell::new_info_event(format!("Permissions updated to {label}"), None),
             )));
@@ -7164,22 +7191,14 @@ impl ChatWidget {
         ));
         let header = ColumnRenderable::with(header_children);
 
-        let mut accept_actions = Self::approval_preset_actions(
-            approval,
-            sandbox.clone(),
-            selected_name.clone(),
-            ApprovalsReviewer::User,
-        );
+        let mut accept_actions =
+            Self::approval_preset_actions(approval, sandbox.clone(), selected_name.clone());
         accept_actions.push(Box::new(|tx| {
             tx.send(AppEvent::UpdateFullAccessWarningAcknowledged(true));
         }));
 
-        let mut accept_and_remember_actions = Self::approval_preset_actions(
-            approval,
-            sandbox,
-            selected_name,
-            ApprovalsReviewer::User,
-        );
+        let mut accept_and_remember_actions =
+            Self::approval_preset_actions(approval, sandbox, selected_name);
         accept_and_remember_actions.push(Box::new(|tx| {
             tx.send(AppEvent::UpdateFullAccessWarningAcknowledged(true));
             tx.send(AppEvent::PersistFullAccessWarningAcknowledged);
@@ -7293,7 +7312,6 @@ impl ChatWidget {
                 approval,
                 sandbox,
                 mode_label.to_string(),
-                ApprovalsReviewer::User,
             ));
         }
 
@@ -7307,7 +7325,6 @@ impl ChatWidget {
                 approval,
                 sandbox,
                 mode_label.to_string(),
-                ApprovalsReviewer::User,
             ));
         }
 
@@ -7798,7 +7815,6 @@ impl ChatWidget {
             .send(AppEvent::CodexOp(Op::OverrideTurnContext {
                 cwd: None,
                 approval_policy: None,
-                approvals_reviewer: None,
                 sandbox_policy: None,
                 windows_sandbox_level: None,
                 model: None,
