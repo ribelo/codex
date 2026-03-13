@@ -1427,6 +1427,7 @@ mod tests {
                 required: Some(vec!["cmd".to_string()]),
                 additional_properties: Some(false.into()),
             },
+            output_schema: None,
         })
     }
 

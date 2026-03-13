@@ -1,6 +1,7 @@
 use codex_git::merge_base_with_head;
 use codex_protocol::protocol::ReviewRequest;
 use codex_protocol::protocol::ReviewTarget;
+use serde::Deserialize;
 use std::path::Path;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -18,6 +19,26 @@ const BASE_BRANCH_PROMPT: &str = "Review the code changes against the base branc
 const COMMIT_PROMPT_WITH_TITLE: &str = "Review the code changes introduced by commit {sha} (\"{title}\"). Provide prioritized, actionable findings.";
 const COMMIT_PROMPT: &str =
     "Review the code changes introduced by commit {sha}. Provide prioritized, actionable findings.";
+
+#[derive(Debug, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum ReviewToolArgs {
+    UncommittedChanges,
+    BaseBranch { branch: String },
+    Commit { sha: String, title: Option<String> },
+    Custom { instructions: String },
+}
+
+impl From<ReviewToolArgs> for ReviewTarget {
+    fn from(args: ReviewToolArgs) -> Self {
+        match args {
+            ReviewToolArgs::UncommittedChanges => ReviewTarget::UncommittedChanges,
+            ReviewToolArgs::BaseBranch { branch } => ReviewTarget::BaseBranch { branch },
+            ReviewToolArgs::Commit { sha, title } => ReviewTarget::Commit { sha, title },
+            ReviewToolArgs::Custom { instructions } => ReviewTarget::Custom { instructions },
+        }
+    }
+}
 
 pub fn resolve_review_request(
     request: ReviewRequest,
@@ -107,6 +128,29 @@ pub fn user_facing_hint(target: &ReviewTarget) -> String {
     }
 }
 
+pub fn tool_invocation_summary(target: &ReviewTarget) -> String {
+    match target {
+        ReviewTarget::UncommittedChanges => "review(current changes)".to_string(),
+        ReviewTarget::BaseBranch { branch } => format!("review(base branch '{branch}')"),
+        ReviewTarget::Commit { sha, title } => {
+            let short_sha: String = sha.chars().take(7).collect();
+            if let Some(title) = title {
+                format!("review(commit {short_sha}: {title})")
+            } else {
+                format!("review(commit {short_sha})")
+            }
+        }
+        ReviewTarget::Custom { .. } => "review(custom instructions)".to_string(),
+    }
+}
+
+pub fn tool_invocation_summary_from_tool_arguments(
+    arguments: &str,
+) -> Result<String, serde_json::Error> {
+    let args: ReviewToolArgs = serde_json::from_str(arguments)?;
+    Ok(tool_invocation_summary(&ReviewTarget::from(args)))
+}
+
 impl From<ResolvedReviewRequest> for ReviewRequest {
     fn from(resolved: ResolvedReviewRequest) -> Self {
         ReviewRequest {
@@ -192,5 +236,25 @@ mod tests {
         .expect_err("empty instructions should fail");
 
         assert_eq!(err.to_string(), "instructions must not be empty");
+    }
+
+    #[test]
+    fn review_tool_arguments_commit_summary_matches_tool_invocation_summary() {
+        let summary = tool_invocation_summary_from_tool_arguments(
+            r#"{"type":"commit","sha":"abc123def","title":"Tighten tests"}"#,
+        )
+        .expect("parse review tool arguments");
+
+        assert_eq!(summary, "review(commit abc123d: Tighten tests)");
+    }
+
+    #[test]
+    fn review_tool_arguments_custom_summary_uses_compact_label() {
+        let summary = tool_invocation_summary_from_tool_arguments(
+            r#"{"type":"custom","instructions":"Just say hi back"}"#,
+        )
+        .expect("parse review tool arguments");
+
+        assert_eq!(summary, "review(custom instructions)");
     }
 }
