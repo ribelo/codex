@@ -4262,14 +4262,17 @@ impl ChatComposer {
                     .saturating_sub((crate::ui_consts::FOOTER_INDENT_COLS as u16) * 2);
                 let status_line =
                     passive_footer_status_line(&footer_props).map(ratatui::prelude::Stylize::dim);
-                let status_line_candidate = footer_props.status_line_enabled
-                    && match footer_props.mode {
-                        FooterMode::ComposerEmpty => true,
-                        FooterMode::ComposerHasDraft => !footer_props.is_task_running,
-                        FooterMode::QuitShortcutReminder
-                        | FooterMode::ShortcutOverlay
-                        | FooterMode::EscHint => false,
-                    };
+                let passive_footer_candidate = match footer_props.mode {
+                    FooterMode::ComposerEmpty => true,
+                    FooterMode::ComposerHasDraft => !footer_props.is_task_running,
+                    FooterMode::QuitShortcutReminder
+                    | FooterMode::ShortcutOverlay
+                    | FooterMode::EscHint => false,
+                };
+                let status_line_candidate =
+                    footer_props.status_line_enabled && passive_footer_candidate;
+                let configured_status_line_active =
+                    status_line_candidate && footer_props.status_line_value.is_some();
                 let mut truncated_status_line = if status_line_candidate {
                     status_line.as_ref().map(|line| {
                         truncate_line_with_ellipsis_if_overflow(line.clone(), available_width)
@@ -4277,17 +4280,14 @@ impl ChatComposer {
                 } else {
                     None
                 };
-                let status_line_active = status_line_candidate && truncated_status_line.is_some();
+                let status_line_active =
+                    configured_status_line_active && truncated_status_line.is_some();
 
-                let default_summary_candidate = !footer_props.status_line_enabled
-                    && footer_props.active_agent_label.is_none()
-                    && match footer_props.mode {
-                        FooterMode::ComposerEmpty => true,
-                        FooterMode::ComposerHasDraft => !footer_props.is_task_running,
-                        FooterMode::QuitShortcutReminder
-                        | FooterMode::ShortcutOverlay
-                        | FooterMode::EscHint => false,
-                    };
+                let default_summary_candidate = passive_footer_candidate
+                    && (footer_props.status_line_enabled
+                        && footer_props.status_line_value.is_none()
+                        || !footer_props.status_line_enabled
+                            && footer_props.active_agent_label.is_none());
                 let built_in_footer_line = if default_summary_candidate {
                     default_footer_line(
                         &footer_props.default_summary,
@@ -4444,11 +4444,11 @@ impl ChatComposer {
                     if let Some(line) = truncated_status_line {
                         render_footer_line(hint_rect, buf, line);
                     }
+                } else if let Some(line) = built_in_footer_line {
+                    render_footer_line(hint_rect, buf, line);
                 } else if status_line_candidate {
                     // A configured status-line override owns this footer row even
                     // when the selected items are currently unavailable.
-                } else if let Some(line) = built_in_footer_line {
-                    render_footer_line(hint_rect, buf, line);
                 } else {
                     render_footer(hint_rect, buf, footer_props);
                 }
