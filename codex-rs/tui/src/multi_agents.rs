@@ -4,6 +4,7 @@
 //! entries, and the fast-switch keyboard shortcuts. Higher-level coordination, such as deciding
 //! which thread becomes active or when a thread closes, stays in [`crate::app::App`].
 
+use crate::history_cell::HistoryCell;
 use crate::history_cell::PlainHistoryCell;
 use crate::render::line_utils::prefix_lines;
 use crate::text_formatting::truncate_text;
@@ -170,7 +171,7 @@ fn next_agent_word_motion_fallback(
 pub(crate) fn spawn_end(
     ev: CollabAgentSpawnEndEvent,
     spawn_request: Option<&SpawnRequestSummary>,
-) -> PlainHistoryCell {
+) -> Box<dyn HistoryCell> {
     let CollabAgentSpawnEndEvent {
         call_id: _,
         sender_thread_id: _,
@@ -194,14 +195,10 @@ pub(crate) fn spawn_end(
         None => title_text("Agent spawn failed"),
     };
 
-    let mut details = Vec::new();
-    if let Some(line) = prompt_line(&prompt) {
-        details.push(line);
-    }
-    collab_event(title, details)
+    collab_prompt_event(title, &prompt)
 }
 
-pub(crate) fn interaction_end(ev: CollabAgentInteractionEndEvent) -> PlainHistoryCell {
+pub(crate) fn interaction_end(ev: CollabAgentInteractionEndEvent) -> Box<dyn HistoryCell> {
     let CollabAgentInteractionEndEvent {
         call_id: _,
         sender_thread_id: _,
@@ -222,14 +219,10 @@ pub(crate) fn interaction_end(ev: CollabAgentInteractionEndEvent) -> PlainHistor
         None,
     );
 
-    let mut details = Vec::new();
-    if let Some(line) = prompt_line(&prompt) {
-        details.push(line);
-    }
-    collab_event(title, details)
+    collab_prompt_event(title, &prompt)
 }
 
-pub(crate) fn waiting_begin(ev: CollabWaitingBeginEvent) -> PlainHistoryCell {
+pub(crate) fn waiting_begin(ev: CollabWaitingBeginEvent) -> Box<dyn HistoryCell> {
     let CollabWaitingBeginEvent {
         sender_thread_id: _,
         receiver_thread_ids,
@@ -256,7 +249,7 @@ pub(crate) fn waiting_begin(ev: CollabWaitingBeginEvent) -> PlainHistoryCell {
     collab_event(title, details)
 }
 
-pub(crate) fn waiting_end(ev: CollabWaitingEndEvent) -> PlainHistoryCell {
+pub(crate) fn waiting_end(ev: CollabWaitingEndEvent) -> Box<dyn HistoryCell> {
     let CollabWaitingEndEvent {
         call_id: _,
         sender_thread_id: _,
@@ -267,7 +260,7 @@ pub(crate) fn waiting_end(ev: CollabWaitingEndEvent) -> PlainHistoryCell {
     collab_event(title_text("Finished waiting"), details)
 }
 
-pub(crate) fn close_end(ev: CollabCloseEndEvent) -> PlainHistoryCell {
+pub(crate) fn close_end(ev: CollabCloseEndEvent) -> Box<dyn HistoryCell> {
     let CollabCloseEndEvent {
         call_id: _,
         sender_thread_id: _,
@@ -291,7 +284,7 @@ pub(crate) fn close_end(ev: CollabCloseEndEvent) -> PlainHistoryCell {
     )
 }
 
-pub(crate) fn resume_begin(ev: CollabResumeBeginEvent) -> PlainHistoryCell {
+pub(crate) fn resume_begin(ev: CollabResumeBeginEvent) -> Box<dyn HistoryCell> {
     let CollabResumeBeginEvent {
         call_id: _,
         sender_thread_id: _,
@@ -314,7 +307,7 @@ pub(crate) fn resume_begin(ev: CollabResumeBeginEvent) -> PlainHistoryCell {
     )
 }
 
-pub(crate) fn resume_end(ev: CollabResumeEndEvent) -> PlainHistoryCell {
+pub(crate) fn resume_end(ev: CollabResumeEndEvent) -> Box<dyn HistoryCell> {
     let CollabResumeEndEvent {
         call_id: _,
         sender_thread_id: _,
@@ -338,12 +331,27 @@ pub(crate) fn resume_end(ev: CollabResumeEndEvent) -> PlainHistoryCell {
     )
 }
 
-fn collab_event(title: Line<'static>, details: Vec<Line<'static>>) -> PlainHistoryCell {
+fn collab_event(title: Line<'static>, details: Vec<Line<'static>>) -> Box<dyn HistoryCell> {
+    Box::new(PlainHistoryCell::new(collab_lines(title, details)))
+}
+
+fn collab_prompt_event(title: Line<'static>, prompt: &str) -> Box<dyn HistoryCell> {
+    let preview_details = prompt_preview_line(prompt).into_iter().collect();
+    let transcript_details = prompt_full_line(prompt).into_iter().collect();
+    let display_lines = collab_lines(title.clone(), preview_details);
+    let transcript_lines = collab_lines(title, transcript_details);
+    Box::new(CollabTranscriptHistoryCell {
+        display_lines,
+        transcript_lines,
+    })
+}
+
+fn collab_lines(title: Line<'static>, details: Vec<Line<'static>>) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = vec![title];
     if !details.is_empty() {
         lines.extend(prefix_lines(details, "  └ ".dim(), "    ".into()));
     }
-    PlainHistoryCell::new(lines)
+    lines
 }
 
 fn title_text(title: impl Into<String>) -> Line<'static> {
@@ -423,7 +431,7 @@ fn spawn_request_spans(spawn_request: Option<&SpawnRequestSummary>) -> Vec<Span<
     vec![Span::from(" ").dim(), Span::from(details).magenta()]
 }
 
-fn prompt_line(prompt: &str) -> Option<Line<'static>> {
+fn prompt_preview_line(prompt: &str) -> Option<Line<'static>> {
     let trimmed = prompt.trim();
     if trimmed.is_empty() {
         None
@@ -432,6 +440,27 @@ fn prompt_line(prompt: &str) -> Option<Line<'static>> {
             trimmed,
             COLLAB_PROMPT_PREVIEW_GRAPHEMES,
         ))))
+    }
+}
+
+fn prompt_full_line(prompt: &str) -> Option<Line<'static>> {
+    let trimmed = prompt.trim();
+    (!trimmed.is_empty()).then(|| Line::from(trimmed.to_string()))
+}
+
+#[derive(Debug)]
+struct CollabTranscriptHistoryCell {
+    display_lines: Vec<Line<'static>>,
+    transcript_lines: Vec<Line<'static>>,
+}
+
+impl HistoryCell for CollabTranscriptHistoryCell {
+    fn display_lines(&self, _width: u16) -> Vec<Line<'static>> {
+        self.display_lines.clone()
+    }
+
+    fn transcript_lines(&self, _width: u16) -> Vec<Line<'static>> {
+        self.transcript_lines.clone()
     }
 }
 
@@ -663,10 +692,90 @@ mod tests {
 
         let snapshot = [spawn, send, waiting, finished, close]
             .iter()
-            .map(cell_to_text)
+            .map(|cell| cell_display_text(cell.as_ref()))
             .collect::<Vec<_>>()
             .join("\n\n");
         assert_snapshot!("collab_agent_transcript", snapshot);
+    }
+
+    #[test]
+    fn transcript_snapshot_shows_full_prompt_for_collab_prompt_rows() {
+        let sender_thread_id = ThreadId::from_string("00000000-0000-0000-0000-000000000001")
+            .expect("valid sender thread id");
+        let robie_id = ThreadId::from_string("00000000-0000-0000-0000-000000000002")
+            .expect("valid robie thread id");
+        let long_prompt = concat!(
+            "You are advising on a crawler rate-control redesign. Context: Deno/TS scraper for a ",
+            "public forum currently has concurrency=64 but one global leaky bucket with no per-host ",
+            "fairness, and the user wants transcript mode to show this full prompt without truncation."
+        );
+
+        let spawn = spawn_end(
+            CollabAgentSpawnEndEvent {
+                call_id: "call-spawn".to_string(),
+                sender_thread_id,
+                new_thread_id: Some(robie_id),
+                new_agent_nickname: Some("Sibyl".to_string()),
+                new_agent_role: Some("oracle".to_string()),
+                prompt: long_prompt.to_string(),
+                status: AgentStatus::PendingInit,
+            },
+            Some(&SpawnRequestSummary {
+                model: "gpt-5".to_string(),
+                reasoning_effort: ReasoningEffortConfig::High,
+            }),
+        );
+
+        let send = interaction_end(CollabAgentInteractionEndEvent {
+            call_id: "call-send".to_string(),
+            sender_thread_id,
+            receiver_thread_id: robie_id,
+            receiver_agent_nickname: Some("Sibyl".to_string()),
+            receiver_agent_role: Some("oracle".to_string()),
+            prompt: long_prompt.to_string(),
+            status: AgentStatus::Running,
+        });
+
+        let snapshot = [spawn, send]
+            .iter()
+            .map(|cell| cell_transcript_text(cell.as_ref()))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        assert_snapshot!("collab_agent_transcript_overlay_full_prompts", snapshot);
+    }
+
+    #[test]
+    fn transcript_lines_keep_full_prompt_while_main_view_stays_truncated() {
+        let sender_thread_id = ThreadId::from_string("00000000-0000-0000-0000-000000000001")
+            .expect("valid sender thread id");
+        let robie_id = ThreadId::from_string("00000000-0000-0000-0000-000000000002")
+            .expect("valid robie thread id");
+        let full_prompt = format!(
+            "{} tail that should only appear in transcript mode.",
+            "x".repeat(COLLAB_PROMPT_PREVIEW_GRAPHEMES + 20)
+        );
+
+        let cell = spawn_end(
+            CollabAgentSpawnEndEvent {
+                call_id: "call-spawn".to_string(),
+                sender_thread_id,
+                new_thread_id: Some(robie_id),
+                new_agent_nickname: Some("Robie".to_string()),
+                new_agent_role: Some("explorer".to_string()),
+                prompt: full_prompt.clone(),
+                status: AgentStatus::PendingInit,
+            },
+            Some(&SpawnRequestSummary {
+                model: "gpt-5".to_string(),
+                reasoning_effort: ReasoningEffortConfig::High,
+            }),
+        );
+
+        let display = cell_display_text(cell.as_ref());
+        let transcript = cell_transcript_text(cell.as_ref());
+        assert!(display.contains("..."));
+        assert!(!display.contains("tail that should only appear in transcript mode."));
+        assert!(transcript.contains(&full_prompt));
     }
 
     #[cfg(target_os = "macos")]
@@ -724,8 +833,16 @@ mod tests {
         assert_eq!(title.spans[6].style.fg, Some(Color::Magenta));
     }
 
-    fn cell_to_text(cell: &PlainHistoryCell) -> String {
+    fn cell_display_text(cell: &dyn HistoryCell) -> String {
         cell.display_lines(200)
+            .iter()
+            .map(line_to_text)
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn cell_transcript_text(cell: &dyn HistoryCell) -> String {
+        cell.transcript_lines(200)
             .iter()
             .map(line_to_text)
             .collect::<Vec<_>>()

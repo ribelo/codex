@@ -2562,9 +2562,9 @@ impl ChatWidget {
         self.had_work_activity = true;
     }
 
-    fn on_collab_event(&mut self, cell: PlainHistoryCell) {
+    fn on_collab_event(&mut self, cell: Box<dyn HistoryCell>) {
         self.flush_answer_stream_with_separator();
-        self.add_to_history(cell);
+        self.add_boxed_history(cell);
         self.request_redraw();
     }
 

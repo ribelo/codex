@@ -1,5 +1,19 @@
 # QA
 
+## 2026-03-14
+
+### How should collaboration prompt rows render in `Ctrl+T` transcript mode?
+
+Keep the main chat viewport unchanged, but let the transcript overlay show the full prompt text
+for collaboration prompt rows.
+
+Implementation decisions:
+
+- expand full prompt text for `Spawned ...` and `Sent input to ...` rows in `Ctrl+T`
+- keep the normal conversation view on the existing truncated preview
+- do not expand wait-result response/error summaries in this slice
+- keep the change local to TUI history-cell rendering; do not change protocol or stored event data
+
 ## 2026-03-12
 
 ### What should the default TUI shortcuts be for queueing drafts and cycling reasoning?
