@@ -1,0 +1,9 @@
+---
+source: tui/src/multi_agents.rs
+expression: snapshot
+---
+• Spawned Sibyl [oracle] (gpt-5 high)
+  └ You are advising on a crawler rate-control redesign. Context: Deno/TS scraper for a public forum currently has concurrency=64 but one global leaky bucket with no per-host fairness, and the user wants transcript mode to show this full prompt without truncation.
+
+• Sent input to Sibyl [oracle]
+  └ You are advising on a crawler rate-control redesign. Context: Deno/TS scraper for a public forum currently has concurrency=64 but one global leaky bucket with no per-host fairness, and the user wants transcript mode to show this full prompt without truncation.
