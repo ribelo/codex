@@ -599,6 +599,28 @@ mod tests {
     }
 
     #[test]
+    fn profile_command_visible_when_enabled() {
+        let mut popup = CommandPopup::new(
+            Vec::new(),
+            CommandPopupFlags {
+                collaboration_modes_enabled: true,
+                connectors_enabled: false,
+                fast_command_enabled: false,
+                personality_command_enabled: true,
+                realtime_conversation_enabled: false,
+                audio_device_selection_enabled: false,
+                windows_degraded_sandbox_active: false,
+            },
+        );
+        popup.on_composer_text_change("/profile".to_string());
+
+        match popup.selected_item() {
+            Some(CommandItem::Builtin(cmd)) => assert_eq!(cmd.command(), "profile"),
+            other => panic!("expected profile to be selected for exact match, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn settings_command_hidden_when_audio_device_selection_is_disabled() {
         let mut popup = CommandPopup::new(
             Vec::new(),

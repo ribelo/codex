@@ -54,6 +54,7 @@ pub enum SlashCommand {
     Stop,
     Clear,
     Personality,
+    Profile,
     Realtime,
     Settings,
     TestApproval,
@@ -97,6 +98,7 @@ impl SlashCommand {
             SlashCommand::Model => "choose what model and reasoning effort to use",
             SlashCommand::Fast => "toggle Fast mode to enable fastest inference at 2X plan usage",
             SlashCommand::Personality => "choose a communication style for Codex",
+            SlashCommand::Profile => "start a new chat with a config profile",
             SlashCommand::Realtime => "toggle realtime voice mode (experimental)",
             SlashCommand::Settings => "configure realtime microphone/speaker",
             SlashCommand::Plan => "switch to Plan mode",
@@ -148,6 +150,7 @@ impl SlashCommand {
             | SlashCommand::Model
             | SlashCommand::Fast
             | SlashCommand::Personality
+            | SlashCommand::Profile
             | SlashCommand::Approvals
             | SlashCommand::Permissions
             | SlashCommand::ElevateSandbox
