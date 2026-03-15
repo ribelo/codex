@@ -48,6 +48,7 @@ use codex_core::config::ConfigBuilder;
 use codex_core::config::ConfigOverrides;
 use codex_core::config::edit::ConfigEdit;
 use codex_core::config::edit::ConfigEditsBuilder;
+use codex_core::config::load_config_as_toml_with_cli_overrides;
 use codex_core::config::types::ModelAvailabilityNuxConfig;
 use codex_core::config_loader::ConfigLayerStackOrdering;
 use codex_core::features::Feature;
@@ -787,6 +788,95 @@ impl App {
                 "failed to refresh config before thread transition; continuing with current in-memory config"
             );
         }
+    }
+
+    async fn load_config_profile_names(&self) -> Result<Vec<String>> {
+        let cwd = AbsolutePathBuf::from_absolute_path(self.chat_widget.config_ref().cwd.as_path())
+            .wrap_err("Current working directory must be absolute")?;
+        let config_toml = load_config_as_toml_with_cli_overrides(
+            &self.config.codex_home,
+            &cwd,
+            self.cli_kv_overrides.clone(),
+        )
+        .await
+        .wrap_err("Failed to load merged config for profile picker")?;
+        let mut profiles = config_toml.profiles.into_keys().collect::<Vec<_>>();
+        profiles.sort_unstable();
+        Ok(profiles)
+    }
+
+    async fn rebuild_config_for_profile(&self, cwd: PathBuf, profile: &str) -> Result<Config> {
+        let mut overrides = self.harness_overrides.clone();
+        overrides.cwd = Some(cwd.clone());
+        overrides.config_profile = Some(profile.to_string());
+        let cwd_display = cwd.display().to_string();
+        ConfigBuilder::default()
+            .codex_home(self.config.codex_home.clone())
+            .cli_overrides(self.cli_kv_overrides.clone())
+            .harness_overrides(overrides)
+            .build()
+            .await
+            .wrap_err_with(|| {
+                format!("Failed to rebuild config for profile `{profile}` in cwd {cwd_display}")
+            })
+    }
+
+    fn open_profile_picker(&mut self, profiles: Vec<String>) {
+        let current_profile = self.active_profile.clone();
+        let initial_selected_idx = current_profile
+            .as_ref()
+            .and_then(|current| profiles.iter().position(|profile| profile == current));
+        let items = profiles
+            .into_iter()
+            .map(|profile| {
+                let is_current = current_profile.as_deref() == Some(profile.as_str());
+                let description = if is_current {
+                    "Current profile. Press Enter to start a new session with it."
+                } else {
+                    "Start a new session with this profile."
+                };
+                SelectionItem {
+                    search_value: Some(profile.clone()),
+                    name: profile.clone(),
+                    description: Some(description.to_string()),
+                    is_current,
+                    actions: vec![Box::new(move |tx| {
+                        tx.send(AppEvent::StartFreshSessionWithProfile {
+                            profile: profile.clone(),
+                        });
+                    })],
+                    dismiss_on_select: true,
+                    ..Default::default()
+                }
+            })
+            .collect();
+        self.chat_widget.show_selection_view(SelectionViewParams {
+            title: Some("Select Profile".to_string()),
+            subtitle: Some("Choose a config profile and start a new session.".to_string()),
+            footer_hint: Some(standard_popup_hint_line()),
+            items,
+            is_searchable: true,
+            search_placeholder: Some("Type to search profiles".to_string()),
+            initial_selected_idx,
+            ..Default::default()
+        });
+    }
+
+    async fn start_fresh_session_with_profile(&mut self, tui: &mut tui::Tui, profile: String) {
+        let cwd = self.chat_widget.config_ref().cwd.clone();
+        let mut config = match self.rebuild_config_for_profile(cwd, &profile).await {
+            Ok(config) => config,
+            Err(err) => {
+                self.chat_widget
+                    .add_error_message(format!("Failed to switch to profile `{profile}`: {err}"));
+                return;
+            }
+        };
+        self.apply_runtime_policy_overrides(&mut config);
+        self.harness_overrides.config_profile = Some(profile.clone());
+        self.active_profile = Some(profile);
+        self.config = config;
+        self.start_fresh_session_with_summary_hint(tui).await;
     }
 
     async fn rebuild_config_for_resume_or_fallback(
@@ -2132,6 +2222,21 @@ impl App {
             AppEvent::NewSession => {
                 self.start_fresh_session_with_summary_hint(tui).await;
             }
+            AppEvent::OpenProfilePicker => match self.load_config_profile_names().await {
+                Ok(profiles) if profiles.is_empty() => {
+                    self.chat_widget.add_info_message(
+                        "No config profiles are defined for this workspace.".to_string(),
+                        None,
+                    );
+                }
+                Ok(profiles) => {
+                    self.open_profile_picker(profiles);
+                }
+                Err(err) => {
+                    self.chat_widget
+                        .add_error_message(format!("Failed to load config profiles: {err}"));
+                }
+            },
             AppEvent::ClearUi => {
                 self.clear_terminal_ui(tui, false)?;
                 self.reset_app_ui_state_after_clear();
@@ -2229,6 +2334,9 @@ impl App {
 
                 // Leaving alt-screen may blank the inline viewport; force a redraw either way.
                 tui.frame_requester().schedule_frame();
+            }
+            AppEvent::StartFreshSessionWithProfile { profile } => {
+                self.start_fresh_session_with_profile(tui, profile).await;
             }
             AppEvent::ForkCurrentSession => {
                 self.session_telemetry.counter(
@@ -5673,6 +5781,60 @@ mod tests {
         )
     }
 
+    fn render_bottom_popup(chat: &ChatWidget, width: u16) -> String {
+        let height = chat.desired_height(width);
+        let area = ratatui::layout::Rect::new(0, 0, width, height);
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        chat.render(area, &mut buf);
+
+        let mut lines: Vec<String> = (0..area.height)
+            .map(|row| {
+                let mut line = String::new();
+                for col in 0..area.width {
+                    let symbol = buf[(area.x + col, area.y + row)].symbol();
+                    if symbol.is_empty() {
+                        line.push(' ');
+                    } else {
+                        line.push_str(symbol);
+                    }
+                }
+                line.trim_end().to_string()
+            })
+            .collect();
+
+        while lines.first().is_some_and(|line| line.trim().is_empty()) {
+            lines.remove(0);
+        }
+        while lines.last().is_some_and(|line| line.trim().is_empty()) {
+            lines.pop();
+        }
+
+        lines.join("\n")
+    }
+
+    fn set_chat_widget_cwd(app: &mut App, cwd: PathBuf) {
+        app.chat_widget.handle_codex_event(Event {
+            id: String::new(),
+            msg: EventMsg::SessionConfigured(SessionConfiguredEvent {
+                session_id: ThreadId::new(),
+                forked_from_id: None,
+                thread_name: None,
+                model: "gpt-test".to_string(),
+                model_provider_id: "test-provider".to_string(),
+                service_tier: None,
+                approval_policy: AskForApproval::Never,
+                sandbox_policy: SandboxPolicy::new_read_only_policy(),
+                cwd,
+                reasoning_effort: None,
+                history_log_id: 0,
+                history_entry_count: 0,
+                initial_messages: None,
+                network_proxy: None,
+                rollout_path: Some(PathBuf::new()),
+            }),
+        });
+    }
+
     fn next_user_turn_op(op_rx: &mut tokio::sync::mpsc::UnboundedReceiver<Op>) -> Op {
         let mut seen = Vec::new();
         while let Ok(op) = op_rx.try_recv() {
@@ -6126,6 +6288,106 @@ mod tests {
         app.refresh_in_memory_config_from_disk().await?;
 
         assert_eq!(app.config.cwd, app.chat_widget.config_ref().cwd);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn load_config_profile_names_reads_sorted_profiles_from_config() -> Result<()> {
+        let mut app = make_test_app().await;
+        let codex_home = tempdir()?;
+        let cwd = tempdir()?;
+        std::fs::write(
+            codex_home.path().join("config.toml"),
+            r#"[profiles.beta]
+approval_policy = "never"
+
+[profiles.alpha]
+approval_policy = "never"
+"#,
+        )?;
+        app.config.codex_home = codex_home.path().to_path_buf();
+        set_chat_widget_cwd(&mut app, cwd.path().to_path_buf());
+
+        let profiles = app.load_config_profile_names().await?;
+
+        assert_eq!(profiles, vec!["alpha".to_string(), "beta".to_string()]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn open_profile_picker_selects_current_profile_by_default() {
+        let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+        app.active_profile = Some("beta".to_string());
+
+        app.open_profile_picker(vec!["alpha".to_string(), "beta".to_string()]);
+
+        let popup = render_bottom_popup(&app.chat_widget, 80);
+        assert!(
+            popup.contains("Select Profile"),
+            "expected profile picker: {popup}"
+        );
+        assert!(
+            popup.contains("alpha"),
+            "expected alpha profile in picker: {popup}"
+        );
+        assert!(
+            popup.contains("beta"),
+            "expected beta profile in picker: {popup}"
+        );
+
+        app.chat_widget
+            .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert_matches!(
+            app_event_rx.try_recv(),
+            Ok(AppEvent::StartFreshSessionWithProfile { profile }) if profile == "beta"
+        );
+    }
+
+    #[tokio::test]
+    async fn rebuild_config_for_profile_uses_selected_profile() -> Result<()> {
+        let mut app = make_test_app().await;
+        let codex_home = tempdir()?;
+        let cwd = tempdir()?;
+        std::fs::write(
+            codex_home.path().join("config.toml"),
+            r#"[profiles.alpha]
+approval_policy = "never"
+"#,
+        )?;
+        app.config.codex_home = codex_home.path().to_path_buf();
+        set_chat_widget_cwd(&mut app, cwd.path().to_path_buf());
+
+        let config = app
+            .rebuild_config_for_profile(cwd.path().to_path_buf(), "alpha")
+            .await?;
+
+        assert_eq!(config.active_profile.as_deref(), Some("alpha"));
+        assert_eq!(config.cwd, cwd.path().to_path_buf());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn rebuild_config_for_profile_errors_for_missing_profile() -> Result<()> {
+        let mut app = make_test_app().await;
+        let codex_home = tempdir()?;
+        let cwd = tempdir()?;
+        std::fs::write(codex_home.path().join("config.toml"), "")?;
+        app.config.codex_home = codex_home.path().to_path_buf();
+        set_chat_widget_cwd(&mut app, cwd.path().to_path_buf());
+        let original_config = app.config.clone();
+
+        let err = app
+            .rebuild_config_for_profile(cwd.path().to_path_buf(), "missing")
+            .await;
+
+        assert!(err.is_err(), "missing profile should fail");
+        assert!(
+            err.expect_err("missing profile should fail")
+                .to_string()
+                .contains("missing")
+        );
+        assert_eq!(app.config, original_config);
         Ok(())
     }
 

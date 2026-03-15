@@ -4204,6 +4204,9 @@ impl ChatWidget {
             SlashCommand::Personality => {
                 self.open_personality_popup();
             }
+            SlashCommand::Profile => {
+                self.app_event_tx.send(AppEvent::OpenProfilePicker);
+            }
             SlashCommand::Plan => {
                 if !self.collaboration_modes_enabled() {
                     self.add_info_message(

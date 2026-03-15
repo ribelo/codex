@@ -6376,6 +6376,36 @@ async fn slash_clear_is_disabled_while_task_running() {
 }
 
 #[tokio::test]
+async fn slash_profile_opens_picker() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
+
+    chat.dispatch_command(SlashCommand::Profile);
+
+    assert_matches!(rx.try_recv(), Ok(AppEvent::OpenProfilePicker));
+}
+
+#[tokio::test]
+async fn slash_profile_is_disabled_while_task_running() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
+    chat.bottom_pane.set_task_running(true);
+
+    chat.dispatch_command(SlashCommand::Profile);
+
+    let event = rx.try_recv().expect("expected disabled command error");
+    match event {
+        AppEvent::InsertHistoryCell(cell) => {
+            let rendered = lines_to_single_string(&cell.display_lines(80));
+            assert!(
+                rendered.contains("'/profile' is disabled while a task is in progress."),
+                "expected /profile task-running error, got {rendered:?}"
+            );
+        }
+        other => panic!("expected InsertHistoryCell error, got {other:?}"),
+    }
+    assert!(rx.try_recv().is_err(), "expected no follow-up events");
+}
+
+#[tokio::test]
 async fn slash_memory_drop_submits_drop_memories_op() {
     let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(None).await;
 

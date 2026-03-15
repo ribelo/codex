@@ -1,5 +1,19 @@
 # QA
 
+## 2026-03-15
+
+### How should `/profile` behave in the TUI?
+
+Make `/profile` a picker-based session switch, not an inline-argument command.
+
+Implementation decisions:
+
+- `/profile` opens a searchable picker of named profiles from merged config layers for the current workspace
+- cancelling the picker is a strict no-op and must not start a new session
+- selecting any listed profile always starts a fresh session under that profile, even if it is already active
+- do not add a synthetic "no profile/default" row; list only profiles defined in config
+- do not persist the selection to `config.toml`; mirror `codex --profile` runtime semantics
+
 ## 2026-03-14
 
 ### How should collaboration prompt rows render in `Ctrl+T` transcript mode?

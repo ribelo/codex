@@ -71,6 +71,8 @@ pub(crate) enum AppEvent {
     CodexEvent(Event),
     /// Open the agent picker for switching active threads.
     OpenAgentPicker,
+    /// Open the config profile picker for starting a fresh session under a profile.
+    OpenProfilePicker,
     /// Switch the active thread to the selected agent.
     SelectAgentThread(ThreadId),
 
@@ -98,6 +100,11 @@ pub(crate) enum AppEvent {
 
     /// Fork the current session into a new thread.
     ForkCurrentSession,
+
+    /// Start a fresh session using the selected config profile.
+    StartFreshSessionWithProfile {
+        profile: String,
+    },
 
     /// Request to exit the application.
     ///
