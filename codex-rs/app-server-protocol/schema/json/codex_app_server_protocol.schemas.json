@@ -10240,6 +10240,12 @@
               "null"
             ]
           },
+          "deep_mode_profile": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "developer_instructions": {
             "type": [
               "string",
@@ -10359,6 +10365,12 @@
               "null"
             ]
           },
+          "rush_mode_profile": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "sandbox_mode": {
             "anyOf": [
               {
@@ -10387,6 +10399,12 @@
               {
                 "type": "null"
               }
+            ]
+          },
+          "smart_mode_profile": {
+            "type": [
+              "string",
+              "null"
             ]
           },
           "tools": {
@@ -12356,8 +12374,11 @@
       "ModeKind": {
         "description": "Initial collaboration mode to use when the TUI starts.",
         "enum": [
-          "plan",
-          "default"
+          "default",
+          "smart",
+          "deep",
+          "rush",
+          "plan"
         ],
         "type": "string"
       },
@@ -13388,6 +13409,12 @@
               "null"
             ]
           },
+          "deep_mode_profile": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "model": {
             "type": [
               "string",
@@ -13460,6 +13487,12 @@
               }
             ]
           },
+          "rush_mode_profile": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "service_tier": {
             "anyOf": [
               {
@@ -13468,6 +13501,12 @@
               {
                 "type": "null"
               }
+            ]
+          },
+          "smart_mode_profile": {
+            "type": [
+              "string",
+              "null"
             ]
           },
           "tools": {

@@ -2406,6 +2406,7 @@ pub(crate) fn build_specs(
             &mut builder,
             create_request_user_input_tool(CollaborationModesConfig {
                 default_mode_request_user_input: config.default_mode_request_user_input,
+                ..Default::default()
             }),
             false,
             config.code_mode_enabled,
@@ -3180,6 +3181,7 @@ mod tests {
             request_user_input_tool.spec,
             create_request_user_input_tool(CollaborationModesConfig {
                 default_mode_request_user_input: true,
+                ..Default::default()
             })
         );
     }

@@ -70,6 +70,7 @@ use codex_core::git_info::local_git_branches;
 use codex_core::git_info::working_tree_diff_stats;
 use codex_core::mcp::McpManager;
 use codex_core::models_manager::manager::ModelsManager;
+use codex_core::models_manager::manager::RefreshStrategy;
 use codex_core::plugins::PluginsManager;
 use codex_core::project_doc::DEFAULT_PROJECT_DOC_FILENAME;
 use codex_core::skills::model::SkillMetadata;
@@ -483,6 +484,8 @@ pub(crate) struct ChatWidgetInit {
     pub(crate) is_first_run: bool,
     pub(crate) feedback_audience: FeedbackAudience,
     pub(crate) model: Option<String>,
+    pub(crate) initial_collaboration_mask: Option<CollaborationModeMask>,
+    pub(crate) base_mode_provider_id: String,
     pub(crate) startup_tooltip_override: Option<String>,
     // Shared latch so we only warn once about invalid status-line item IDs.
     pub(crate) status_line_invalid_items_warned: Arc<AtomicBool>,
@@ -566,6 +569,14 @@ pub(crate) struct ChatWidget {
     current_collaboration_mode: CollaborationMode,
     /// The currently active collaboration mask, if any.
     active_collaboration_mask: Option<CollaborationModeMask>,
+    /// Provider that Default/Plan resolve to for this thread family.
+    base_mode_provider_id: String,
+    /// Thread-local overrides remembered for each visible collaboration mode.
+    remembered_collaboration_masks: HashMap<ModeKind, CollaborationModeMask>,
+    /// The most recent non-Plan visible mode for the Plan handoff prompt.
+    last_non_plan_mode_kind: ModeKind,
+    /// Whether this thread has submitted any user turn yet.
+    has_submitted_user_turn: bool,
     auth_manager: Arc<AuthManager>,
     models_manager: Arc<ModelsManager>,
     session_telemetry: SessionTelemetry,
@@ -784,7 +795,16 @@ pub(crate) struct ThreadInputState {
     queued_user_messages: VecDeque<UserMessage>,
     current_collaboration_mode: CollaborationMode,
     active_collaboration_mask: Option<CollaborationModeMask>,
+    base_mode_provider_id: String,
+    remembered_collaboration_masks: HashMap<ModeKind, CollaborationModeMask>,
+    last_non_plan_mode_kind: ModeKind,
+    has_submitted_user_turn: bool,
     agent_turn_running: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub(crate) struct SessionRestartDraftState {
+    composer: Option<ThreadComposerState>,
 }
 
 impl From<String> for UserMessage {
@@ -1253,6 +1273,20 @@ impl ChatWidget {
         self.current_rollout_path = event.rollout_path.clone();
         self.current_cwd = Some(event.cwd.clone());
         self.config.cwd = event.cwd.clone();
+        self.config.model_provider_id = event.model_provider_id.clone();
+        if let Some(provider) = self
+            .config
+            .model_providers
+            .get(&event.model_provider_id)
+            .cloned()
+        {
+            self.config.model_provider = provider;
+        } else {
+            tracing::warn!(
+                provider_id = %event.model_provider_id,
+                "failed to sync model provider from SessionConfigured"
+            );
+        }
         if let Err(err) = self
             .config
             .permissions
@@ -1277,6 +1311,9 @@ impl ChatWidget {
         self.last_copyable_output = None;
         let forked_from_id = event.forked_from_id;
         let model_for_header = event.model.clone();
+        if event.history_entry_count > 0 {
+            self.has_submitted_user_turn = true;
+        }
         self.session_header.set_model(&model_for_header);
         self.current_collaboration_mode = self.current_collaboration_mode.with_updates(
             Some(model_for_header.clone()),
@@ -1286,6 +1323,9 @@ impl ChatWidget {
         if let Some(mask) = self.active_collaboration_mask.as_mut() {
             mask.model = Some(model_for_header.clone());
             mask.reasoning_effort = Some(event.reasoning_effort);
+        }
+        if let Some(mask) = self.active_collaboration_mask.clone() {
+            self.remember_collaboration_mask(mask);
         }
         self.refresh_model_display();
         self.sync_fast_command_enabled();
@@ -1703,8 +1743,9 @@ impl ChatWidget {
     }
 
     fn open_plan_implementation_prompt(&mut self) {
-        let default_mask = collaboration_modes::default_mode_mask(self.models_manager.as_ref());
-        let (implement_actions, implement_disabled_reason) = match default_mask {
+        let implement_mode = self.last_non_plan_mode_kind;
+        let implement_mask = self.plan_implementation_mode_mask();
+        let (implement_actions, implement_disabled_reason) = match implement_mask {
             Some(mask) => {
                 let user_text = PLAN_IMPLEMENTATION_CODING_MESSAGE.to_string();
                 let actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
@@ -1715,12 +1756,21 @@ impl ChatWidget {
                 })];
                 (actions, None)
             }
-            None => (Vec::new(), Some("Default mode unavailable".to_string())),
+            None => (
+                Vec::new(),
+                Some(format!(
+                    "{} mode unavailable",
+                    implement_mode.display_name()
+                )),
+            ),
         };
         let items = vec![
             SelectionItem {
                 name: PLAN_IMPLEMENTATION_YES.to_string(),
-                description: Some("Switch to Default and start coding.".to_string()),
+                description: Some(format!(
+                    "Switch to {} and start coding.",
+                    implement_mode.display_name()
+                )),
                 selected_description: None,
                 is_current: false,
                 actions: implement_actions,
@@ -2175,6 +2225,10 @@ impl ChatWidget {
             queued_user_messages: self.queued_user_messages.clone(),
             current_collaboration_mode: self.current_collaboration_mode.clone(),
             active_collaboration_mask: self.active_collaboration_mask.clone(),
+            base_mode_provider_id: self.base_mode_provider_id.clone(),
+            remembered_collaboration_masks: self.remembered_collaboration_masks.clone(),
+            last_non_plan_mode_kind: self.last_non_plan_mode_kind,
+            has_submitted_user_turn: self.has_submitted_user_turn,
             agent_turn_running: self.agent_turn_running,
         })
     }
@@ -2183,6 +2237,10 @@ impl ChatWidget {
         if let Some(input_state) = input_state {
             self.current_collaboration_mode = input_state.current_collaboration_mode;
             self.active_collaboration_mask = input_state.active_collaboration_mask;
+            self.base_mode_provider_id = input_state.base_mode_provider_id;
+            self.remembered_collaboration_masks = input_state.remembered_collaboration_masks;
+            self.last_non_plan_mode_kind = input_state.last_non_plan_mode_kind;
+            self.has_submitted_user_turn = input_state.has_submitted_user_turn;
             self.agent_turn_running = input_state.agent_turn_running;
             self.update_collaboration_mode_indicator();
             self.refresh_model_display();
@@ -3315,6 +3373,8 @@ impl ChatWidget {
             is_first_run,
             feedback_audience,
             model,
+            initial_collaboration_mask,
+            base_mode_provider_id,
             startup_tooltip_override,
             status_line_invalid_items_warned,
             session_telemetry,
@@ -3331,8 +3391,13 @@ impl ChatWidget {
         let model_for_header = model
             .clone()
             .unwrap_or_else(|| DEFAULT_MODEL_DISPLAY_NAME.to_string());
-        let active_collaboration_mask =
-            Self::initial_collaboration_mask(&config, models_manager.as_ref(), model_override);
+        let active_collaboration_mask = initial_collaboration_mask.or_else(|| {
+            Self::initial_collaboration_mask(&config, models_manager.as_ref(), model_override)
+        });
+        let remembered_collaboration_masks =
+            Self::remembered_masks_from_active(active_collaboration_mask.as_ref());
+        let last_non_plan_mode_kind =
+            Self::initial_last_non_plan_mode_kind(active_collaboration_mask.as_ref());
         let header_model = active_collaboration_mask
             .as_ref()
             .and_then(|mask| mask.model.clone())
@@ -3374,6 +3439,10 @@ impl ChatWidget {
             skills_initial_state: None,
             current_collaboration_mode,
             active_collaboration_mask,
+            base_mode_provider_id,
+            remembered_collaboration_masks,
+            last_non_plan_mode_kind,
+            has_submitted_user_turn: false,
             auth_manager,
             models_manager,
             session_telemetry,
@@ -3452,6 +3521,7 @@ impl ChatWidget {
         };
 
         widget.prefetch_rate_limits();
+        widget.prefetch_active_provider_models();
         widget.bottom_pane.set_voice_transcription_enabled(
             widget.config.features.enabled(Feature::VoiceTranscription),
         );
@@ -3508,6 +3578,8 @@ impl ChatWidget {
             is_first_run,
             feedback_audience,
             model,
+            initial_collaboration_mask,
+            base_mode_provider_id,
             startup_tooltip_override,
             status_line_invalid_items_warned,
             session_telemetry,
@@ -3523,8 +3595,13 @@ impl ChatWidget {
         let model_for_header = model
             .clone()
             .unwrap_or_else(|| DEFAULT_MODEL_DISPLAY_NAME.to_string());
-        let active_collaboration_mask =
-            Self::initial_collaboration_mask(&config, models_manager.as_ref(), model_override);
+        let active_collaboration_mask = initial_collaboration_mask.or_else(|| {
+            Self::initial_collaboration_mask(&config, models_manager.as_ref(), model_override)
+        });
+        let remembered_collaboration_masks =
+            Self::remembered_masks_from_active(active_collaboration_mask.as_ref());
+        let last_non_plan_mode_kind =
+            Self::initial_last_non_plan_mode_kind(active_collaboration_mask.as_ref());
         let header_model = active_collaboration_mask
             .as_ref()
             .and_then(|mask| mask.model.clone())
@@ -3566,6 +3643,10 @@ impl ChatWidget {
             skills_initial_state: None,
             current_collaboration_mode,
             active_collaboration_mask,
+            base_mode_provider_id,
+            remembered_collaboration_masks,
+            last_non_plan_mode_kind,
+            has_submitted_user_turn: false,
             auth_manager,
             models_manager,
             session_telemetry,
@@ -3644,6 +3725,7 @@ impl ChatWidget {
         };
 
         widget.prefetch_rate_limits();
+        widget.prefetch_active_provider_models();
         widget.bottom_pane.set_voice_transcription_enabled(
             widget.config.features.enabled(Feature::VoiceTranscription),
         );
@@ -3692,6 +3774,8 @@ impl ChatWidget {
             is_first_run: _,
             feedback_audience,
             model,
+            initial_collaboration_mask,
+            base_mode_provider_id,
             startup_tooltip_override: _,
             status_line_invalid_items_warned,
             session_telemetry,
@@ -3705,8 +3789,9 @@ impl ChatWidget {
         let header_model = model
             .clone()
             .unwrap_or_else(|| session_configured.model.clone());
-        let active_collaboration_mask =
-            Self::initial_collaboration_mask(&config, models_manager.as_ref(), model_override);
+        let active_collaboration_mask = initial_collaboration_mask.or_else(|| {
+            Self::initial_collaboration_mask(&config, models_manager.as_ref(), model_override)
+        });
         let header_model = active_collaboration_mask
             .as_ref()
             .and_then(|mask| mask.model.clone())
@@ -3750,6 +3835,14 @@ impl ChatWidget {
             skills_initial_state: None,
             current_collaboration_mode,
             active_collaboration_mask,
+            base_mode_provider_id,
+            remembered_collaboration_masks: Self::remembered_masks_from_active(
+                active_collaboration_mask.as_ref(),
+            ),
+            last_non_plan_mode_kind: Self::initial_last_non_plan_mode_kind(
+                active_collaboration_mask.as_ref(),
+            ),
+            has_submitted_user_turn: session_configured.history_entry_count > 0,
             auth_manager,
             models_manager,
             session_telemetry,
@@ -3828,6 +3921,7 @@ impl ChatWidget {
         };
 
         widget.prefetch_rate_limits();
+        widget.prefetch_active_provider_models();
         widget.bottom_pane.set_voice_transcription_enabled(
             widget.config.features.enabled(Feature::VoiceTranscription),
         );
@@ -4887,6 +4981,7 @@ impl ChatWidget {
         if !self.submit_op(op) {
             return;
         }
+        self.has_submitted_user_turn = true;
 
         // Persist the text to cross-session message history.
         if !text.is_empty() {
@@ -4994,6 +5089,39 @@ impl ChatWidget {
             }
             // `id: None` indicates a synthetic/fake id coming from replay.
             self.dispatch_event_msg(None, msg, Some(ReplayKind::ResumeInitialMessages));
+        }
+    }
+
+    pub(crate) fn capture_session_restart_draft_state(&self) -> SessionRestartDraftState {
+        let composer = ThreadComposerState {
+            text: self.bottom_pane.composer_text(),
+            text_elements: self.bottom_pane.composer_text_elements(),
+            local_images: self.bottom_pane.composer_local_images(),
+            remote_image_urls: self.bottom_pane.remote_image_urls(),
+            mention_bindings: self.bottom_pane.composer_mention_bindings(),
+            pending_pastes: self.bottom_pane.composer_pending_pastes(),
+        };
+        SessionRestartDraftState {
+            composer: composer.has_content().then_some(composer),
+        }
+    }
+
+    pub(crate) fn restore_session_restart_draft_state(&mut self, state: SessionRestartDraftState) {
+        if let Some(composer) = state.composer {
+            let local_image_paths = composer
+                .local_images
+                .into_iter()
+                .map(|img| img.path)
+                .collect();
+            self.set_remote_image_urls(composer.remote_image_urls);
+            self.bottom_pane.set_composer_text_with_mention_bindings(
+                composer.text,
+                composer.text_elements,
+                local_image_paths,
+                composer.mention_bindings,
+            );
+            self.bottom_pane
+                .set_composer_pending_pastes(composer.pending_pastes);
         }
     }
 
@@ -5576,8 +5704,9 @@ impl ChatWidget {
 
     fn default_footer_summary(&self) -> DefaultFooterSummary {
         let mut identity = Vec::new();
-        if !self.config.model_provider_id.is_empty() {
-            identity.push(self.config.model_provider_id.clone());
+        let provider_id = self.current_session_provider_id();
+        if !provider_id.is_empty() {
+            identity.push(provider_id.to_string());
         }
         identity.push(self.model_display_name().to_string());
         if !self.current_model().starts_with("codex-auto-") {
@@ -5586,8 +5715,8 @@ impl ChatWidget {
                     .to_string(),
             );
         }
-        if self.active_mode_kind() == ModeKind::Plan {
-            identity.push("plan".to_string());
+        if self.active_mode_kind().is_tui_visible() {
+            identity.push(self.active_mode_kind().display_name().to_lowercase());
         }
 
         DefaultFooterSummary {
@@ -5696,8 +5825,8 @@ impl ChatWidget {
     /// git metadata.
     fn status_line_value_for_item(&self, item: &StatusLineItem) -> Option<String> {
         match item {
-            StatusLineItem::Provider => (!self.config.model_provider_id.is_empty())
-                .then_some(self.config.model_provider_id.clone()),
+            StatusLineItem::Provider => (!self.current_session_provider_id().is_empty())
+                .then(|| self.current_session_provider_id().to_string()),
             StatusLineItem::ModelName => Some(self.model_display_name().to_string()),
             StatusLineItem::ModelWithReasoning => {
                 let label =
@@ -5716,10 +5845,10 @@ impl ChatWidget {
                     Self::status_line_reasoning_effort_label(self.effective_reasoning_effort())
                         .to_string()
                 }),
-            StatusLineItem::Mode => match self.active_mode_kind() {
-                ModeKind::Plan => Some("plan".to_string()),
-                ModeKind::Default | ModeKind::PairProgramming | ModeKind::Execute => None,
-            },
+            StatusLineItem::Mode => self
+                .active_mode_kind()
+                .is_tui_visible()
+                .then(|| self.active_mode_kind().display_name().to_lowercase()),
             StatusLineItem::CurrentDir => {
                 Some(format_directory_display(self.status_line_cwd(), None))
             }
@@ -5993,7 +6122,7 @@ impl ChatWidget {
     }
 
     fn lower_cost_preset(&self) -> Option<ModelPreset> {
-        let models = self.models_manager.try_list_models().ok()?;
+        let models = self.try_list_models_for_active_provider().ok()?;
         models
             .iter()
             .find(|preset| preset.show_in_picker && preset.model == NUDGE_MODEL_SLUG)
@@ -6111,7 +6240,7 @@ impl ChatWidget {
             return;
         }
 
-        let presets: Vec<ModelPreset> = match self.models_manager.try_list_models() {
+        let presets: Vec<ModelPreset> = match self.try_list_models_for_active_provider() {
             Ok(models) => models,
             Err(_) => {
                 self.add_info_message(
@@ -6368,11 +6497,12 @@ impl ChatWidget {
     }
 
     fn custom_openai_base_url(&self) -> Option<String> {
-        if !self.config.model_provider.is_openai() {
+        let provider = self.current_session_provider();
+        if !provider.is_openai() {
             return None;
         }
 
-        let base_url = self.config.model_provider.base_url.as_ref()?;
+        let base_url = provider.base_url.as_ref()?;
         let trimmed = base_url.trim();
         if trimmed.is_empty() {
             return None;
@@ -6552,8 +6682,12 @@ impl ChatWidget {
             .map(|mask| {
                 let name = mask.name.clone();
                 let is_current = current_kind == mask.mode;
+                let selected_mask = mask
+                    .mode
+                    .and_then(|mode| self.remembered_or_preset_mask_for_mode(mode))
+                    .unwrap_or(mask);
                 let actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
-                    tx.send(AppEvent::UpdateCollaborationMode(mask.clone()));
+                    tx.send(AppEvent::UpdateCollaborationMode(selected_mask.clone()));
                 })];
                 SelectionItem {
                     name,
@@ -6916,8 +7050,7 @@ impl ChatWidget {
         }
 
         let Some(preset) = self
-            .models_manager
-            .try_list_models()
+            .try_list_models_for_active_provider()
             .ok()
             .and_then(|models| {
                 models
@@ -7791,20 +7924,37 @@ impl ChatWidget {
                 mask.reasoning_effort = plan_mask.reasoning_effort;
             }
         }
+        if let Some(mask) = self.active_collaboration_mask.clone()
+            && mask.mode == Some(ModeKind::Plan)
+        {
+            self.remember_collaboration_mask(mask);
+        }
     }
 
     /// Set the reasoning effort in the stored collaboration mode.
     pub(crate) fn set_reasoning_effort(&mut self, effort: Option<ReasoningEffortConfig>) {
-        self.current_collaboration_mode =
-            self.current_collaboration_mode
-                .with_updates(None, Some(effort), None);
+        let active_mode = self.active_mode_kind();
+        if !matches!(
+            active_mode,
+            ModeKind::Smart | ModeKind::Deep | ModeKind::Rush
+        ) {
+            self.current_collaboration_mode =
+                self.current_collaboration_mode
+                    .with_updates(None, Some(effort), None);
+        }
         if self.collaboration_modes_enabled()
             && let Some(mask) = self.active_collaboration_mask.as_mut()
+        {
+            if mask.mode != Some(ModeKind::Plan) {
+                // Generic "global default" updates should not mutate the active Plan mask.
+                // Plan reasoning is controlled by the Plan preset and Plan-only override updates.
+                mask.reasoning_effort = Some(effort);
+            }
+        }
+        if let Some(mask) = self.active_collaboration_mask.clone()
             && mask.mode != Some(ModeKind::Plan)
         {
-            // Generic "global default" updates should not mutate the active Plan mask.
-            // Plan reasoning is controlled by the Plan preset and Plan-only override updates.
-            mask.reasoning_effort = Some(effort);
+            self.remember_collaboration_mask(mask);
         }
         self.sync_bottom_pane_footer_state();
     }
@@ -7859,13 +8009,21 @@ impl ChatWidget {
 
     /// Set the model in the widget's config copy and stored collaboration mode.
     pub(crate) fn set_model(&mut self, model: &str) {
-        self.current_collaboration_mode =
-            self.current_collaboration_mode
-                .with_updates(Some(model.to_string()), None, None);
+        if !matches!(
+            self.active_mode_kind(),
+            ModeKind::Smart | ModeKind::Deep | ModeKind::Rush
+        ) {
+            self.current_collaboration_mode =
+                self.current_collaboration_mode
+                    .with_updates(Some(model.to_string()), None, None);
+        }
         if self.collaboration_modes_enabled()
             && let Some(mask) = self.active_collaboration_mask.as_mut()
         {
             mask.model = Some(model.to_string());
+        }
+        if let Some(mask) = self.active_collaboration_mask.clone() {
+            self.remember_collaboration_mask(mask);
         }
         self.refresh_model_display();
     }
@@ -7899,6 +8057,138 @@ impl ChatWidget {
             .unwrap_or_else(|| self.current_collaboration_mode.model())
     }
 
+    fn current_session_provider_id(&self) -> &str {
+        self.config.model_provider_id.as_str()
+    }
+
+    fn current_session_provider(&self) -> &codex_core::config::types::ModelProviderInfo {
+        &self.config.model_provider
+    }
+
+    fn resolved_provider_id_for_mode(&self, mode: ModeKind) -> &str {
+        match mode {
+            ModeKind::Smart | ModeKind::Deep | ModeKind::Rush => self
+                .config
+                .collaboration_mode_profiles
+                .get(mode)
+                .map(|profile| profile.model_provider_id.as_str())
+                .unwrap_or(self.base_mode_provider_id.as_str()),
+            ModeKind::Default | ModeKind::Plan | ModeKind::PairProgramming | ModeKind::Execute => {
+                self.base_mode_provider_id.as_str()
+            }
+        }
+    }
+
+    fn mode_switch_stays_in_session_provider(&self, mode: ModeKind) -> bool {
+        self.resolved_provider_id_for_mode(mode) == self.current_session_provider_id()
+    }
+
+    pub(crate) fn has_submitted_user_turn(&self) -> bool {
+        self.has_submitted_user_turn
+    }
+
+    pub(crate) fn should_restart_fresh_session_for_mode(
+        &self,
+        mask: &CollaborationModeMask,
+    ) -> bool {
+        let Some(mode) = mask.mode else {
+            return false;
+        };
+        !self.has_submitted_user_turn && !self.mode_switch_stays_in_session_provider(mode)
+    }
+
+    pub(crate) fn can_apply_mode_in_place(&self, mask: &CollaborationModeMask) -> bool {
+        mask.mode
+            .map(|mode| self.mode_switch_stays_in_session_provider(mode))
+            .unwrap_or(true)
+    }
+
+    pub(crate) fn blocked_collaboration_mode_switch_message(
+        &self,
+        mask: &CollaborationModeMask,
+    ) -> Option<String> {
+        let mode = mask.mode?;
+        (!self.can_apply_mode_in_place(mask)).then(|| {
+            format!(
+                "{} mode uses a different provider. Start a new session to use it.",
+                mode.display_name()
+            )
+        })
+    }
+
+    fn available_cycle_masks(&self) -> Vec<CollaborationModeMask> {
+        let presets = collaboration_modes::presets_for_tui(self.models_manager.as_ref());
+        if !self.has_submitted_user_turn {
+            return presets
+                .into_iter()
+                .map(|mask| {
+                    mask.mode
+                        .and_then(|mode| self.remembered_or_preset_mask_for_mode(mode))
+                        .unwrap_or(mask)
+                })
+                .collect();
+        }
+
+        presets
+            .into_iter()
+            .filter(|mask| {
+                mask.mode
+                    .is_some_and(|mode| self.mode_switch_stays_in_session_provider(mode))
+            })
+            .map(|mask| {
+                mask.mode
+                    .and_then(|mode| self.remembered_or_preset_mask_for_mode(mode))
+                    .unwrap_or(mask)
+            })
+            .collect()
+    }
+
+    fn try_list_models_for_active_provider(
+        &self,
+    ) -> Result<Vec<ModelPreset>, std::sync::TryLockError> {
+        self.models_manager
+            .try_list_models_for_provider_id(self.current_session_provider_id())
+    }
+
+    fn prefetch_active_provider_models(&self) {
+        let models_manager = self.models_manager.clone();
+        let provider_id = self.current_session_provider_id().to_string();
+        tokio::spawn(async move {
+            let _ = models_manager
+                .list_models_for_provider_id(&provider_id, RefreshStrategy::OnlineIfUncached)
+                .await;
+        });
+    }
+
+    fn remembered_mask_for_mode(&self, mode: ModeKind) -> Option<CollaborationModeMask> {
+        self.remembered_collaboration_masks.get(&mode).cloned()
+    }
+
+    fn preset_mask_for_mode(&self, mode: ModeKind) -> Option<CollaborationModeMask> {
+        collaboration_modes::mask_for_kind(self.models_manager.as_ref(), mode)
+    }
+
+    fn remembered_or_preset_mask_for_mode(&self, mode: ModeKind) -> Option<CollaborationModeMask> {
+        self.remembered_mask_for_mode(mode)
+            .or_else(|| self.preset_mask_for_mode(mode))
+    }
+
+    fn remember_collaboration_mask(&mut self, mask: CollaborationModeMask) {
+        if let Some(mode) = mask.mode
+            && mode.is_tui_visible()
+        {
+            if mode != ModeKind::Plan {
+                self.last_non_plan_mode_kind = mode;
+            }
+            self.remembered_collaboration_masks.insert(mode, mask);
+        }
+    }
+
+    fn plan_implementation_mode_mask(&self) -> Option<CollaborationModeMask> {
+        self.remembered_or_preset_mask_for_mode(self.last_non_plan_mode_kind)
+            .or_else(|| collaboration_modes::default_mode_mask(self.models_manager.as_ref()))
+    }
+
     pub(crate) fn realtime_conversation_is_live(&self) -> bool {
         self.realtime_conversation.is_active()
     }
@@ -7927,8 +8217,7 @@ impl ChatWidget {
 
     fn current_model_supports_personality(&self) -> bool {
         let model = self.current_model();
-        self.models_manager
-            .try_list_models()
+        self.try_list_models_for_active_provider()
             .ok()
             .and_then(|models| {
                 models
@@ -7945,8 +8234,7 @@ impl ChatWidget {
     /// failures do not hard-block user input in the UI.
     fn current_model_supports_images(&self) -> bool {
         let model = self.current_model();
-        self.models_manager
-            .try_list_models()
+        self.try_list_models_for_active_provider()
             .ok()
             .and_then(|models| {
                 models
@@ -7974,13 +8262,12 @@ impl ChatWidget {
         &self.current_collaboration_mode
     }
 
-    pub(crate) fn current_reasoning_effort(&self) -> Option<ReasoningEffortConfig> {
-        self.effective_reasoning_effort()
+    pub(crate) fn active_collaboration_mask(&self) -> Option<CollaborationModeMask> {
+        self.active_collaboration_mask.clone()
     }
 
-    #[cfg(test)]
-    pub(crate) fn active_collaboration_mode_kind(&self) -> ModeKind {
-        self.active_mode_kind()
+    pub(crate) fn current_reasoning_effort(&self) -> Option<ReasoningEffortConfig> {
+        self.effective_reasoning_effort()
     }
 
     fn is_session_configured(&self) -> bool {
@@ -8003,11 +8290,37 @@ impl ChatWidget {
         Some(mask)
     }
 
-    fn active_mode_kind(&self) -> ModeKind {
+    fn remembered_masks_from_active(
+        active_collaboration_mask: Option<&CollaborationModeMask>,
+    ) -> HashMap<ModeKind, CollaborationModeMask> {
+        let mut remembered = HashMap::new();
+        if let Some(mask) = active_collaboration_mask
+            && let Some(mode) = mask.mode
+            && mode.is_tui_visible()
+        {
+            remembered.insert(mode, mask.clone());
+        }
+        remembered
+    }
+
+    fn initial_last_non_plan_mode_kind(
+        active_collaboration_mask: Option<&CollaborationModeMask>,
+    ) -> ModeKind {
+        active_collaboration_mask
+            .and_then(|mask| mask.mode)
+            .filter(|mode| mode.is_tui_visible() && *mode != ModeKind::Plan)
+            .unwrap_or(ModeKind::Default)
+    }
+
+    pub(crate) fn active_collaboration_mode_kind(&self) -> ModeKind {
         self.active_collaboration_mask
             .as_ref()
             .and_then(|mask| mask.mode)
             .unwrap_or(ModeKind::Default)
+    }
+
+    fn active_mode_kind(&self) -> ModeKind {
+        self.active_collaboration_mode_kind()
     }
 
     fn effective_reasoning_effort(&self) -> Option<ReasoningEffortConfig> {
@@ -8042,7 +8355,7 @@ impl ChatWidget {
     fn sync_bottom_pane_footer_state(&mut self) {
         let current_model = self.current_model();
         let model = (!current_model.is_empty())
-            .then(|| format!("{}/{current_model}", self.config.model_provider_id));
+            .then(|| format!("{}/{current_model}", self.current_session_provider_id()));
         let reasoning_effort = if current_model.starts_with("codex-auto-") {
             None
         } else {
@@ -8051,8 +8364,7 @@ impl ChatWidget {
         };
         let reasoning_cycle_enabled = !Self::is_auto_model(current_model)
             && self
-                .models_manager
-                .try_list_models()
+                .try_list_models_for_active_provider()
                 .ok()
                 .and_then(|models| {
                     models
@@ -8096,8 +8408,12 @@ impl ChatWidget {
             return None;
         }
         match self.active_mode_kind() {
+            ModeKind::Default => Some(CollaborationModeIndicator::Default),
+            ModeKind::Smart => Some(CollaborationModeIndicator::Smart),
+            ModeKind::Deep => Some(CollaborationModeIndicator::Deep),
+            ModeKind::Rush => Some(CollaborationModeIndicator::Rush),
             ModeKind::Plan => Some(CollaborationModeIndicator::Plan),
-            ModeKind::Default | ModeKind::PairProgramming | ModeKind::Execute => None,
+            ModeKind::PairProgramming | ModeKind::Execute => None,
         }
     }
 
@@ -8127,11 +8443,25 @@ impl ChatWidget {
         if !self.collaboration_modes_enabled() {
             return;
         }
-
-        if let Some(next_mask) = collaboration_modes::next_mask(
-            self.models_manager.as_ref(),
-            self.active_collaboration_mask.as_ref(),
-        ) {
+        let presets = self.available_cycle_masks();
+        if presets.len() <= 1 {
+            return;
+        }
+        let current_kind = self
+            .active_collaboration_mask
+            .as_ref()
+            .and_then(|mask| mask.mode);
+        let next_index = presets
+            .iter()
+            .position(|mask| mask.mode == current_kind)
+            .map_or(0, |idx| (idx + 1) % presets.len());
+        let Some(next_mask) = presets.get(next_index).cloned() else {
+            return;
+        };
+        if self.should_restart_fresh_session_for_mode(&next_mask) {
+            self.app_event_tx
+                .send(AppEvent::StartFreshSessionWithMode { mode: next_mask });
+        } else {
             self.set_collaboration_mask(next_mask);
         }
     }
@@ -8153,6 +8483,9 @@ impl ChatWidget {
             mask.reasoning_effort = Some(Some(effort));
         }
         self.active_collaboration_mask = Some(mask);
+        if let Some(mask) = self.active_collaboration_mask.clone() {
+            self.remember_collaboration_mask(mask);
+        }
         self.update_collaboration_mode_indicator();
         self.refresh_model_display();
         let next_mode = self.active_mode_kind();

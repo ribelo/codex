@@ -4246,8 +4246,11 @@
     "ModeKind": {
       "description": "Initial collaboration mode to use when the TUI starts.",
       "enum": [
-        "plan",
-        "default"
+        "default",
+        "smart",
+        "deep",
+        "rush",
+        "plan"
       ],
       "type": "string"
     },

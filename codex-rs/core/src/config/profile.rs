@@ -27,6 +27,9 @@ pub struct ConfigProfile {
     /// The key in the `model_providers` map identifying the
     /// [`ModelProviderInfo`] to use.
     pub model_provider: Option<String>,
+    pub smart_mode_profile: Option<String>,
+    pub deep_mode_profile: Option<String>,
+    pub rush_mode_profile: Option<String>,
     pub model_context_window: Option<i64>,
     pub model_auto_compact_token_limit: Option<i64>,
     pub approval_policy: Option<AskForApproval>,
@@ -75,6 +78,9 @@ impl From<ConfigProfile> for codex_app_server_protocol::Profile {
         Self {
             model: config_profile.model,
             model_provider: config_profile.model_provider,
+            smart_mode_profile: config_profile.smart_mode_profile,
+            deep_mode_profile: config_profile.deep_mode_profile,
+            rush_mode_profile: config_profile.rush_mode_profile,
             approval_policy: config_profile.approval_policy,
             model_reasoning_effort: config_profile.model_reasoning_effort,
             model_reasoning_summary: config_profile.model_reasoning_summary,

@@ -103,6 +103,10 @@ pub(crate) struct DefaultFooterSummary {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CollaborationModeIndicator {
+    Default,
+    Smart,
+    Deep,
+    Rush,
     Plan,
     #[allow(dead_code)] // Hidden by current mode filtering; kept for future UI re-enablement.
     PairProgramming,
@@ -124,6 +128,10 @@ impl CollaborationModeIndicator {
             String::new()
         };
         match self {
+            CollaborationModeIndicator::Default => format!("Default mode{suffix}"),
+            CollaborationModeIndicator::Smart => format!("Smart mode{suffix}"),
+            CollaborationModeIndicator::Deep => format!("Deep mode{suffix}"),
+            CollaborationModeIndicator::Rush => format!("Rush mode{suffix}"),
             CollaborationModeIndicator::Plan => format!("Plan mode{suffix}"),
             CollaborationModeIndicator::PairProgramming => {
                 format!("Pair Programming mode{suffix}")
@@ -135,6 +143,10 @@ impl CollaborationModeIndicator {
     fn styled_span(self, show_cycle_hint: bool) -> Span<'static> {
         let label = self.label(show_cycle_hint);
         match self {
+            CollaborationModeIndicator::Default => Span::from(label).dim(),
+            CollaborationModeIndicator::Smart => Span::from(label).cyan(),
+            CollaborationModeIndicator::Deep => Span::from(label).magenta(),
+            CollaborationModeIndicator::Rush => Span::from(label).yellow(),
             CollaborationModeIndicator::Plan => Span::from(label).magenta(),
             CollaborationModeIndicator::PairProgramming => Span::from(label).cyan(),
             CollaborationModeIndicator::Execute => Span::from(label).dim(),

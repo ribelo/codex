@@ -312,7 +312,6 @@ pub enum AltScreenMode {
 )]
 #[serde(rename_all = "snake_case")]
 pub enum ModeKind {
-    Plan,
     #[default]
     #[serde(
         alias = "code",
@@ -321,6 +320,10 @@ pub enum ModeKind {
         alias = "custom"
     )]
     Default,
+    Smart,
+    Deep,
+    Rush,
+    Plan,
     #[doc(hidden)]
     #[serde(skip_serializing, skip_deserializing)]
     #[schemars(skip)]
@@ -333,20 +336,32 @@ pub enum ModeKind {
     Execute,
 }
 
-pub const TUI_VISIBLE_COLLABORATION_MODES: [ModeKind; 2] = [ModeKind::Default, ModeKind::Plan];
+pub const TUI_VISIBLE_COLLABORATION_MODES: [ModeKind; 5] = [
+    ModeKind::Default,
+    ModeKind::Smart,
+    ModeKind::Deep,
+    ModeKind::Rush,
+    ModeKind::Plan,
+];
 
 impl ModeKind {
     pub const fn display_name(self) -> &'static str {
         match self {
-            Self::Plan => "Plan",
             Self::Default => "Default",
+            Self::Smart => "Smart",
+            Self::Deep => "Deep",
+            Self::Rush => "Rush",
+            Self::Plan => "Plan",
             Self::PairProgramming => "Pair Programming",
             Self::Execute => "Execute",
         }
     }
 
     pub const fn is_tui_visible(self) -> bool {
-        matches!(self, Self::Plan | Self::Default)
+        matches!(
+            self,
+            Self::Default | Self::Smart | Self::Deep | Self::Rush | Self::Plan
+        )
     }
 
     pub const fn allows_request_user_input(self) -> bool {
@@ -488,7 +503,13 @@ mod tests {
 
     #[test]
     fn tui_visible_collaboration_modes_match_mode_kind_visibility() {
-        let expected = [ModeKind::Default, ModeKind::Plan];
+        let expected = [
+            ModeKind::Default,
+            ModeKind::Smart,
+            ModeKind::Deep,
+            ModeKind::Rush,
+            ModeKind::Plan,
+        ];
         assert_eq!(expected, TUI_VISIBLE_COLLABORATION_MODES);
 
         for mode in TUI_VISIBLE_COLLABORATION_MODES {

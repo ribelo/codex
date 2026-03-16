@@ -19,6 +19,7 @@ use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::openai_models::ModelsResponse;
 use http::HeaderMap;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -31,6 +32,7 @@ use tracing::info;
 const MODEL_CACHE_FILE: &str = "models_cache.json";
 const DEFAULT_MODEL_CACHE_TTL: Duration = Duration::from_secs(300);
 const MODELS_REFRESH_TIMEOUT: Duration = Duration::from_secs(5);
+const SINGLE_PROVIDER_ID: &str = "__default__";
 
 /// Strategy for refreshing available models.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,14 +56,21 @@ enum CatalogMode {
 
 /// Coordinates remote model discovery plus cached metadata on disk.
 #[derive(Debug)]
-pub struct ModelsManager {
+struct ProviderModelsState {
     remote_models: RwLock<Vec<ModelInfo>>,
     catalog_mode: CatalogMode,
-    collaboration_modes_config: CollaborationModesConfig,
-    auth_manager: Arc<AuthManager>,
     etag: RwLock<Option<String>>,
     cache_manager: ModelsCacheManager,
     provider: ModelProviderInfo,
+    is_default_provider: bool,
+}
+
+#[derive(Debug)]
+pub struct ModelsManager {
+    provider_states: HashMap<String, ProviderModelsState>,
+    default_provider_id: String,
+    collaboration_modes_config: CollaborationModesConfig,
+    auth_manager: Arc<AuthManager>,
 }
 
 impl ModelsManager {
@@ -77,30 +86,45 @@ impl ModelsManager {
         collaboration_modes_config: CollaborationModesConfig,
         provider: ModelProviderInfo,
     ) -> Self {
-        let cache_path = codex_home.join(MODEL_CACHE_FILE);
-        let cache_manager = ModelsCacheManager::new(cache_path, DEFAULT_MODEL_CACHE_TTL);
-        let catalog_mode = if model_catalog.is_some() {
-            CatalogMode::Custom
-        } else {
-            CatalogMode::Default
-        };
-        let remote_models = model_catalog
-            .map(|catalog| catalog.models)
-            .unwrap_or_else(|| {
-                if provider.wire_api != WireApi::Responses {
-                    return Vec::new();
-                }
-                Self::load_remote_models_from_file()
-                    .unwrap_or_else(|err| panic!("failed to load bundled models.json: {err}"))
-            });
+        Self::new_with_providers(
+            codex_home,
+            auth_manager,
+            model_catalog,
+            collaboration_modes_config,
+            SINGLE_PROVIDER_ID.to_string(),
+            HashMap::from([(SINGLE_PROVIDER_ID.to_string(), provider)]),
+        )
+    }
+
+    pub fn new_with_providers(
+        codex_home: PathBuf,
+        auth_manager: Arc<AuthManager>,
+        model_catalog: Option<ModelsResponse>,
+        collaboration_modes_config: CollaborationModesConfig,
+        default_provider_id: String,
+        providers: HashMap<String, ModelProviderInfo>,
+    ) -> Self {
+        let provider_states = providers
+            .into_iter()
+            .map(|(provider_id, provider)| {
+                let state = Self::build_provider_state(
+                    &codex_home,
+                    &default_provider_id,
+                    &provider_id,
+                    provider,
+                    (provider_id == default_provider_id)
+                        .then(|| model_catalog.clone())
+                        .flatten(),
+                    &collaboration_modes_config,
+                );
+                (provider_id, state)
+            })
+            .collect();
         Self {
-            remote_models: RwLock::new(remote_models),
-            catalog_mode,
+            provider_states,
+            default_provider_id,
             collaboration_modes_config,
             auth_manager,
-            etag: RwLock::new(None),
-            cache_manager,
-            provider,
         }
     }
 
@@ -108,33 +132,63 @@ impl ModelsManager {
     ///
     /// Returns model presets sorted by priority and filtered by auth mode and visibility.
     pub async fn list_models(&self, refresh_strategy: RefreshStrategy) -> Vec<ModelPreset> {
-        if let Err(err) = self.refresh_available_models(refresh_strategy).await {
+        self.list_models_for_provider_id(&self.default_provider_id, refresh_strategy)
+            .await
+    }
+
+    pub async fn list_models_for_provider_id(
+        &self,
+        provider_id: &str,
+        refresh_strategy: RefreshStrategy,
+    ) -> Vec<ModelPreset> {
+        if let Err(err) = self
+            .refresh_available_models_for_provider_id(provider_id, refresh_strategy)
+            .await
+        {
             error!("failed to refresh available models: {err}");
         }
-        let remote_models = self.get_remote_models().await;
-        self.build_available_models(remote_models)
+        let remote_models = self.get_remote_models_for_provider_id(provider_id).await;
+        self.build_available_models(provider_id, remote_models)
     }
 
     /// List collaboration mode presets.
     ///
     /// Returns a static set of presets seeded with the configured model.
     pub fn list_collaboration_modes(&self) -> Vec<CollaborationModeMask> {
-        self.list_collaboration_modes_for_config(self.collaboration_modes_config)
+        self.list_collaboration_modes_for_config(self.collaboration_modes_config.clone())
     }
 
     pub fn list_collaboration_modes_for_config(
         &self,
         collaboration_modes_config: CollaborationModesConfig,
     ) -> Vec<CollaborationModeMask> {
-        builtin_collaboration_mode_presets(collaboration_modes_config)
+        let mut presets = builtin_collaboration_mode_presets(collaboration_modes_config.clone());
+        for preset in &mut presets {
+            if preset.model.is_none()
+                && let Some(mode) = preset.mode
+                && let Some(profile) = collaboration_modes_config
+                    .collaboration_mode_profiles
+                    .get(mode)
+            {
+                preset.model = self.default_model_for_profile(profile);
+            }
+        }
+        presets
     }
 
     /// Attempt to list models without blocking, using the current cached state.
     ///
     /// Returns an error if the internal lock cannot be acquired.
     pub fn try_list_models(&self) -> Result<Vec<ModelPreset>, TryLockError> {
-        let remote_models = self.try_get_remote_models()?;
-        Ok(self.build_available_models(remote_models))
+        self.try_list_models_for_provider_id(&self.default_provider_id)
+    }
+
+    pub fn try_list_models_for_provider_id(
+        &self,
+        provider_id: &str,
+    ) -> Result<Vec<ModelPreset>, TryLockError> {
+        let remote_models = self.try_get_remote_models_for_provider_id(provider_id)?;
+        Ok(self.build_available_models(provider_id, remote_models))
     }
 
     // todo(aibrahim): should be visible to core only and sent on session_configured event
@@ -147,14 +201,27 @@ impl ModelsManager {
         model: &Option<String>,
         refresh_strategy: RefreshStrategy,
     ) -> String {
+        self.get_default_model_for_provider_id(&self.default_provider_id, model, refresh_strategy)
+            .await
+    }
+
+    pub async fn get_default_model_for_provider_id(
+        &self,
+        provider_id: &str,
+        model: &Option<String>,
+        refresh_strategy: RefreshStrategy,
+    ) -> String {
         if let Some(model) = model.as_ref() {
             return model.to_string();
         }
-        if let Err(err) = self.refresh_available_models(refresh_strategy).await {
+        if let Err(err) = self
+            .refresh_available_models_for_provider_id(provider_id, refresh_strategy)
+            .await
+        {
             error!("failed to refresh available models: {err}");
         }
-        let remote_models = self.get_remote_models().await;
-        let available = self.build_available_models(remote_models);
+        let remote_models = self.get_remote_models_for_provider_id(provider_id).await;
+        let available = self.build_available_models(provider_id, remote_models);
         available
             .iter()
             .find(|model| model.is_default)
@@ -166,7 +233,9 @@ impl ModelsManager {
     // todo(aibrahim): look if we can tighten it to pub(crate)
     /// Look up model metadata, applying remote overrides and config adjustments.
     pub async fn get_model_info(&self, model: &str, config: &Config) -> ModelInfo {
-        let remote_models = self.get_remote_models().await;
+        let remote_models = self
+            .get_remote_models_for_provider_id(&config.model_provider_id)
+            .await;
         Self::construct_model_info_from_candidates(model, &remote_models, config)
     }
 
@@ -231,25 +300,57 @@ impl ModelsManager {
     ///
     /// Uses `Online` strategy to fetch latest models when ETags differ.
     pub(crate) async fn refresh_if_new_etag(&self, etag: String) {
-        let current_etag = self.get_etag().await;
+        let current_etag = self
+            .get_etag_for_provider_id(&self.default_provider_id)
+            .await;
         if current_etag.clone().is_some() && current_etag.as_deref() == Some(etag.as_str()) {
-            if let Err(err) = self.cache_manager.renew_cache_ttl().await {
+            if let Some(state) = self.provider_state(&self.default_provider_id)
+                && let Err(err) = state.cache_manager.renew_cache_ttl().await
+            {
                 error!("failed to renew cache TTL: {err}");
             }
             return;
         }
-        if let Err(err) = self.refresh_available_models(RefreshStrategy::Online).await {
+        if let Err(err) = self
+            .refresh_available_models_for_provider_id(
+                &self.default_provider_id,
+                RefreshStrategy::Online,
+            )
+            .await
+        {
             error!("failed to refresh available models: {err}");
         }
     }
 
     /// Refresh available models according to the specified strategy.
+    async fn refresh_available_models_for_provider_id(
+        &self,
+        provider_id: &str,
+        refresh_strategy: RefreshStrategy,
+    ) -> CoreResult<()> {
+        let Some(state) = self.provider_state(provider_id) else {
+            return Ok(());
+        };
+        self.refresh_available_models_for_state(state, refresh_strategy)
+            .await
+    }
+
+    #[cfg(test)]
     async fn refresh_available_models(&self, refresh_strategy: RefreshStrategy) -> CoreResult<()> {
+        self.refresh_available_models_for_provider_id(&self.default_provider_id, refresh_strategy)
+            .await
+    }
+
+    async fn refresh_available_models_for_state(
+        &self,
+        state: &ProviderModelsState,
+        refresh_strategy: RefreshStrategy,
+    ) -> CoreResult<()> {
         // don't override the custom model catalog if one was provided by the user
-        if matches!(self.catalog_mode, CatalogMode::Custom) {
+        if matches!(state.catalog_mode, CatalogMode::Custom) {
             return Ok(());
         }
-        if self.provider.wire_api != WireApi::Responses {
+        if state.provider.wire_api != WireApi::Responses {
             return Ok(());
         }
 
@@ -258,7 +359,7 @@ impl ModelsManager {
                 refresh_strategy,
                 RefreshStrategy::Offline | RefreshStrategy::OnlineIfUncached
             ) {
-                self.try_load_cache().await;
+                self.try_load_cache(state).await;
             }
             return Ok(());
         }
@@ -266,32 +367,32 @@ impl ModelsManager {
         match refresh_strategy {
             RefreshStrategy::Offline => {
                 // Only try to load from cache, never fetch
-                self.try_load_cache().await;
+                self.try_load_cache(state).await;
                 Ok(())
             }
             RefreshStrategy::OnlineIfUncached => {
                 // Try cache first, fall back to online if unavailable
-                if self.try_load_cache().await {
+                if self.try_load_cache(state).await {
                     info!("models cache: using cached models for OnlineIfUncached");
                     return Ok(());
                 }
                 info!("models cache: cache miss, fetching remote models");
-                self.fetch_and_update_models().await
+                self.fetch_and_update_models(state).await
             }
             RefreshStrategy::Online => {
                 // Always fetch from network
-                self.fetch_and_update_models().await
+                self.fetch_and_update_models(state).await
             }
         }
     }
 
-    async fn fetch_and_update_models(&self) -> CoreResult<()> {
+    async fn fetch_and_update_models(&self, state: &ProviderModelsState) -> CoreResult<()> {
         let _timer =
             codex_otel::start_global_timer("codex.remote_models.fetch_update.duration_ms", &[]);
         let auth = self.auth_manager.auth().await;
         let auth_mode = self.auth_manager.auth_mode();
-        let api_provider = self.provider.to_api_provider(auth_mode)?;
-        let api_auth = auth_provider_from_auth(auth.clone(), &self.provider)?;
+        let api_provider = state.provider.to_api_provider(auth_mode)?;
+        let api_auth = auth_provider_from_auth(auth.clone(), &state.provider)?;
         let transport = ReqwestTransport::new(build_reqwest_client());
         let client = ModelsClient::new(transport, api_provider, api_auth);
 
@@ -304,32 +405,47 @@ impl ModelsManager {
         .map_err(|_| CodexErr::Timeout)?
         .map_err(map_api_error)?;
 
-        self.apply_remote_models(models.clone()).await;
-        *self.etag.write().await = etag.clone();
-        self.cache_manager
+        self.apply_remote_models(state, models.clone()).await;
+        *state.etag.write().await = etag.clone();
+        state
+            .cache_manager
             .persist_cache(&models, etag, client_version)
             .await;
         Ok(())
     }
 
+    async fn get_etag_for_provider_id(&self, provider_id: &str) -> Option<String> {
+        let Some(state) = self.provider_state(provider_id) else {
+            return None;
+        };
+        state.etag.read().await.clone()
+    }
+
+    #[cfg(test)]
     async fn get_etag(&self) -> Option<String> {
-        self.etag.read().await.clone()
+        self.get_etag_for_provider_id(&self.default_provider_id)
+            .await
     }
 
     /// Replace the cached remote models and rebuild the derived presets list.
-    async fn apply_remote_models(&self, models: Vec<ModelInfo>) {
-        let mut existing_models = Self::load_remote_models_from_file().unwrap_or_default();
-        for model in models {
-            if let Some(existing_index) = existing_models
-                .iter()
-                .position(|existing| existing.slug == model.slug)
-            {
-                existing_models[existing_index] = model;
-            } else {
-                existing_models.push(model);
+    async fn apply_remote_models(&self, state: &ProviderModelsState, models: Vec<ModelInfo>) {
+        let remote_models = if state.is_default_provider {
+            let mut existing_models = Self::load_remote_models_from_file().unwrap_or_default();
+            for model in models {
+                if let Some(existing_index) = existing_models
+                    .iter()
+                    .position(|existing| existing.slug == model.slug)
+                {
+                    existing_models[existing_index] = model;
+                } else {
+                    existing_models.push(model);
+                }
             }
-        }
-        *self.remote_models.write().await = existing_models;
+            existing_models
+        } else {
+            models
+        };
+        *state.remote_models.write().await = remote_models;
     }
 
     fn load_remote_models_from_file() -> Result<Vec<ModelInfo>, std::io::Error> {
@@ -339,12 +455,12 @@ impl ModelsManager {
     }
 
     /// Attempt to satisfy the refresh from the cache when it matches the provider and TTL.
-    async fn try_load_cache(&self) -> bool {
+    async fn try_load_cache(&self, state: &ProviderModelsState) -> bool {
         let _timer =
             codex_otel::start_global_timer("codex.remote_models.load_cache.duration_ms", &[]);
         let client_version = crate::models_manager::client_version_to_whole();
         info!(client_version, "models cache: evaluating cache eligibility");
-        let cache = match self.cache_manager.load_fresh(&client_version).await {
+        let cache = match state.cache_manager.load_fresh(&client_version).await {
             Some(cache) => cache,
             None => {
                 info!("models cache: no usable cache entry");
@@ -352,8 +468,8 @@ impl ModelsManager {
             }
         };
         let models = cache.models.clone();
-        *self.etag.write().await = cache.etag.clone();
-        self.apply_remote_models(models.clone()).await;
+        *state.etag.write().await = cache.etag.clone();
+        self.apply_remote_models(state, models.clone()).await;
         info!(
             models_count = models.len(),
             etag = ?cache.etag,
@@ -363,11 +479,22 @@ impl ModelsManager {
     }
 
     /// Build picker-ready presets from the active catalog snapshot.
-    fn build_available_models(&self, mut remote_models: Vec<ModelInfo>) -> Vec<ModelPreset> {
+    fn build_available_models(
+        &self,
+        provider_id: &str,
+        mut remote_models: Vec<ModelInfo>,
+    ) -> Vec<ModelPreset> {
         remote_models.sort_by(|a, b| a.priority.cmp(&b.priority));
 
         let mut presets: Vec<ModelPreset> = remote_models.into_iter().map(Into::into).collect();
         let chatgpt_mode = matches!(self.auth_manager.auth_mode(), Some(AuthMode::Chatgpt));
+        let wire_api = self
+            .provider_state(provider_id)
+            .map(|state| state.provider.wire_api)
+            .unwrap_or(WireApi::Responses);
+        if wire_api != WireApi::Responses {
+            return presets;
+        }
         presets = ModelPreset::filter_by_auth(presets, chatgpt_mode);
 
         ModelPreset::mark_default_by_picker_visibility(&mut presets);
@@ -375,12 +502,132 @@ impl ModelsManager {
         presets
     }
 
-    async fn get_remote_models(&self) -> Vec<ModelInfo> {
-        self.remote_models.read().await.clone()
+    async fn get_remote_models_for_provider_id(&self, provider_id: &str) -> Vec<ModelInfo> {
+        let Some(state) = self.provider_state(provider_id) else {
+            return Vec::new();
+        };
+        state.remote_models.read().await.clone()
     }
 
+    #[cfg(test)]
+    async fn get_remote_models(&self) -> Vec<ModelInfo> {
+        self.get_remote_models_for_provider_id(&self.default_provider_id)
+            .await
+    }
+
+    fn try_get_remote_models_for_provider_id(
+        &self,
+        provider_id: &str,
+    ) -> Result<Vec<ModelInfo>, TryLockError> {
+        let Some(state) = self.provider_state(provider_id) else {
+            return Ok(Vec::new());
+        };
+        Ok(state.remote_models.try_read()?.clone())
+    }
+
+    #[cfg(test)]
     fn try_get_remote_models(&self) -> Result<Vec<ModelInfo>, TryLockError> {
-        Ok(self.remote_models.try_read()?.clone())
+        self.try_get_remote_models_for_provider_id(&self.default_provider_id)
+    }
+
+    fn build_provider_state(
+        codex_home: &std::path::Path,
+        default_provider_id: &str,
+        provider_id: &str,
+        provider: ModelProviderInfo,
+        model_catalog: Option<ModelsResponse>,
+        collaboration_modes_config: &CollaborationModesConfig,
+    ) -> ProviderModelsState {
+        let cache_path = codex_home.join(Self::cache_file_name(default_provider_id, provider_id));
+        let cache_manager = ModelsCacheManager::new(cache_path, DEFAULT_MODEL_CACHE_TTL);
+        let catalog_mode = if model_catalog.is_some() {
+            CatalogMode::Custom
+        } else {
+            CatalogMode::Default
+        };
+        let remote_models = model_catalog
+            .map(|catalog| catalog.models)
+            .unwrap_or_else(|| {
+                if provider.wire_api != WireApi::Responses {
+                    return Vec::new();
+                }
+                if provider_id == default_provider_id {
+                    return Self::load_remote_models_from_file()
+                        .unwrap_or_else(|err| panic!("failed to load bundled models.json: {err}"));
+                }
+
+                collaboration_modes_config
+                    .collaboration_mode_profiles
+                    .smart
+                    .iter()
+                    .chain(
+                        collaboration_modes_config
+                            .collaboration_mode_profiles
+                            .deep
+                            .iter(),
+                    )
+                    .chain(
+                        collaboration_modes_config
+                            .collaboration_mode_profiles
+                            .rush
+                            .iter(),
+                    )
+                    .filter(|profile| profile.model_provider_id == provider_id)
+                    .filter_map(|profile| profile.model.as_deref())
+                    .map(|model| {
+                        model_info::model_info_from_slug_for_provider(model, provider.wire_api)
+                    })
+                    .collect()
+            });
+        ProviderModelsState {
+            remote_models: RwLock::new(remote_models),
+            catalog_mode,
+            etag: RwLock::new(None),
+            cache_manager,
+            provider,
+            is_default_provider: provider_id == default_provider_id,
+        }
+    }
+
+    fn cache_file_name(default_provider_id: &str, provider_id: &str) -> String {
+        if provider_id == default_provider_id {
+            MODEL_CACHE_FILE.to_string()
+        } else {
+            format!("models_cache.{provider_id}.json")
+        }
+    }
+
+    fn provider_state(&self, provider_id: &str) -> Option<&ProviderModelsState> {
+        self.provider_states.get(provider_id).or_else(|| {
+            (self.provider_states.len() == 1)
+                .then(|| self.provider_states.values().next())
+                .flatten()
+        })
+    }
+
+    fn default_model_for_profile(
+        &self,
+        profile: &crate::config::CollaborationModeProfile,
+    ) -> Option<String> {
+        profile.model.clone().or_else(|| {
+            self.try_list_models_for_provider_id(&profile.model_provider_id)
+                .ok()
+                .and_then(|available| {
+                    available
+                        .iter()
+                        .find(|model| model.is_default)
+                        .or_else(|| available.first())
+                        .map(|model| model.model.clone())
+                })
+        })
+    }
+
+    #[cfg(test)]
+    fn default_cache_manager(&self) -> &ModelsCacheManager {
+        &self
+            .provider_state(&self.default_provider_id)
+            .expect("default provider state")
+            .cache_manager
     }
 
     /// Construct a manager with a specific provider for testing.
@@ -389,20 +636,13 @@ impl ModelsManager {
         auth_manager: Arc<AuthManager>,
         provider: ModelProviderInfo,
     ) -> Self {
-        let cache_path = codex_home.join(MODEL_CACHE_FILE);
-        let cache_manager = ModelsCacheManager::new(cache_path, DEFAULT_MODEL_CACHE_TTL);
-        Self {
-            remote_models: RwLock::new(
-                Self::load_remote_models_from_file()
-                    .unwrap_or_else(|err| panic!("failed to load bundled models.json: {err}")),
-            ),
-            catalog_mode: CatalogMode::Default,
-            collaboration_modes_config: CollaborationModesConfig::default(),
+        Self::new(
+            codex_home,
             auth_manager,
-            etag: RwLock::new(None),
-            cache_manager,
+            None,
+            CollaborationModesConfig::default(),
             provider,
-        }
+        )
     }
 
     /// Get model identifier without consulting remote state or cache.
@@ -851,7 +1091,7 @@ mod tests {
 
         // Rewrite cache with an old timestamp so it is treated as stale.
         manager
-            .cache_manager
+            .default_cache_manager()
             .manipulate_cache_for_test(|fetched_at| {
                 *fetched_at = Utc::now() - chrono::Duration::hours(1);
             })
@@ -913,7 +1153,7 @@ mod tests {
             .expect("initial refresh succeeds");
 
         manager
-            .cache_manager
+            .default_cache_manager()
             .mutate_cache_for_test(|cache| {
                 let client_version = crate::models_manager::client_version_to_whole();
                 cache.client_version = Some(format!("{client_version}-mismatch"));
@@ -969,7 +1209,7 @@ mod tests {
             auth_manager,
             provider,
         );
-        manager.cache_manager.set_ttl(Duration::ZERO);
+        manager.default_cache_manager().set_ttl(Duration::ZERO);
 
         manager
             .refresh_available_models(RefreshStrategy::OnlineIfUncached)

@@ -215,6 +215,12 @@
             "null"
           ]
         },
+        "deep_mode_profile": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "developer_instructions": {
           "type": [
             "string",
@@ -334,6 +340,12 @@
             "null"
           ]
         },
+        "rush_mode_profile": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "sandbox_mode": {
           "anyOf": [
             {
@@ -362,6 +374,12 @@
             {
               "type": "null"
             }
+          ]
+        },
+        "smart_mode_profile": {
+          "type": [
+            "string",
+            "null"
           ]
         },
         "tools": {
@@ -942,6 +960,12 @@
             "null"
           ]
         },
+        "deep_mode_profile": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "model": {
           "type": [
             "string",
@@ -1014,6 +1038,12 @@
             }
           ]
         },
+        "rush_mode_profile": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "service_tier": {
           "anyOf": [
             {
@@ -1022,6 +1052,12 @@
             {
               "type": "null"
             }
+          ]
+        },
+        "smart_mode_profile": {
+          "type": [
+            "string",
+            "null"
           ]
         },
         "tools": {

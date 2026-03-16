@@ -314,6 +314,9 @@
         "chatgpt_base_url": {
           "type": "string"
         },
+        "deep_mode_profile": {
+          "type": "string"
+        },
         "experimental_compact_prompt_file": {
           "$ref": "#/definitions/AbsolutePathBuf"
         },
@@ -573,11 +576,17 @@
         "plan_mode_reasoning_effort": {
           "$ref": "#/definitions/ReasoningEffort"
         },
+        "rush_mode_profile": {
+          "type": "string"
+        },
         "sandbox_mode": {
           "$ref": "#/definitions/SandboxMode"
         },
         "service_tier": {
           "$ref": "#/definitions/ServiceTier"
+        },
+        "smart_mode_profile": {
+          "type": "string"
         },
         "tools": {
           "$ref": "#/definitions/ToolsToml"
@@ -2143,6 +2152,9 @@
       "description": "Compact prompt used for history compaction.",
       "type": "string"
     },
+    "deep_mode_profile": {
+      "type": "string"
+    },
     "default_permissions": {
       "description": "Default named permissions profile to apply from the `[permissions]` table.",
       "type": "string"
@@ -2652,6 +2664,9 @@
       "description": "Review model override used by the `/review` feature.",
       "type": "string"
     },
+    "rush_mode_profile": {
+      "type": "string"
+    },
     "sandbox_mode": {
       "allOf": [
         {
@@ -2702,6 +2717,9 @@
         }
       ],
       "description": "User-level skill config entries keyed by SKILL.md path."
+    },
+    "smart_mode_profile": {
+      "type": "string"
     },
     "sqlite_home": {
       "allOf": [

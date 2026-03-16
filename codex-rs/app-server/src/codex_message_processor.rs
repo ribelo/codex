@@ -5989,12 +5989,38 @@ impl CodexMessageProcessor {
             return;
         }
 
+        let config_snapshot = thread.config_snapshot().await;
         let collaboration_modes_config = CollaborationModesConfig {
             default_mode_request_user_input: thread.enabled(Feature::DefaultModeRequestUserInput),
+            collaboration_mode_profiles: config_snapshot.collaboration_mode_profiles.clone(),
         };
         let collaboration_mode = params.collaboration_mode.map(|mode| {
             self.normalize_turn_start_collaboration_mode(mode, collaboration_modes_config)
         });
+        if let Some(mode) = collaboration_mode.as_ref() {
+            let resolved_provider_id = config_snapshot
+                .collaboration_mode_profiles
+                .get(mode.mode)
+                .map(|profile| profile.model_provider_id.as_str())
+                .unwrap_or(config_snapshot.base_model_provider_id.as_str());
+            if resolved_provider_id == config_snapshot.model_provider_id {
+                // No provider transition needed for this thread.
+            } else {
+                let error = JSONRPCErrorError {
+                    code: INVALID_REQUEST_ERROR_CODE,
+                    message: format!(
+                        "{} mode uses provider `{}` but thread `{}` is running on `{}`. Start a new thread with the target provider to use this mode.",
+                        mode.mode.display_name(),
+                        resolved_provider_id,
+                        params.thread_id,
+                        config_snapshot.model_provider_id
+                    ),
+                    data: None,
+                };
+                self.outgoing.send_error(request_id, error).await;
+                return;
+            }
+        }
 
         // Map v2 input items to core input items.
         let mapped_items: Vec<CoreInputItem> = params
@@ -8468,6 +8494,8 @@ mod tests {
         let config_snapshot = ThreadConfigSnapshot {
             model: "gpt-5".to_string(),
             model_provider_id: "openai".to_string(),
+            base_model_provider_id: "openai".to_string(),
+            collaboration_mode_profiles: codex_core::config::CollaborationModeProfiles::default(),
             service_tier: Some(codex_protocol::config_types::ServiceTier::Flex),
             approval_policy: codex_protocol::protocol::AskForApproval::OnRequest,
             approvals_reviewer: codex_protocol::config_types::ApprovalsReviewer::User,

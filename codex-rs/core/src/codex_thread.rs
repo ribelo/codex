@@ -1,6 +1,7 @@
 use crate::agent::AgentStatus;
 use crate::codex::Codex;
 use crate::codex::SteerInputError;
+use crate::config::CollaborationModeProfiles;
 use crate::config::ConstraintResult;
 use crate::error::CodexErr;
 use crate::error::Result as CodexResult;
@@ -32,6 +33,8 @@ use crate::state_db::StateDbHandle;
 pub struct ThreadConfigSnapshot {
     pub model: String,
     pub model_provider_id: String,
+    pub base_model_provider_id: String,
+    pub collaboration_mode_profiles: CollaborationModeProfiles,
     pub service_tier: Option<ServiceTier>,
     pub approval_policy: AskForApproval,
     pub approvals_reviewer: ApprovalsReviewer,
