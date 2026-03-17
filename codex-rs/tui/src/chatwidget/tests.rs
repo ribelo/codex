@@ -207,6 +207,8 @@ async fn resumed_initial_messages_render_history() {
         msg: EventMsg::SessionConfigured(configured),
     });
 
+    assert!(chat.has_submitted_user_turn());
+
     let cells = drain_insert_history(&mut rx);
     let mut merged_lines = Vec::new();
     for lines in cells {
@@ -229,6 +231,37 @@ async fn resumed_initial_messages_render_history() {
     );
 }
 
+#[tokio::test]
+async fn fresh_session_with_composer_history_stays_fresh_for_mode_switches() {
+    let (mut chat, _rx, _ops) = make_chatwidget_manual(None).await;
+
+    let configured = codex_protocol::protocol::SessionConfiguredEvent {
+        session_id: ThreadId::new(),
+        forked_from_id: None,
+        thread_name: None,
+        model: "test-model".to_string(),
+        model_provider_id: "test-provider".to_string(),
+        service_tier: None,
+        approval_policy: AskForApproval::Never,
+        sandbox_policy: SandboxPolicy::new_read_only_policy(),
+        cwd: PathBuf::from("/home/user/project"),
+        reasoning_effort: Some(ReasoningEffortConfig::default()),
+        history_log_id: 42,
+        history_entry_count: 7,
+        initial_messages: None,
+        network_proxy: None,
+        rollout_path: None,
+    };
+
+    chat.handle_codex_event(Event {
+        id: "initial".into(),
+        msg: EventMsg::SessionConfigured(configured),
+    });
+
+    assert!(!chat.has_submitted_user_turn());
+}
+
+#[tokio::test]
 async fn thread_snapshot_replay_does_not_duplicate_agent_message_history() {
     let (mut chat, mut rx, _ops) = make_chatwidget_manual(None).await;
 
@@ -3979,6 +4012,10 @@ async fn restore_thread_input_state_syncs_sleep_inhibitor_state() {
         queued_user_messages: VecDeque::new(),
         current_collaboration_mode: chat.current_collaboration_mode.clone(),
         active_collaboration_mask: chat.active_collaboration_mask.clone(),
+        base_mode_provider_id: chat.base_mode_provider_id.clone(),
+        remembered_collaboration_masks: chat.remembered_collaboration_masks.clone(),
+        last_non_plan_mode_kind: chat.last_non_plan_mode_kind,
+        has_submitted_user_turn: chat.has_submitted_user_turn(),
         agent_turn_running: true,
     }));
 

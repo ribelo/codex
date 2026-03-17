@@ -898,6 +898,51 @@ impl App {
         self.start_fresh_session_with_summary_hint(tui).await;
     }
 
+    async fn start_fresh_session_with_mode(
+        &mut self,
+        tui: &mut tui::Tui,
+        mode: CollaborationModeMask,
+    ) {
+        self.refresh_in_memory_config_from_disk_best_effort("changing collaboration mode")
+            .await;
+
+        let base_mode_provider_id = self.config.model_provider_id.clone();
+        let draft_state = self.chat_widget.capture_session_restart_draft_state();
+        let config = self.fresh_session_config_for_mode(&mode);
+        let thread_manager = self.thread_manager_for_config(&config);
+        let model = config.model.clone();
+
+        self.shutdown_current_thread().await;
+        if let Err(err) = self.server.remove_and_close_all_threads().await {
+            tracing::warn!(error = %err, "failed to close all threads");
+        }
+
+        let init = crate::chatwidget::ChatWidgetInit {
+            config,
+            frame_requester: tui.frame_requester(),
+            app_event_tx: self.app_event_tx.clone(),
+            initial_user_message: None,
+            enhanced_keys_supported: self.enhanced_keys_supported,
+            auth_manager: self.auth_manager.clone(),
+            models_manager: thread_manager.get_models_manager(),
+            feedback: self.feedback.clone(),
+            is_first_run: false,
+            feedback_audience: self.feedback_audience,
+            model,
+            initial_collaboration_mask: Some(mode),
+            base_mode_provider_id,
+            startup_tooltip_override: None,
+            status_line_invalid_items_warned: self.status_line_invalid_items_warned.clone(),
+            session_telemetry: self.session_telemetry.clone(),
+        };
+        self.server = thread_manager.clone();
+        self.chat_widget = ChatWidget::new(init, thread_manager);
+        self.chat_widget
+            .restore_session_restart_draft_state(draft_state);
+        self.reset_thread_event_state();
+        self.refresh_status_line();
+        tui.frame_requester().schedule_frame();
+    }
     async fn rebuild_config_for_resume_or_fallback(
         &mut self,
         current_cwd: &Path,
