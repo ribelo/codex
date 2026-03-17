@@ -54,6 +54,7 @@ use crate::version::CODEX_CLI_VERSION;
 use codex_app_server_protocol::ConfigLayerSource;
 use codex_backend_client::Client as BackendClient;
 use codex_chatgpt::connectors;
+use codex_core::ModelProviderInfo;
 use codex_core::config::Config;
 use codex_core::config::Constrained;
 use codex_core::config::ConstraintResult;
@@ -3796,6 +3797,11 @@ impl ChatWidget {
             .as_ref()
             .and_then(|mask| mask.model.clone())
             .unwrap_or(header_model);
+        let remembered_collaboration_masks =
+            Self::remembered_masks_from_active(active_collaboration_mask.as_ref());
+        let last_non_plan_mode_kind =
+            Self::initial_last_non_plan_mode_kind(active_collaboration_mask.as_ref());
+        let has_submitted_user_turn = session_configured.history_entry_count > 0;
 
         let current_cwd = Some(session_configured.cwd.clone());
         let codex_op_tx =
@@ -3836,13 +3842,9 @@ impl ChatWidget {
             current_collaboration_mode,
             active_collaboration_mask,
             base_mode_provider_id,
-            remembered_collaboration_masks: Self::remembered_masks_from_active(
-                active_collaboration_mask.as_ref(),
-            ),
-            last_non_plan_mode_kind: Self::initial_last_non_plan_mode_kind(
-                active_collaboration_mask.as_ref(),
-            ),
-            has_submitted_user_turn: session_configured.history_entry_count > 0,
+            remembered_collaboration_masks,
+            last_non_plan_mode_kind,
+            has_submitted_user_turn,
             auth_manager,
             models_manager,
             session_telemetry,
@@ -7049,14 +7051,14 @@ impl ChatWidget {
             return;
         }
 
-        let Some(preset) = self
-            .try_list_models_for_active_provider()
-            .ok()
-            .and_then(|models| {
-                models
-                    .into_iter()
-                    .find(|preset| preset.model == current_model)
-            })
+        let Some(preset) =
+            self.try_list_models_for_active_provider()
+                .ok()
+                .and_then(|models: Vec<ModelPreset>| {
+                    models
+                        .into_iter()
+                        .find(|preset| preset.model == current_model)
+                })
         else {
             return;
         };
@@ -8061,7 +8063,7 @@ impl ChatWidget {
         self.config.model_provider_id.as_str()
     }
 
-    fn current_session_provider(&self) -> &codex_core::config::types::ModelProviderInfo {
+    fn current_session_provider(&self) -> &ModelProviderInfo {
         &self.config.model_provider
     }
 
@@ -8145,7 +8147,7 @@ impl ChatWidget {
 
     fn try_list_models_for_active_provider(
         &self,
-    ) -> Result<Vec<ModelPreset>, std::sync::TryLockError> {
+    ) -> Result<Vec<ModelPreset>, tokio::sync::TryLockError> {
         self.models_manager
             .try_list_models_for_provider_id(self.current_session_provider_id())
     }
@@ -8219,7 +8221,7 @@ impl ChatWidget {
         let model = self.current_model();
         self.try_list_models_for_active_provider()
             .ok()
-            .and_then(|models| {
+            .and_then(|models: Vec<ModelPreset>| {
                 models
                     .into_iter()
                     .find(|preset| preset.model == model)
@@ -8236,7 +8238,7 @@ impl ChatWidget {
         let model = self.current_model();
         self.try_list_models_for_active_provider()
             .ok()
-            .and_then(|models| {
+            .and_then(|models: Vec<ModelPreset>| {
                 models
                     .into_iter()
                     .find(|preset| preset.model == model)
@@ -8366,7 +8368,7 @@ impl ChatWidget {
             && self
                 .try_list_models_for_active_provider()
                 .ok()
-                .and_then(|models| {
+                .and_then(|models: Vec<ModelPreset>| {
                     models
                         .into_iter()
                         .find(|preset| preset.model == current_model)
