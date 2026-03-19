@@ -6,7 +6,7 @@
       "type": "string"
     }
   },
-  "description": "Remove a file or directory tree from the host filesystem.",
+  "description": "Remove a file or directory on the host filesystem.",
   "properties": {
     "force": {
       "description": "Whether missing paths should be ignored. Defaults to `true`.",
@@ -24,7 +24,7 @@
       "description": "Absolute path to remove."
     },
     "recursive": {
-      "description": "Whether directory removal should recurse. Defaults to `true`.",
+      "description": "Whether to recurse into directories. Defaults to `true`.",
       "type": [
         "boolean",
         "null"

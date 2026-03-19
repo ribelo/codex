@@ -6,7 +6,7 @@
       "type": "string"
     }
   },
-  "description": "Copy a file or directory tree on the host filesystem.",
+  "description": "Copy a file or directory on the host filesystem.",
   "properties": {
     "destinationPath": {
       "allOf": [

@@ -180,6 +180,7 @@ pub(crate) fn spawn_end(
         new_agent_role,
         prompt,
         status: _,
+        ..
     } = ev;
 
     let title = match new_thread_id {
@@ -565,6 +566,7 @@ fn status_summary_spans(status: &AgentStatus) -> Vec<Span<'static>> {
     match status {
         AgentStatus::PendingInit => vec![Span::from("Pending init").cyan()],
         AgentStatus::Running => vec![Span::from("Running").cyan().bold()],
+        AgentStatus::Interrupted => vec![Span::from("Interrupted").yellow()],
         AgentStatus::Completed(message) => {
             let mut spans = vec![Span::from("Completed").green()];
             if let Some(message) = message.as_ref() {
@@ -626,6 +628,8 @@ mod tests {
                 new_agent_nickname: Some("Robie".to_string()),
                 new_agent_role: Some("explorer".to_string()),
                 prompt: "Compute 11! and reply with just the integer result.".to_string(),
+                model: "gpt-5".to_string(),
+                reasoning_effort: ReasoningEffortConfig::High,
                 status: AgentStatus::PendingInit,
             },
             Some(&SpawnRequestSummary {
@@ -718,6 +722,8 @@ mod tests {
                 new_agent_nickname: Some("Sibyl".to_string()),
                 new_agent_role: Some("oracle".to_string()),
                 prompt: long_prompt.to_string(),
+                model: "gpt-5".to_string(),
+                reasoning_effort: ReasoningEffortConfig::High,
                 status: AgentStatus::PendingInit,
             },
             Some(&SpawnRequestSummary {
@@ -763,6 +769,8 @@ mod tests {
                 new_agent_nickname: Some("Robie".to_string()),
                 new_agent_role: Some("explorer".to_string()),
                 prompt: full_prompt.clone(),
+                model: "gpt-5".to_string(),
+                reasoning_effort: ReasoningEffortConfig::High,
                 status: AgentStatus::PendingInit,
             },
             Some(&SpawnRequestSummary {
@@ -813,6 +821,8 @@ mod tests {
                 new_agent_nickname: Some("Robie".to_string()),
                 new_agent_role: Some("explorer".to_string()),
                 prompt: String::new(),
+                model: "gpt-5".to_string(),
+                reasoning_effort: ReasoningEffortConfig::High,
                 status: AgentStatus::PendingInit,
             },
             Some(&SpawnRequestSummary {

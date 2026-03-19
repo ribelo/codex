@@ -180,6 +180,7 @@ mod tests {
             tracker: Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new())),
             call_id: "call-1".to_string(),
             tool_name: "review".to_string(),
+            tool_namespace: None,
             payload: ToolPayload::Function {
                 arguments: r#"{"type":"uncommitted_changes"}"#.to_string(),
             },

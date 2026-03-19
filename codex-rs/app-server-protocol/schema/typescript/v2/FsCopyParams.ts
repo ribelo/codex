@@ -4,7 +4,7 @@
 import type { AbsolutePathBuf } from "../AbsolutePathBuf";
 
 /**
- * Copy a file or directory tree on the host filesystem.
+ * Copy a file or directory on the host filesystem.
  */
 export type FsCopyParams = { 
 /**

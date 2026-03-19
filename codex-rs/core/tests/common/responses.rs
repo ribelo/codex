@@ -802,7 +802,11 @@ pub fn ev_custom_tool_call(call_id: &str, name: &str, input: &str) -> Value {
     })
 }
 
-pub fn ev_local_shell_call(call_id: &str, status: &str, command: Vec<&str>) -> Value {
+pub fn ev_local_shell_call<S: AsRef<str>>(call_id: &str, status: &str, command: Vec<S>) -> Value {
+    let command: Vec<String> = command
+        .into_iter()
+        .map(|segment| segment.as_ref().to_string())
+        .collect();
     serde_json::json!({
         "type": "response.output_item.done",
         "item": {

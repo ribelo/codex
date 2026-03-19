@@ -36,7 +36,7 @@ impl ModelCatalog {
     }
 
     pub(crate) fn list_collaboration_modes(&self) -> Vec<CollaborationModeMask> {
-        builtin_collaboration_mode_presets(self.collaboration_modes_config)
+        builtin_collaboration_mode_presets(self.collaboration_modes_config.clone())
     }
 }
 

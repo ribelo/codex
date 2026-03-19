@@ -6,6 +6,7 @@ use crate::shell::Shell;
 use crate::shell::ShellType;
 use crate::tools::ToolRouter;
 use crate::tools::registry::ConfiguredToolSpec;
+use crate::tools::registry::tool_handler_key;
 use crate::tools::router::ToolRouterParams;
 use codex_app_server_protocol::AppInfo;
 use codex_protocol::openai_models::InputModality;
@@ -805,6 +806,7 @@ fn request_user_input_description_reflects_default_mode_feature_flag() {
         request_user_input_tool.spec,
         create_request_user_input_tool(CollaborationModesConfig {
             default_mode_request_user_input: true,
+            collaboration_mode_profiles: Default::default(),
         })
     );
 }

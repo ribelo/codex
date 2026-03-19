@@ -1825,6 +1825,7 @@ fn test_model_catalog(config: &Config) -> Arc<ModelCatalog> {
         default_mode_request_user_input: config
             .features
             .enabled(Feature::DefaultModeRequestUserInput),
+        collaboration_mode_profiles: config.collaboration_mode_profiles.clone(),
     };
     Arc::new(ModelCatalog::new(
         codex_core::test_support::all_model_presets().clone(),

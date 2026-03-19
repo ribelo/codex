@@ -984,10 +984,16 @@ mod tests {
         let _guard = ESCALATE_SERVER_TEST_LOCK.lock().await;
         let tmp = TempDir::new()?;
         let pid_file = tmp.path().join("escalated-child.pid");
+        let started_file = tmp.path().join("escalated-child.started");
         let pid_file_display = pid_file.display().to_string();
+        let started_file_display = started_file.display().to_string();
         assert!(
             !pid_file_display.contains('\''),
             "test temp path should not contain single quotes: {pid_file_display}"
+        );
+        assert!(
+            !started_file_display.contains('\''),
+            "test temp path should not contain single quotes: {started_file_display}"
         );
         let server = EscalateServer::new(
             PathBuf::from("/bin/bash"),
@@ -1031,7 +1037,9 @@ mod tests {
                 argv: vec![
                     "sh".to_string(),
                     "-c".to_string(),
-                    format!("echo $$ > '{pid_file_display}' && exec /bin/sleep 100"),
+                    format!(
+                        "echo $$ > '{pid_file_display}' && sleep 0.2 && echo started > '{started_file_display}' && exec /bin/sleep 100"
+                    ),
                 ],
                 workdir: AbsolutePathBuf::current_dir()?,
                 env: HashMap::new(),
@@ -1057,11 +1065,19 @@ mod tests {
             .context("failed to send SuperExecMessage")?;
 
         let pid = wait_for_pid_file(&pid_file).await?;
-        assert!(
-            process_exists(pid),
-            "expected spawned child pid {pid} to exist"
-        );
-
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if started_file.exists() {
+                break;
+            }
+            if Instant::now() >= deadline {
+                return Err(anyhow::anyhow!(
+                    "timed out waiting for started file {}",
+                    started_file.display()
+                ));
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
         drop(session);
 
         wait_for_process_exit(pid).await?;

@@ -165,6 +165,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "spawns git commands; local git signing can trigger credential or pinentry prompts"]
     fn merge_base_returns_shared_commit() -> Result<(), GitToolingError> {
         let temp = tempdir()?;
         let repo = temp.path();
@@ -194,6 +195,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "spawns git commands; local git signing can trigger credential or pinentry prompts"]
     fn merge_base_prefers_upstream_when_remote_ahead() -> Result<(), GitToolingError> {
         let temp = tempdir()?;
         let repo = temp.path().join("repo");
@@ -239,6 +241,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "spawns git commands; local git signing can trigger credential or pinentry prompts"]
     fn merge_base_returns_none_when_branch_missing() -> Result<(), GitToolingError> {
         let temp = tempdir()?;
         let repo = temp.path();

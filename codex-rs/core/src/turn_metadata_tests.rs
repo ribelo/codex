@@ -4,44 +4,37 @@ use serde_json::Value;
 use tempfile::TempDir;
 use tokio::process::Command;
 
+async fn run_git(repo_path: &std::path::Path, args: &[&str]) {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(repo_path)
+        .output()
+        .await
+        .expect("run git");
+    assert!(
+        output.status.success(),
+        "git {:?} failed: stdout={:?} stderr={:?}",
+        args,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 #[tokio::test]
+#[ignore = "spawns real git commands and can trigger local credential/signing prompts on this fork"]
 async fn build_turn_metadata_header_includes_has_changes_for_clean_repo() {
     let temp_dir = TempDir::new().expect("temp dir");
     let repo_path = temp_dir.path().join("repo");
     std::fs::create_dir_all(&repo_path).expect("create repo");
 
-    Command::new("git")
-        .args(["init"])
-        .current_dir(&repo_path)
-        .output()
-        .await
-        .expect("git init");
-    Command::new("git")
-        .args(["config", "user.name", "Test User"])
-        .current_dir(&repo_path)
-        .output()
-        .await
-        .expect("git config user.name");
-    Command::new("git")
-        .args(["config", "user.email", "test@example.com"])
-        .current_dir(&repo_path)
-        .output()
-        .await
-        .expect("git config user.email");
+    run_git(&repo_path, &["init"]).await;
+    run_git(&repo_path, &["config", "user.name", "Test User"]).await;
+    run_git(&repo_path, &["config", "user.email", "test@example.com"]).await;
+    run_git(&repo_path, &["config", "commit.gpgsign", "false"]).await;
 
     std::fs::write(repo_path.join("README.md"), "hello").expect("write file");
-    Command::new("git")
-        .args(["add", "."])
-        .current_dir(&repo_path)
-        .output()
-        .await
-        .expect("git add");
-    Command::new("git")
-        .args(["commit", "-m", "initial"])
-        .current_dir(&repo_path)
-        .output()
-        .await
-        .expect("git commit");
+    run_git(&repo_path, &["add", "."]).await;
+    run_git(&repo_path, &["commit", "-m", "initial"]).await;
 
     let header = build_turn_metadata_header(&repo_path, Some("none"))
         .await

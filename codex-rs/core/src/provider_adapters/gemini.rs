@@ -8,13 +8,14 @@ use crate::client_common::tools::ToolSpec;
 use crate::error::CodexErr;
 use crate::error::ConnectionFailedError;
 use crate::error::Result;
-use crate::error::UnexpectedResponseError;
 use crate::gemini::GEMINI_CODE_ASSIST_CLIENT_METADATA;
 use crate::gemini::GEMINI_CODE_ASSIST_ENDPOINT;
 use crate::gemini::GEMINI_CODE_ASSIST_USER_AGENT;
 use crate::gemini::GEMINI_CODE_ASSIST_X_GOOG_API_CLIENT;
 use crate::provider_adapters::AdapterContext;
 use crate::provider_adapters::max_output_tokens;
+use crate::provider_adapters::record_native_api_request;
+use crate::provider_adapters::unexpected_response_error;
 use crate::util::backoff;
 use codex_otel::SessionTelemetry;
 use codex_protocol::models::ContentItem;
@@ -313,7 +314,8 @@ pub(crate) async fn stream_gemini_generate_content(
             .send()
             .await;
         let duration = started_at.elapsed();
-        session_telemetry.record_api_request(
+        record_native_api_request(
+            session_telemetry,
             attempt,
             response.as_ref().ok().map(|resp| resp.status().as_u16()),
             response
@@ -322,6 +324,7 @@ pub(crate) async fn stream_gemini_generate_content(
                 .map(std::string::ToString::to_string)
                 .as_deref(),
             duration,
+            "/models/:streamGenerateContent",
         );
 
         match response {
@@ -342,13 +345,9 @@ pub(crate) async fn stream_gemini_generate_content(
                 let retry_delay =
                     retry_delay.or_else(|| retry_delay_from_response_headers(None, &body));
                 if !is_retryable_status_or_body(status, &body) || attempt > max_retries {
-                    return Err(CodexErr::UnexpectedStatus(UnexpectedResponseError {
-                        status,
-                        body,
-                        url: None,
-                        cf_ray: None,
-                        request_id: None,
-                    }));
+                    return Err(CodexErr::UnexpectedStatus(unexpected_response_error(
+                        status, body,
+                    )));
                 }
                 tokio::time::sleep(retry_delay.unwrap_or_else(|| backoff(attempt))).await;
             }
@@ -662,6 +661,8 @@ fn build_messages(
             ResponseItem::CustomToolCall { .. }
             | ResponseItem::CustomToolCallOutput { .. }
             | ResponseItem::LocalShellCall { .. }
+            | ResponseItem::ToolSearchCall { .. }
+            | ResponseItem::ToolSearchOutput { .. }
             | ResponseItem::WebSearchCall { .. }
             | ResponseItem::ImageGenerationCall { .. }
             | ResponseItem::GhostSnapshot { .. }
@@ -1358,6 +1359,7 @@ async fn handle_function_call(
     let item = ResponseItem::FunctionCall {
         id: None,
         name: function_call.name,
+        namespace: None,
         arguments,
         call_id,
     };
@@ -1419,6 +1421,7 @@ mod tests {
             name: "shell".to_string(),
             description: "Run a shell command".to_string(),
             strict: false,
+            defer_loading: None,
             parameters: JsonSchema::Object {
                 properties: BTreeMap::from([(
                     "cmd".to_string(),

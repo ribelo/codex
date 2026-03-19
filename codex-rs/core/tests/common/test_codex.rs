@@ -483,7 +483,6 @@ impl TestCodexBuilder {
                 codex_core::test_support::auth_manager_from_auth(auth.clone()),
                 SessionSource::Exec,
                 CollaborationModesConfig::default(),
-                config.model_provider.clone(),
             )
         } else {
             codex_core::test_support::thread_manager_with_models_provider_and_home(

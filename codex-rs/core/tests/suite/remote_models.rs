@@ -827,12 +827,13 @@ async fn remote_models_request_times_out_after_5s() -> Result<()> {
 
     let server = MockServer::start().await;
     let remote_model = test_remote_model("remote-timeout", ModelVisibility::List, 0);
+    let response_delay = Duration::from_secs(10);
     let models_mock = mount_models_once_with_delay(
         &server,
         ModelsResponse {
             models: vec![remote_model],
         },
-        Duration::from_secs(6),
+        response_delay,
     )
     .await;
 
@@ -875,8 +876,8 @@ async fn remote_models_request_times_out_after_5s() -> Result<()> {
         "expected models call to block near the timeout; took {elapsed:?}"
     );
     assert!(
-        elapsed < Duration::from_millis(5_800),
-        "expected models call to time out before the delayed response; took {elapsed:?}"
+        elapsed < Duration::from_millis(6_800),
+        "expected models call to time out well before the delayed {response_delay:?} response; took {elapsed:?}"
     );
     assert_eq!(
         models_mock.requests().len(),

@@ -8,6 +8,14 @@ use std::sync::Arc;
 use tempfile::tempdir;
 use tokio::sync::watch;
 
+fn bash_shell_path() -> String {
+    crate::shell::get_shell(ShellType::Bash, None)
+        .expect("bash shell should be available for runtime tests")
+        .shell_path
+        .to_string_lossy()
+        .to_string()
+}
+
 fn shell_with_snapshot(
     shell_type: ShellType,
     shell_path: &str,
@@ -27,6 +35,7 @@ fn shell_with_snapshot(
 
 #[test]
 fn maybe_wrap_shell_lc_with_snapshot_bootstraps_in_user_shell() {
+    let bash_path = bash_shell_path();
     let dir = tempdir().expect("create temp dir");
     let snapshot_path = dir.path().join("snapshot.sh");
     std::fs::write(&snapshot_path, "# Snapshot file\n").expect("write snapshot");
@@ -37,7 +46,7 @@ fn maybe_wrap_shell_lc_with_snapshot_bootstraps_in_user_shell() {
         dir.path().to_path_buf(),
     );
     let command = vec![
-        "/bin/bash".to_string(),
+        bash_path.clone(),
         "-lc".to_string(),
         "echo hello".to_string(),
     ];
@@ -48,11 +57,12 @@ fn maybe_wrap_shell_lc_with_snapshot_bootstraps_in_user_shell() {
     assert_eq!(rewritten[0], "/bin/zsh");
     assert_eq!(rewritten[1], "-c");
     assert!(rewritten[2].contains("if . '"));
-    assert!(rewritten[2].contains("exec '/bin/bash' -c 'echo hello'"));
+    assert!(rewritten[2].contains(&format!("exec '{bash_path}' -c 'echo hello'")));
 }
 
 #[test]
 fn maybe_wrap_shell_lc_with_snapshot_escapes_single_quotes() {
+    let bash_path = bash_shell_path();
     let dir = tempdir().expect("create temp dir");
     let snapshot_path = dir.path().join("snapshot.sh");
     std::fs::write(&snapshot_path, "# Snapshot file\n").expect("write snapshot");
@@ -63,7 +73,7 @@ fn maybe_wrap_shell_lc_with_snapshot_escapes_single_quotes() {
         dir.path().to_path_buf(),
     );
     let command = vec![
-        "/bin/bash".to_string(),
+        bash_path.clone(),
         "-lc".to_string(),
         "echo 'hello'".to_string(),
     ];
@@ -71,7 +81,8 @@ fn maybe_wrap_shell_lc_with_snapshot_escapes_single_quotes() {
     let rewritten =
         maybe_wrap_shell_lc_with_snapshot(&command, &session_shell, dir.path(), &HashMap::new());
 
-    assert!(rewritten[2].contains(r#"exec '/bin/bash' -c 'echo '"'"'hello'"'"''"#));
+    let expected = format!(r#"exec '{bash_path}' -c 'echo '"'"'hello'"'"''"#);
+    assert!(rewritten[2].contains(&expected));
 }
 
 #[test]
@@ -102,6 +113,7 @@ fn maybe_wrap_shell_lc_with_snapshot_uses_bash_bootstrap_shell() {
 
 #[test]
 fn maybe_wrap_shell_lc_with_snapshot_uses_sh_bootstrap_shell() {
+    let bash_path = bash_shell_path();
     let dir = tempdir().expect("create temp dir");
     let snapshot_path = dir.path().join("snapshot.sh");
     std::fs::write(&snapshot_path, "# Snapshot file\n").expect("write snapshot");
@@ -112,7 +124,7 @@ fn maybe_wrap_shell_lc_with_snapshot_uses_sh_bootstrap_shell() {
         dir.path().to_path_buf(),
     );
     let command = vec![
-        "/bin/bash".to_string(),
+        bash_path.clone(),
         "-lc".to_string(),
         "echo hello".to_string(),
     ];
@@ -123,11 +135,12 @@ fn maybe_wrap_shell_lc_with_snapshot_uses_sh_bootstrap_shell() {
     assert_eq!(rewritten[0], "/bin/sh");
     assert_eq!(rewritten[1], "-c");
     assert!(rewritten[2].contains("if . '"));
-    assert!(rewritten[2].contains("exec '/bin/bash' -c 'echo hello'"));
+    assert!(rewritten[2].contains(&format!("exec '{bash_path}' -c 'echo hello'")));
 }
 
 #[test]
 fn maybe_wrap_shell_lc_with_snapshot_preserves_trailing_args() {
+    let bash_path = bash_shell_path();
     let dir = tempdir().expect("create temp dir");
     let snapshot_path = dir.path().join("snapshot.sh");
     std::fs::write(&snapshot_path, "# Snapshot file\n").expect("write snapshot");
@@ -138,7 +151,7 @@ fn maybe_wrap_shell_lc_with_snapshot_preserves_trailing_args() {
         dir.path().to_path_buf(),
     );
     let command = vec![
-        "/bin/bash".to_string(),
+        bash_path.clone(),
         "-lc".to_string(),
         "printf '%s %s' \"$0\" \"$1\"".to_string(),
         "arg0".to_string(),
@@ -148,14 +161,14 @@ fn maybe_wrap_shell_lc_with_snapshot_preserves_trailing_args() {
     let rewritten =
         maybe_wrap_shell_lc_with_snapshot(&command, &session_shell, dir.path(), &HashMap::new());
 
-    assert!(
-        rewritten[2]
-            .contains(r#"exec '/bin/bash' -c 'printf '"'"'%s %s'"'"' "$0" "$1"' 'arg0' 'arg1'"#)
-    );
+    assert!(rewritten[2].contains(&format!(
+        r#"exec '{bash_path}' -c 'printf '"'"'%s %s'"'"' "$0" "$1"' 'arg0' 'arg1'"#
+    )));
 }
 
 #[test]
 fn maybe_wrap_shell_lc_with_snapshot_skips_when_cwd_mismatch() {
+    let bash_path = bash_shell_path();
     let dir = tempdir().expect("create temp dir");
     let snapshot_path = dir.path().join("snapshot.sh");
     std::fs::write(&snapshot_path, "# Snapshot file\n").expect("write snapshot");
@@ -165,11 +178,7 @@ fn maybe_wrap_shell_lc_with_snapshot_skips_when_cwd_mismatch() {
     std::fs::create_dir_all(&command_cwd).expect("create command cwd");
     let session_shell =
         shell_with_snapshot(ShellType::Zsh, "/bin/zsh", snapshot_path, snapshot_cwd);
-    let command = vec![
-        "/bin/bash".to_string(),
-        "-lc".to_string(),
-        "echo hello".to_string(),
-    ];
+    let command = vec![bash_path, "-lc".to_string(), "echo hello".to_string()];
 
     let rewritten =
         maybe_wrap_shell_lc_with_snapshot(&command, &session_shell, &command_cwd, &HashMap::new());
@@ -179,6 +188,7 @@ fn maybe_wrap_shell_lc_with_snapshot_skips_when_cwd_mismatch() {
 
 #[test]
 fn maybe_wrap_shell_lc_with_snapshot_accepts_dot_alias_cwd() {
+    let bash_path = bash_shell_path();
     let dir = tempdir().expect("create temp dir");
     let snapshot_path = dir.path().join("snapshot.sh");
     std::fs::write(&snapshot_path, "# Snapshot file\n").expect("write snapshot");
@@ -189,7 +199,7 @@ fn maybe_wrap_shell_lc_with_snapshot_accepts_dot_alias_cwd() {
         dir.path().to_path_buf(),
     );
     let command = vec![
-        "/bin/bash".to_string(),
+        bash_path.clone(),
         "-lc".to_string(),
         "echo hello".to_string(),
     ];
@@ -201,11 +211,12 @@ fn maybe_wrap_shell_lc_with_snapshot_accepts_dot_alias_cwd() {
     assert_eq!(rewritten[0], "/bin/zsh");
     assert_eq!(rewritten[1], "-c");
     assert!(rewritten[2].contains("if . '"));
-    assert!(rewritten[2].contains("exec '/bin/bash' -c 'echo hello'"));
+    assert!(rewritten[2].contains(&format!("exec '{bash_path}' -c 'echo hello'")));
 }
 
 #[test]
 fn maybe_wrap_shell_lc_with_snapshot_restores_explicit_override_precedence() {
+    let bash_path = bash_shell_path();
     let dir = tempdir().expect("create temp dir");
     let snapshot_path = dir.path().join("snapshot.sh");
     std::fs::write(
@@ -215,12 +226,12 @@ fn maybe_wrap_shell_lc_with_snapshot_restores_explicit_override_precedence() {
     .expect("write snapshot");
     let session_shell = shell_with_snapshot(
         ShellType::Bash,
-        "/bin/bash",
+        &bash_path,
         snapshot_path,
         dir.path().to_path_buf(),
     );
     let command = vec![
-        "/bin/bash".to_string(),
+        bash_path,
         "-lc".to_string(),
         "printf '%s|%s' \"$TEST_ENV_SNAPSHOT\" \"${SNAPSHOT_ONLY-unset}\"".to_string(),
     ];
@@ -247,6 +258,7 @@ fn maybe_wrap_shell_lc_with_snapshot_restores_explicit_override_precedence() {
 
 #[test]
 fn maybe_wrap_shell_lc_with_snapshot_keeps_snapshot_path_without_override() {
+    let bash_path = bash_shell_path();
     let dir = tempdir().expect("create temp dir");
     let snapshot_path = dir.path().join("snapshot.sh");
     std::fs::write(
@@ -256,12 +268,12 @@ fn maybe_wrap_shell_lc_with_snapshot_keeps_snapshot_path_without_override() {
     .expect("write snapshot");
     let session_shell = shell_with_snapshot(
         ShellType::Bash,
-        "/bin/bash",
+        &bash_path,
         snapshot_path,
         dir.path().to_path_buf(),
     );
     let command = vec![
-        "/bin/bash".to_string(),
+        bash_path,
         "-lc".to_string(),
         "printf '%s' \"$PATH\"".to_string(),
     ];
@@ -278,6 +290,7 @@ fn maybe_wrap_shell_lc_with_snapshot_keeps_snapshot_path_without_override() {
 
 #[test]
 fn maybe_wrap_shell_lc_with_snapshot_applies_explicit_path_override() {
+    let bash_path = bash_shell_path();
     let dir = tempdir().expect("create temp dir");
     let snapshot_path = dir.path().join("snapshot.sh");
     std::fs::write(
@@ -287,12 +300,12 @@ fn maybe_wrap_shell_lc_with_snapshot_applies_explicit_path_override() {
     .expect("write snapshot");
     let session_shell = shell_with_snapshot(
         ShellType::Bash,
-        "/bin/bash",
+        &bash_path,
         snapshot_path,
         dir.path().to_path_buf(),
     );
     let command = vec![
-        "/bin/bash".to_string(),
+        bash_path,
         "-lc".to_string(),
         "printf '%s' \"$PATH\"".to_string(),
     ];
@@ -315,6 +328,7 @@ fn maybe_wrap_shell_lc_with_snapshot_applies_explicit_path_override() {
 
 #[test]
 fn maybe_wrap_shell_lc_with_snapshot_does_not_embed_override_values_in_argv() {
+    let bash_path = bash_shell_path();
     let dir = tempdir().expect("create temp dir");
     let snapshot_path = dir.path().join("snapshot.sh");
     std::fs::write(
@@ -324,12 +338,12 @@ fn maybe_wrap_shell_lc_with_snapshot_does_not_embed_override_values_in_argv() {
     .expect("write snapshot");
     let session_shell = shell_with_snapshot(
         ShellType::Bash,
-        "/bin/bash",
+        &bash_path,
         snapshot_path,
         dir.path().to_path_buf(),
     );
     let command = vec![
-        "/bin/bash".to_string(),
+        bash_path,
         "-lc".to_string(),
         "printf '%s' \"$OPENAI_API_KEY\"".to_string(),
     ];
@@ -359,6 +373,7 @@ fn maybe_wrap_shell_lc_with_snapshot_does_not_embed_override_values_in_argv() {
 
 #[test]
 fn maybe_wrap_shell_lc_with_snapshot_preserves_unset_override_variables() {
+    let bash_path = bash_shell_path();
     let dir = tempdir().expect("create temp dir");
     let snapshot_path = dir.path().join("snapshot.sh");
     std::fs::write(
@@ -368,12 +383,12 @@ fn maybe_wrap_shell_lc_with_snapshot_preserves_unset_override_variables() {
     .expect("write snapshot");
     let session_shell = shell_with_snapshot(
         ShellType::Bash,
-        "/bin/bash",
+        &bash_path,
         snapshot_path,
         dir.path().to_path_buf(),
     );
     let command = vec![
-            "/bin/bash".to_string(),
+            bash_path,
             "-lc".to_string(),
             "if [ \"${CODEX_TEST_UNSET_OVERRIDE+x}\" = x ]; then printf 'set:%s' \"$CODEX_TEST_UNSET_OVERRIDE\"; else printf 'unset'; fi".to_string(),
         ];

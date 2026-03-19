@@ -9,9 +9,10 @@ use crate::client_common::tools::ToolSpec;
 use crate::error::CodexErr;
 use crate::error::ConnectionFailedError;
 use crate::error::Result;
-use crate::error::UnexpectedResponseError;
 use crate::provider_adapters::AdapterContext;
 use crate::provider_adapters::max_output_tokens;
+use crate::provider_adapters::record_native_api_request;
+use crate::provider_adapters::unexpected_response_error;
 use crate::util::backoff;
 use codex_otel::SessionTelemetry;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
@@ -141,7 +142,8 @@ pub(crate) async fn stream_anthropic_messages(
         }
         let response = request.json(&payload).send().await;
         let duration = started_at.elapsed();
-        session_telemetry.record_api_request(
+        record_native_api_request(
+            session_telemetry,
             attempt,
             response.as_ref().ok().map(|resp| resp.status().as_u16()),
             response
@@ -150,6 +152,7 @@ pub(crate) async fn stream_anthropic_messages(
                 .map(std::string::ToString::to_string)
                 .as_deref(),
             duration,
+            "/messages",
         );
 
         match response {
@@ -171,13 +174,9 @@ pub(crate) async fn stream_anthropic_messages(
                     || status == StatusCode::CONFLICT
                     || status.is_server_error();
                 if !is_retryable || attempt > max_retries {
-                    return Err(CodexErr::UnexpectedStatus(UnexpectedResponseError {
-                        status,
-                        body,
-                        url: None,
-                        cf_ray: None,
-                        request_id: None,
-                    }));
+                    return Err(CodexErr::UnexpectedStatus(unexpected_response_error(
+                        status, body,
+                    )));
                 }
                 tokio::time::sleep(backoff(attempt)).await;
             }
@@ -370,6 +369,8 @@ fn build_messages(prompt: &Prompt) -> Result<(Vec<AnthropicMessage>, Option<Stri
                     .push(block);
             }
             ResponseItem::LocalShellCall { .. }
+            | ResponseItem::ToolSearchCall { .. }
+            | ResponseItem::ToolSearchOutput { .. }
             | ResponseItem::WebSearchCall { .. }
             | ResponseItem::ImageGenerationCall { .. }
             | ResponseItem::GhostSnapshot { .. }
@@ -717,6 +718,7 @@ async fn handle_block_start(
                 item: ResponseItem::FunctionCall {
                     id: None,
                     name: name.to_string(),
+                    namespace: None,
                     arguments: initial.clone(),
                     call_id: call_id.to_string(),
                 },

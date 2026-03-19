@@ -22,6 +22,7 @@ use core_test_support::responses::ev_response_created;
 use core_test_support::responses::sse;
 use core_test_support::responses::start_mock_server;
 use core_test_support::skip_if_no_network;
+use core_test_support::test_binary_path;
 use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
@@ -60,7 +61,7 @@ async fn shell_tool_executes_command_and_streams_output() -> anyhow::Result<()> 
     } = builder.build(&server).await?;
 
     let call_id = "shell-tool-call";
-    let command = vec!["/bin/echo", "tool harness"];
+    let command = vec![test_binary_path("echo"), "tool harness".to_string()];
     let first_response = sse(vec![
         ev_response_created("resp-1"),
         ev_local_shell_call(call_id, "completed", command),

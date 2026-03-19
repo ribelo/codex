@@ -1159,8 +1159,8 @@ impl JsReplManager {
 
     async fn write_kernel_script(&self) -> Result<PathBuf, std::io::Error> {
         let dir = self.tmp_dir.path();
-        let kernel_path = dir.join("js_repl_kernel.js");
-        let meriyah_path = dir.join("meriyah.umd.min.js");
+        let kernel_path = dir.join("js_repl_kernel.cjs");
+        let meriyah_path = dir.join("meriyah.umd.min.cjs");
         tokio::fs::write(&kernel_path, KERNEL_SOURCE).await?;
         tokio::fs::write(&meriyah_path, MERIYAH_UMD).await?;
         Ok(kernel_path)

@@ -931,6 +931,9 @@ fn thread_start_params_from_config(config: &Config) -> ThreadStartParams {
         approvals_reviewer: approvals_reviewer_override_from_config(config),
         sandbox: sandbox_mode_from_policy(config.permissions.sandbox_policy.get()),
         config: config_request_overrides_from_config(config),
+        base_instructions: config.base_instructions.clone(),
+        developer_instructions: config.developer_instructions.clone(),
+        personality: config.personality,
         ephemeral: Some(config.ephemeral),
         ..ThreadStartParams::default()
     }
@@ -947,6 +950,9 @@ fn thread_resume_params_from_config(config: &Config, path: Option<PathBuf>) -> T
         approvals_reviewer: approvals_reviewer_override_from_config(config),
         sandbox: sandbox_mode_from_policy(config.permissions.sandbox_policy.get()),
         config: config_request_overrides_from_config(config),
+        base_instructions: config.base_instructions.clone(),
+        developer_instructions: config.developer_instructions.clone(),
+        personality: config.personality,
         ..ThreadResumeParams::default()
     }
 }

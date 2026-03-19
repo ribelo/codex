@@ -1,3 +1,4 @@
+use crate::WireApi;
 use crate::config::edit::ConfigEdit;
 use crate::config::edit::ConfigEditsBuilder;
 use crate::config::edit::apply_blocking;
@@ -1933,7 +1934,7 @@ fn same_provider_responses_mode_profile_can_inherit_model_discovery() -> std::io
         Some(CollaborationModeProfile {
             profile: "smart".to_string(),
             model_provider_id: "openai".to_string(),
-            model_provider: built_in_model_providers()["openai"].clone(),
+            model_provider: built_in_model_providers(/*openai_base_url*/ None)["openai"].clone(),
             model: None,
             model_reasoning_effort: None,
         })
@@ -1968,6 +1969,7 @@ fn bedrock_provider_rejects_api_key_and_header_knobs() -> std::io::Result<()> {
                 request_max_retries: None,
                 stream_max_retries: None,
                 stream_idle_timeout_ms: None,
+                websocket_connect_timeout_ms: None,
                 requires_openai_auth: false,
                 supports_websockets: false,
             },
@@ -2015,6 +2017,7 @@ fn bedrock_provider_accepts_region_profile_and_endpoint_override() -> std::io::R
                 request_max_retries: Some(1),
                 stream_max_retries: Some(0),
                 stream_idle_timeout_ms: Some(5_000),
+                websocket_connect_timeout_ms: None,
                 requires_openai_auth: false,
                 supports_websockets: false,
             },
@@ -4574,6 +4577,7 @@ fn test_precedence_fixture_with_o3_profile() -> std::io::Result<()> {
             model_context_window: None,
             model_auto_compact_token_limit: None,
             model_metadata: None,
+            collaboration_mode_profiles: CollaborationModeProfiles::default(),
             service_tier: None,
             model_provider_id: "openai".to_string(),
             model_provider: fixture.openai_provider.clone(),
@@ -4718,6 +4722,7 @@ fn test_precedence_fixture_with_gpt3_profile() -> std::io::Result<()> {
         model_context_window: None,
         model_auto_compact_token_limit: None,
         model_metadata: None,
+        collaboration_mode_profiles: CollaborationModeProfiles::default(),
         service_tier: None,
         model_provider_id: "openai-custom".to_string(),
         model_provider: fixture.openai_custom_provider.clone(),
@@ -4860,6 +4865,7 @@ fn test_precedence_fixture_with_zdr_profile() -> std::io::Result<()> {
         model_context_window: None,
         model_auto_compact_token_limit: None,
         model_metadata: None,
+        collaboration_mode_profiles: CollaborationModeProfiles::default(),
         service_tier: None,
         model_provider_id: "openai".to_string(),
         model_provider: fixture.openai_provider.clone(),
@@ -4988,6 +4994,7 @@ fn test_precedence_fixture_with_gpt5_profile() -> std::io::Result<()> {
         model_context_window: None,
         model_auto_compact_token_limit: None,
         model_metadata: None,
+        collaboration_mode_profiles: CollaborationModeProfiles::default(),
         service_tier: None,
         model_provider_id: "openai".to_string(),
         model_provider: fixture.openai_provider.clone(),

@@ -1,6 +1,7 @@
 use super::*;
 use crate::codex::make_session_and_context;
 use crate::config::test_config;
+use crate::model_provider_info::WireApi;
 use crate::models_manager::collaboration_mode_presets::CollaborationModesConfig;
 use crate::models_manager::manager::RefreshStrategy;
 use assert_matches::assert_matches;
@@ -184,4 +185,76 @@ async fn new_uses_configured_openai_provider_for_model_refresh() {
 
     let _ = manager.list_models(RefreshStrategy::Online).await;
     assert_eq!(models_mock.requests().len(), 1);
+}
+
+#[tokio::test]
+async fn new_uses_configured_default_provider_for_model_metadata() {
+    let temp_dir = tempdir().expect("tempdir");
+    let mut config = test_config();
+    config.codex_home = temp_dir.path().join("codex-home");
+    config.cwd = config.codex_home.clone();
+    std::fs::create_dir_all(&config.codex_home).expect("create codex home");
+    config.model_provider_id = "mock_provider".to_string();
+    config.model_provider = ModelProviderInfo {
+        name: "mock provider".to_string(),
+        base_url: Some("http://localhost:1/v1".to_string()),
+        env_key: None,
+        env_key_instructions: None,
+        experimental_bearer_token: None,
+        wire_api: WireApi::Responses,
+        version: None,
+        beta: None,
+        use_bearer_auth: false,
+        aws_region: None,
+        aws_profile: None,
+        query_params: None,
+        http_headers: None,
+        env_http_headers: None,
+        request_max_retries: Some(0),
+        stream_max_retries: Some(0),
+        stream_idle_timeout_ms: Some(5_000),
+        websocket_connect_timeout_ms: None,
+        requires_openai_auth: false,
+        supports_websockets: false,
+    };
+    config.model_providers.insert(
+        config.model_provider_id.clone(),
+        config.model_provider.clone(),
+    );
+
+    let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("dummy"));
+    let manager = ThreadManager::new(
+        &config,
+        auth_manager,
+        SessionSource::Exec,
+        CollaborationModesConfig::default(),
+    );
+
+    let available_models = manager.list_models(RefreshStrategy::Offline).await;
+    assert!(
+        available_models
+            .iter()
+            .any(|model| model.model == "gpt-5.1")
+    );
+
+    let model_info = manager
+        .state
+        .models_manager
+        .get_model_info("gpt-5.1", &config)
+        .await;
+
+    assert_eq!(model_info.slug, "gpt-5.1");
+    assert_eq!(
+        model_info
+            .supported_reasoning_levels
+            .iter()
+            .map(|preset| preset.effort)
+            .collect::<Vec<_>>(),
+        vec![
+            codex_protocol::openai_models::ReasoningEffort::Low,
+            codex_protocol::openai_models::ReasoningEffort::Medium,
+            codex_protocol::openai_models::ReasoningEffort::High,
+        ]
+    );
+    assert!(!model_info.used_fallback_model_metadata);
 }

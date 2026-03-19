@@ -4,6 +4,7 @@
 //! are used to preserve compatibility when older payloads omit newly introduced attributes.
 
 use std::collections::HashMap;
+use std::str::FromStr;
 
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -46,6 +47,15 @@ pub enum ReasoningEffort {
     Medium,
     High,
     XHigh,
+}
+
+impl FromStr for ReasoningEffort {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        serde_json::from_value(serde_json::Value::String(s.to_string()))
+            .map_err(|_| format!("invalid reasoning_effort: {s}"))
+    }
 }
 
 /// Canonical user-input modality tags advertised by a model.
@@ -485,6 +495,8 @@ pub struct ModelInfo {
     #[schemars(skip)]
     #[ts(skip)]
     pub used_fallback_model_metadata: bool,
+    #[serde(default)]
+    pub supports_search_tool: bool,
 }
 
 impl ModelInfo {
@@ -740,6 +752,7 @@ mod tests {
             experimental_supported_tools: vec![],
             input_modalities: default_input_modalities(),
             used_fallback_model_metadata: false,
+            supports_search_tool: false,
         }
     }
 
@@ -980,6 +993,7 @@ mod tests {
         assert_eq!(model.availability_nux, None);
         assert!(!model.supports_image_detail_original);
         assert_eq!(model.web_search_tool_type, WebSearchToolType::Text);
+        assert!(!model.supports_search_tool);
     }
 
     #[test]

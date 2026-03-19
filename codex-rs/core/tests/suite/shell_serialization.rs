@@ -13,6 +13,7 @@ use core_test_support::responses::mount_sse_sequence;
 use core_test_support::responses::sse;
 use core_test_support::responses::start_mock_server;
 use core_test_support::skip_if_no_network;
+use core_test_support::test_binary_path;
 use core_test_support::test_codex::ApplyPatchModelOutput;
 use core_test_support::test_codex::ShellModelOutput;
 use core_test_support::test_codex::TestCodexBuilder;
@@ -41,12 +42,12 @@ const FIXTURE_JSON: &str = r#"{
 
 fn shell_responses(
     call_id: &str,
-    command: Vec<&str>,
+    command: Vec<String>,
     output_type: ShellModelOutput,
 ) -> Result<Vec<String>> {
     match output_type {
         ShellModelOutput::ShellCommand => {
-            let command = shlex::try_join(command)?;
+            let command = shlex::try_join(command.iter().map(String::as_str))?;
             let parameters = json!({
                 "command": command,
                 "timeout_ms": 2_000,
@@ -129,7 +130,11 @@ async fn shell_output_stays_json_without_freeform_apply_patch(
     let test = builder.build(&server).await?;
 
     let call_id = "shell-json";
-    let responses = shell_responses(call_id, vec!["/bin/echo", "shell json"], output_type)?;
+    let responses = shell_responses(
+        call_id,
+        vec![test_binary_path("echo"), "shell json".to_string()],
+        output_type,
+    )?;
     let mock = mount_sse_sequence(&server, responses).await;
 
     test.submit_turn_with_policy(
@@ -181,7 +186,11 @@ async fn shell_output_is_structured_with_freeform_apply_patch(
     let test = builder.build(&server).await?;
 
     let call_id = "shell-structured";
-    let responses = shell_responses(call_id, vec!["/bin/echo", "freeform shell"], output_type)?;
+    let responses = shell_responses(
+        call_id,
+        vec![test_binary_path("echo"), "freeform shell".to_string()],
+        output_type,
+    )?;
     let mock = mount_sse_sequence(&server, responses).await;
 
     test.submit_turn_with_policy(
@@ -232,7 +241,12 @@ async fn shell_output_preserves_fixture_json_without_serialization(
     let call_id = "shell-json-fixture";
     let responses = shell_responses(
         call_id,
-        vec!["/usr/bin/sed", "-n", "p", fixture_path_str.as_str()],
+        vec![
+            test_binary_path("sed"),
+            "-n".to_string(),
+            "p".to_string(),
+            fixture_path_str.clone(),
+        ],
         output_type,
     )?;
     let mock = mount_sse_sequence(&server, responses).await;
@@ -296,7 +310,12 @@ async fn shell_output_structures_fixture_with_serialization(
     let call_id = "shell-structured-fixture";
     let responses = shell_responses(
         call_id,
-        vec!["/usr/bin/sed", "-n", "p", fixture_path_str.as_str()],
+        vec![
+            test_binary_path("sed"),
+            "-n".to_string(),
+            "p".to_string(),
+            fixture_path_str.clone(),
+        ],
         output_type,
     )?;
     let mock = mount_sse_sequence(&server, responses).await;
@@ -349,7 +368,15 @@ async fn shell_output_for_freeform_tool_records_duration(
     let test = builder.build(&server).await?;
 
     let call_id = "shell-structured";
-    let responses = shell_responses(call_id, vec!["/bin/sh", "-c", "sleep 0.2"], output_type)?;
+    let responses = shell_responses(
+        call_id,
+        vec![
+            test_binary_path("sh"),
+            "-c".to_string(),
+            "sleep 0.2".to_string(),
+        ],
+        output_type,
+    )?;
     let mock = mount_sse_sequence(&server, responses).await;
 
     test.submit_turn_with_policy(
@@ -402,7 +429,15 @@ async fn shell_output_reserializes_truncated_content(output_type: ShellModelOutp
     let test = builder.build(&server).await?;
 
     let call_id = "shell-truncated";
-    let responses = shell_responses(call_id, vec!["/bin/sh", "-c", "seq 1 400"], output_type)?;
+    let responses = shell_responses(
+        call_id,
+        vec![
+            test_binary_path("sh"),
+            "-c".to_string(),
+            "seq 1 400".to_string(),
+        ],
+        output_type,
+    )?;
     let mock = mount_sse_sequence(&server, responses).await;
 
     test.submit_turn_with_policy(
@@ -702,7 +737,15 @@ async fn shell_output_is_structured_for_nonzero_exit(output_type: ShellModelOutp
     let test = builder.build(&server).await?;
 
     let call_id = "shell-nonzero-exit";
-    let responses = shell_responses(call_id, vec!["/bin/sh", "-c", "exit 42"], output_type)?;
+    let responses = shell_responses(
+        call_id,
+        vec![
+            test_binary_path("sh"),
+            "-c".to_string(),
+            "exit 42".to_string(),
+        ],
+        output_type,
+    )?;
     let mock = mount_sse_sequence(&server, responses).await;
 
     test.submit_turn_with_policy(
@@ -899,7 +942,11 @@ async fn local_shell_call_output_is_structured() -> Result<()> {
     let responses = vec![
         sse(vec![
             json!({"type": "response.created", "response": {"id": "resp-1"}}),
-            ev_local_shell_call(call_id, "completed", vec!["/bin/echo", "local shell"]),
+            ev_local_shell_call(
+                call_id,
+                "completed",
+                vec![test_binary_path("echo"), "local shell".to_string()],
+            ),
             ev_completed("resp-1"),
         ]),
         sse(vec![

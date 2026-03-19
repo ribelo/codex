@@ -80,6 +80,11 @@ fn provider_for(base_url: String) -> ModelProviderInfo {
         env_key_instructions: None,
         experimental_bearer_token: None,
         wire_api: WireApi::Responses,
+        version: None,
+        beta: None,
+        use_bearer_auth: false,
+        aws_region: None,
+        aws_profile: None,
         query_params: None,
         http_headers: None,
         env_http_headers: None,
@@ -380,7 +385,7 @@ async fn refresh_available_models_refetches_when_cache_stale() {
 
     // Rewrite cache with an old timestamp so it is treated as stale.
     manager
-        .cache_manager
+        .default_cache_manager()
         .manipulate_cache_for_test(|fetched_at| {
             *fetched_at = Utc::now() - chrono::Duration::hours(1);
         })
@@ -442,7 +447,7 @@ async fn refresh_available_models_refetches_when_version_mismatch() {
         .expect("initial refresh succeeds");
 
     manager
-        .cache_manager
+        .default_cache_manager()
         .mutate_cache_for_test(|cache| {
             let client_version = crate::models_manager::client_version_to_whole();
             cache.client_version = Some(format!("{client_version}-mismatch"));
@@ -498,7 +503,7 @@ async fn refresh_available_models_drops_removed_remote_models() {
         auth_manager,
         provider,
     );
-    manager.cache_manager.set_ttl(Duration::ZERO);
+    manager.default_cache_manager_mut().set_ttl(Duration::ZERO);
 
     manager
         .refresh_available_models(RefreshStrategy::OnlineIfUncached)
@@ -702,7 +707,8 @@ fn build_available_models_picks_default_after_hiding_hidden_models() {
     let mut expected_visible = ModelPreset::from(visible_model.clone());
     expected_visible.is_default = true;
 
-    let available = manager.build_available_models(vec![hidden_model, visible_model]);
+    let available =
+        manager.build_available_models_for_default_provider(vec![hidden_model, visible_model]);
 
     assert_eq!(available, vec![expected_hidden, expected_visible]);
 }

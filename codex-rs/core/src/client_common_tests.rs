@@ -199,6 +199,44 @@ fn reserializes_shell_outputs_for_function_and_custom_tool_calls() {
 }
 
 #[test]
+fn reserializes_shell_outputs_for_shell_command_function_calls() {
+    let raw_output = r#"{"output":"hello","metadata":{"exit_code":0,"duration_seconds":0.5}}"#;
+    let expected_output = "Exit code: 0\nWall time: 0.5 seconds\nOutput:\nhello";
+    let mut items = vec![
+        ResponseItem::FunctionCall {
+            id: None,
+            name: "shell_command".to_string(),
+            namespace: None,
+            arguments: "{}".to_string(),
+            call_id: "call-1".to_string(),
+        },
+        ResponseItem::FunctionCallOutput {
+            call_id: "call-1".to_string(),
+            output: FunctionCallOutputPayload::from_text(raw_output.to_string()),
+        },
+    ];
+
+    reserialize_shell_outputs(&mut items);
+
+    assert_eq!(
+        items,
+        vec![
+            ResponseItem::FunctionCall {
+                id: None,
+                name: "shell_command".to_string(),
+                namespace: None,
+                arguments: "{}".to_string(),
+                call_id: "call-1".to_string(),
+            },
+            ResponseItem::FunctionCallOutput {
+                call_id: "call-1".to_string(),
+                output: FunctionCallOutputPayload::from_text(expected_output.to_string()),
+            },
+        ]
+    );
+}
+
+#[test]
 fn tool_search_output_namespace_serializes_with_deferred_child_tools() {
     let namespace = tools::ToolSearchOutputTool::Namespace(tools::ResponsesApiNamespace {
         name: "mcp__codex_apps__calendar".to_string(),

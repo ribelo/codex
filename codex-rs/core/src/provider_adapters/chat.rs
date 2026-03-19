@@ -10,9 +10,10 @@ use crate::client_common::tools::ToolSpec;
 use crate::error::CodexErr;
 use crate::error::ConnectionFailedError;
 use crate::error::Result;
-use crate::error::UnexpectedResponseError;
 use crate::provider_adapters::AdapterContext;
 use crate::provider_adapters::conversation_headers;
+use crate::provider_adapters::record_native_api_request;
+use crate::provider_adapters::unexpected_response_error;
 use crate::util::backoff;
 use codex_otel::SessionTelemetry;
 use codex_protocol::models::ContentItem;
@@ -53,7 +54,8 @@ pub(crate) async fn stream_chat_completions(
         }
         let response = request.json(&payload).send().await;
         let duration = started_at.elapsed();
-        session_telemetry.record_api_request(
+        record_native_api_request(
+            session_telemetry,
             attempt,
             response.as_ref().ok().map(|resp| resp.status().as_u16()),
             response
@@ -62,6 +64,7 @@ pub(crate) async fn stream_chat_completions(
                 .map(std::string::ToString::to_string)
                 .as_deref(),
             duration,
+            "/chat/completions",
         );
 
         match response {
@@ -83,13 +86,9 @@ pub(crate) async fn stream_chat_completions(
                     || status == StatusCode::CONFLICT
                     || status.is_server_error();
                 if !is_retryable || attempt > max_retries {
-                    return Err(CodexErr::UnexpectedStatus(UnexpectedResponseError {
-                        status,
-                        body,
-                        url: None,
-                        cf_ray: None,
-                        request_id: None,
-                    }));
+                    return Err(CodexErr::UnexpectedStatus(unexpected_response_error(
+                        status, body,
+                    )));
                 }
                 tokio::time::sleep(backoff(attempt)).await;
             }
@@ -120,6 +119,8 @@ fn build_chat_payload(prompt: &Prompt, model_info: &ModelInfo) -> Result<Value> 
             ResponseItem::FunctionCallOutput { .. } => last_emitted_role = Some("tool"),
             ResponseItem::Reasoning { .. }
             | ResponseItem::LocalShellCall { .. }
+            | ResponseItem::ToolSearchCall { .. }
+            | ResponseItem::ToolSearchOutput { .. }
             | ResponseItem::CustomToolCall { .. }
             | ResponseItem::CustomToolCallOutput { .. }
             | ResponseItem::WebSearchCall { .. }
@@ -308,6 +309,8 @@ fn build_chat_payload(prompt: &Prompt, model_info: &ModelInfo) -> Result<Value> 
             }
             ResponseItem::Reasoning { .. }
             | ResponseItem::LocalShellCall { .. }
+            | ResponseItem::ToolSearchCall { .. }
+            | ResponseItem::ToolSearchOutput { .. }
             | ResponseItem::WebSearchCall { .. }
             | ResponseItem::ImageGenerationCall { .. }
             | ResponseItem::GhostSnapshot { .. }
@@ -373,6 +376,7 @@ fn build_chat_tools(tools: &[ToolSpec]) -> Result<Vec<Value>> {
                 }));
             }
             ToolSpec::LocalShell {}
+            | ToolSpec::ToolSearch { .. }
             | ToolSpec::ImageGeneration { .. }
             | ToolSpec::WebSearch { .. } => {}
         }
@@ -658,6 +662,7 @@ async fn process_chat_sse<S, E>(
                         let item = ResponseItem::FunctionCall {
                             id: None,
                             name,
+                            namespace: None,
                             arguments: state.arguments,
                             call_id: state.id.unwrap_or_else(|| format!("tool-call-{index}")),
                         };
@@ -786,6 +791,7 @@ mod tests {
         ResponseItem::FunctionCall {
             id: None,
             name: "f".to_string(),
+            namespace: None,
             arguments: "{}".to_string(),
             call_id: "c1".to_string(),
         }

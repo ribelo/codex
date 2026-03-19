@@ -9360,8 +9360,7 @@ impl ChatWidget {
             return None;
         }
         let active_mode = self.active_mode_kind();
-        active_mode
-            .is_tui_visible()
+        (active_mode != ModeKind::Default && active_mode.is_tui_visible())
             .then_some(active_mode.display_name())
     }
 
@@ -9371,7 +9370,12 @@ impl ChatWidget {
         }
         match self.active_mode_kind() {
             ModeKind::Plan => Some(CollaborationModeIndicator::Plan),
-            ModeKind::Default | ModeKind::PairProgramming | ModeKind::Execute => None,
+            ModeKind::Default
+            | ModeKind::PairProgramming
+            | ModeKind::Execute
+            | ModeKind::Smart
+            | ModeKind::Deep
+            | ModeKind::Rush => None,
         }
     }
 

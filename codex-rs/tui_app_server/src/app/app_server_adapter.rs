@@ -810,6 +810,7 @@ fn token_usage_from_app_server(
     TokenUsage {
         input_tokens: value.input_tokens,
         cached_input_tokens: value.cached_input_tokens,
+        cache_write_input_tokens: value.cache_write_input_tokens,
         output_tokens: value.output_tokens,
         reasoning_output_tokens: value.reasoning_output_tokens,
         total_tokens: value.total_tokens,
@@ -1206,6 +1207,8 @@ mod refresh_tests {
                     refresh_token: "refresh-token".to_string(),
                     account_id: Some("workspace-1".to_string()),
                 }),
+                gemini_accounts: Vec::new(),
+                antigravity_accounts: Vec::new(),
                 last_refresh: Some(Utc::now()),
             },
             AuthCredentialsStoreMode::File,

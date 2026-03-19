@@ -8,6 +8,7 @@ use codex_protocol::user_input::UserInput;
 use core_test_support::fs_wait;
 use core_test_support::responses;
 use core_test_support::skip_if_no_network;
+use core_test_support::test_binary_path;
 use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
@@ -35,14 +36,17 @@ async fn summarize_context_three_requests_and_instructions() -> anyhow::Result<(
     let notify_dir = TempDir::new()?;
     // write a script to the notify that touches a file next to it
     let notify_script = notify_dir.path().join("notify.sh");
+    let bash = test_binary_path("bash");
     std::fs::write(
         &notify_script,
-        r#"#!/bin/bash
+        format!(
+            r#"#!{bash}
 set -e
-payload_path="$(dirname "${0}")/notify.txt"
-tmp_path="${payload_path}.tmp"
-echo -n "${@: -1}" > "${tmp_path}"
-mv "${tmp_path}" "${payload_path}""#,
+payload_path="$(dirname "${{0}}")/notify.txt"
+tmp_path="${{payload_path}}.tmp"
+echo -n "${{@: -1}}" > "${{tmp_path}}"
+mv "${{tmp_path}}" "${{payload_path}}""#
+        ),
     )?;
     std::fs::set_permissions(&notify_script, std::fs::Permissions::from_mode(0o755))?;
 

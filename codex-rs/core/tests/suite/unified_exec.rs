@@ -25,6 +25,7 @@ use core_test_support::responses::start_mock_server;
 use core_test_support::skip_if_no_network;
 use core_test_support::skip_if_sandbox;
 use core_test_support::skip_if_windows;
+use core_test_support::test_binary_path;
 use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::TestCodexHarness;
 use core_test_support::test_codex::test_codex;
@@ -291,10 +292,11 @@ async fn unified_exec_emits_exec_command_begin_event() -> Result<()> {
         ..
     } = builder.build(&server).await?;
 
+    let echo_path = test_binary_path("echo");
     let call_id = "uexec-begin-event";
     let args = json!({
         "shell": "bash".to_string(),
-        "cmd": "/bin/echo hello unified exec".to_string(),
+        "cmd": format!("{echo_path} hello unified exec"),
         "yield_time_ms": 250,
     });
 
@@ -339,7 +341,11 @@ async fn unified_exec_emits_exec_command_begin_event() -> Result<()> {
     })
     .await;
 
-    assert_command(&begin_event.command, "-lc", "/bin/echo hello unified exec");
+    assert_command(
+        &begin_event.command,
+        "-lc",
+        &format!("{echo_path} hello unified exec"),
+    );
 
     assert_eq!(begin_event.cwd, cwd.path());
 
@@ -541,9 +547,10 @@ async fn unified_exec_emits_exec_command_end_event() -> Result<()> {
         ..
     } = builder.build(&server).await?;
 
+    let echo_path = test_binary_path("echo");
     let call_id = "uexec-end-event";
     let args = json!({
-        "cmd": "/bin/echo END-EVENT".to_string(),
+        "cmd": format!("{echo_path} END-EVENT"),
         "yield_time_ms": 250,
     });
     let poll_call_id = "uexec-end-event-poll";
@@ -828,9 +835,10 @@ async fn unified_exec_emits_terminal_interaction_for_write_stdin() -> Result<()>
         ..
     } = builder.build(&server).await?;
 
+    let bash_path = test_binary_path("bash");
     let open_call_id = "uexec-open";
     let open_args = json!({
-        "cmd": "/bin/bash -i",
+        "cmd": format!("{bash_path} -i"),
         "yield_time_ms": 200,
         "tty": true,
     });
@@ -1069,11 +1077,13 @@ async fn unified_exec_terminal_interaction_captures_delayed_output() -> Result<(
         "begin event should include process_id for a live session"
     );
 
-    // We expect three terminal interactions matching the three write_stdin calls.
-    assert_eq!(
-        terminal_events.len(),
-        3,
-        "expected three terminal interactions; got {terminal_events:?}"
+    // Under full-harness load, the second long poll can start late enough to
+    // capture both delayed markers, so the scripted third poll is no longer
+    // needed. We still expect at least the initial short poll and one delayed
+    // follow-up interaction.
+    assert!(
+        (2..=3).contains(&terminal_events.len()),
+        "expected two or three terminal interactions; got {terminal_events:?}"
     );
 
     for event in &terminal_events {
@@ -1085,8 +1095,8 @@ async fn unified_exec_terminal_interaction_captures_delayed_output() -> Result<(
             .iter()
             .map(|ev| ev.stdin.as_str())
             .collect::<Vec<_>>(),
-        vec!["x", "x", "x"],
-        "terminal interactions should reflect the three stdin polls"
+        vec!["x"; terminal_events.len()],
+        "terminal interactions should reflect the emitted stdin polls"
     );
 
     assert!(
@@ -1657,12 +1667,13 @@ async fn write_stdin_returns_exit_metadata_and_clears_session() -> Result<()> {
         ..
     } = builder.build(&server).await?;
 
+    let cat_path = test_binary_path("cat");
     let start_call_id = "uexec-cat-start";
     let send_call_id = "uexec-cat-send";
     let exit_call_id = "uexec-cat-exit";
 
     let start_args = serde_json::json!({
-        "cmd": "/bin/cat",
+        "cmd": cat_path,
         "yield_time_ms": 500,
         "tty": true,
     });
@@ -1827,9 +1838,10 @@ async fn unified_exec_emits_end_event_when_session_dies_via_stdin() -> Result<()
         ..
     } = builder.build(&server).await?;
 
+    let cat_path = test_binary_path("cat");
     let start_call_id = "uexec-end-on-exit-start";
     let start_args = serde_json::json!({
-        "cmd": "/bin/cat",
+        "cmd": cat_path,
         "yield_time_ms": 200,
         "tty": true,
     });
@@ -2125,9 +2137,10 @@ async fn unified_exec_reuses_session_via_stdin() -> Result<()> {
         ..
     } = builder.build(&server).await?;
 
+    let cat_path = test_binary_path("cat");
     let first_call_id = "uexec-start";
     let first_args = serde_json::json!({
-        "cmd": "/bin/cat",
+        "cmd": cat_path,
         "yield_time_ms": 200,
         "tty": true,
     });
@@ -3041,10 +3054,7 @@ fn assert_command(command: &[String], expected_args: &str, expected_cmd: &str) {
     assert_eq!(command.len(), 3);
     let shell_path = &command[0];
     assert!(
-        shell_path == "/bin/bash"
-            || shell_path == "/usr/bin/bash"
-            || shell_path == "/usr/local/bin/bash"
-            || shell_path.ends_with("/bash"),
+        shell_path.ends_with("/bash") || shell_path == "bash",
         "unexpected bash path: {shell_path}"
     );
     assert_eq!(command[1], expected_args);

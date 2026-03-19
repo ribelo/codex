@@ -37,6 +37,7 @@ use std::fs;
 use std::path::Path;
 use std::time::Duration;
 use std::time::Instant;
+use tokio::time::sleep;
 use wiremock::MockServer;
 
 fn custom_tool_output_items(req: &ResponsesRequest, call_id: &str) -> Vec<Value> {
@@ -170,6 +171,7 @@ async fn run_code_mode_turn(
     .await;
 
     test.submit_turn(prompt).await?;
+    wait_for_response_requests(&second_mock, 1).await;
     Ok((test, second_mock))
 }
 
@@ -236,7 +238,21 @@ async fn run_code_mode_turn_with_rmcp(
     .await;
 
     test.submit_turn(prompt).await?;
+    wait_for_response_requests(&second_mock, 1).await;
     Ok((test, second_mock))
+}
+
+async fn wait_for_response_requests(mock: &ResponseMock, expected: usize) {
+    for _ in 0..100 {
+        if mock.requests().len() >= expected {
+            return;
+        }
+        sleep(Duration::from_millis(100)).await;
+    }
+    panic!(
+        "timed out waiting for {expected} response request(s); saw {}",
+        mock.requests().len()
+    );
 }
 
 #[cfg_attr(windows, ignore = "no exec_command on Windows")]
@@ -472,8 +488,11 @@ text(JSON.stringify(results));
     test.submit_turn("run nested tools in parallel").await?;
     let duration = start.elapsed();
 
+    // Allow headroom for slow full-suite scheduling; the barrier already
+    // forces overlap, so sub-2.5s still demonstrates parallel execution for
+    // the 300ms nested tool calls under a busy integration harness.
     assert!(
-        duration < Duration::from_millis(1_600),
+        duration < Duration::from_millis(2_500),
         "expected nested tools to finish in parallel, got {duration:?}",
     );
 

@@ -66,6 +66,7 @@ use crate::error::Result;
 use crate::model_provider_info::ModelProviderInfo;
 use crate::models_manager::model_info::is_bedrock_claude_slug;
 use crate::provider_adapters::max_output_tokens;
+use crate::provider_adapters::record_native_api_request;
 use crate::util::backoff;
 
 const DEFAULT_MAX_OUTPUT_TOKENS: i64 = 64_000;
@@ -132,7 +133,8 @@ pub(crate) async fn stream_bedrock_converse(
             .send()
             .await;
         let duration = started_at.elapsed();
-        session_telemetry.record_api_request(
+        record_native_api_request(
+            session_telemetry,
             attempt,
             response.as_ref().ok().map(|_| 200),
             response
@@ -141,6 +143,7 @@ pub(crate) async fn stream_bedrock_converse(
                 .map(|err| format!("{}", DisplayErrorContext(err)))
                 .as_deref(),
             duration,
+            "/converse-stream",
         );
 
         match response {
@@ -265,6 +268,8 @@ fn build_messages(prompt: &Prompt, model_info: &ModelInfo) -> Result<Vec<Message
                 }
             }
             ResponseItem::LocalShellCall { .. }
+            | ResponseItem::ToolSearchCall { .. }
+            | ResponseItem::ToolSearchOutput { .. }
             | ResponseItem::WebSearchCall { .. }
             | ResponseItem::ImageGenerationCall { .. }
             | ResponseItem::GhostSnapshot { .. }
@@ -832,6 +837,7 @@ async fn handle_content_block_start(
             item: ResponseItem::FunctionCall {
                 id: None,
                 name: tool_use.name().to_string(),
+                namespace: None,
                 arguments: String::new(),
                 call_id: tool_use.tool_use_id().to_string(),
             },
@@ -1083,6 +1089,7 @@ mod tests {
                 ResponseItem::FunctionCall {
                     id: None,
                     name: "shell".to_string(),
+                    namespace: None,
                     arguments: "{\"cmd\":\"pwd\"}".to_string(),
                     call_id: "call_1".to_string(),
                 },

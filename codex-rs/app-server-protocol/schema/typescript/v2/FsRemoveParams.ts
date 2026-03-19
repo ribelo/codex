@@ -4,7 +4,7 @@
 import type { AbsolutePathBuf } from "../AbsolutePathBuf";
 
 /**
- * Remove a file or directory tree from the host filesystem.
+ * Remove a file or directory on the host filesystem.
  */
 export type FsRemoveParams = { 
 /**
@@ -12,7 +12,7 @@ export type FsRemoveParams = {
  */
 path: AbsolutePathBuf, 
 /**
- * Whether directory removal should recurse. Defaults to `true`.
+ * Whether to recurse into directories. Defaults to `true`.
  */
 recursive?: boolean | null, 
 /**

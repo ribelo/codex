@@ -112,6 +112,17 @@ fn find_test_zsh_path() -> Result<Option<PathBuf>> {
 }
 
 fn supports_exec_wrapper_intercept(zsh_path: &Path) -> bool {
+    let baseline = std::process::Command::new(zsh_path)
+        .arg("-fc")
+        .arg("/usr/bin/true")
+        .status();
+    let Ok(baseline) = baseline else {
+        return false;
+    };
+    if !baseline.success() {
+        return false;
+    }
+
     let status = std::process::Command::new(zsh_path)
         .arg("-fc")
         .arg("/usr/bin/true")

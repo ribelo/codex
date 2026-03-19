@@ -374,15 +374,19 @@ echo "# aliases $alias_count"
 alias -p
 echo ''
 export_lines=$(
-  while IFS= read -r name; do
-    if [[ "$name" =~ ^(EXCLUDED_EXPORTS)$ ]]; then
-      continue
-    fi
-    if [[ ! "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
-      continue
-    fi
-    declare -xp "$name" 2>/dev/null || true
-  done < <(compgen -e)
+  export -p | awk '
+/^(export|declare -x|typeset -x) / {
+  line=$0
+  name=line
+  sub(/^(export|declare -x|typeset -x) /, "", name)
+  sub(/=.*/, "", name)
+  if (name ~ /^(EXCLUDED_EXPORTS)$/) {
+    next
+  }
+  if (name ~ /^[A-Za-z_][A-Za-z0-9_]*$/) {
+    print line
+  }
+}'
 )
 export_count=$(printf '%s\n' "$export_lines" | sed '/^$/d' | wc -l | tr -d ' ')
 echo "# exports $export_count"

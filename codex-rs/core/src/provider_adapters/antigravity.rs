@@ -7,7 +7,6 @@ use crate::client_common::ResponseStream;
 use crate::error::CodexErr;
 use crate::error::ConnectionFailedError;
 use crate::error::Result;
-use crate::error::UnexpectedResponseError;
 use crate::provider_adapters::AdapterContext;
 use crate::provider_adapters::gemini::GeminiRequest;
 use crate::provider_adapters::gemini::SafetySetting;
@@ -20,6 +19,8 @@ use crate::provider_adapters::gemini::process_gemini_sse;
 use crate::provider_adapters::gemini::retry_delay_from_response;
 use crate::provider_adapters::gemini::retry_delay_from_response_headers;
 use crate::provider_adapters::gemini::set_tool_config_validated_mode;
+use crate::provider_adapters::record_native_api_request;
+use crate::provider_adapters::unexpected_response_error;
 use crate::util::backoff;
 use codex_otel::SessionTelemetry;
 use codex_protocol::openai_models::ModelInfo;
@@ -134,7 +135,8 @@ pub(crate) async fn stream_antigravity_generate_content(
         let started_at = std::time::Instant::now();
         let response = request_builder.send().await;
         let duration = started_at.elapsed();
-        session_telemetry.record_api_request(
+        record_native_api_request(
+            session_telemetry,
             attempt,
             response.as_ref().ok().map(|resp| resp.status().as_u16()),
             response
@@ -143,6 +145,7 @@ pub(crate) async fn stream_antigravity_generate_content(
                 .map(std::string::ToString::to_string)
                 .as_deref(),
             duration,
+            "/v1internal:streamGenerateContent",
         );
 
         match response {
@@ -170,13 +173,9 @@ pub(crate) async fn stream_antigravity_generate_content(
                 let retry_delay =
                     retry_delay.or_else(|| retry_delay_from_response_headers(None, &body));
                 if !is_retryable_status_or_body(status, &body) || attempt > max_retries {
-                    return Err(CodexErr::UnexpectedStatus(UnexpectedResponseError {
-                        status,
-                        body,
-                        url: None,
-                        cf_ray: None,
-                        request_id: None,
-                    }));
+                    return Err(CodexErr::UnexpectedStatus(unexpected_response_error(
+                        status, body,
+                    )));
                 }
                 if base_idx + 1 < base_urls.len() {
                     base_idx += 1;

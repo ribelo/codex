@@ -18,6 +18,7 @@ use core_test_support::responses::ev_response_created;
 use core_test_support::responses::sse;
 use core_test_support::responses::sse_response;
 use core_test_support::skip_if_no_network;
+use core_test_support::test_binary_path;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
 use pretty_assertions::assert_eq;
@@ -71,7 +72,11 @@ async fn refresh_models_on_models_etag_mismatch_and_avoid_duplicate_models_fetch
     // It also includes a mismatched X-Models-Etag, which should trigger a /models refresh.
     let first_response_body = sse(vec![
         ev_response_created("resp-1"),
-        ev_local_shell_call(CALL_ID, "completed", vec!["/bin/echo", "etag ok"]),
+        ev_local_shell_call(
+            CALL_ID,
+            "completed",
+            vec![test_binary_path("echo"), "etag ok".to_string()],
+        ),
         ev_completed("resp-1"),
     ]);
     responses::mount_response_once(

@@ -16,9 +16,8 @@ const { inspect, TextDecoder, TextEncoder } = require("node:util");
 const vm = require("node:vm");
 
 const { SourceTextModule, SyntheticModule } = vm;
-const meriyahPromise = import("./meriyah.umd.min.js").then(
-  (m) => m.default ?? m,
-);
+const meriyahModule = require("./meriyah.umd.min.cjs");
+const meriyahPromise = Promise.resolve(meriyahModule.default ?? meriyahModule);
 
 // vm contexts start with very few globals. Populate common Node/web globals
 // so snippets and dependencies behave like a normal modern JS runtime.

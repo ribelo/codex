@@ -116,6 +116,8 @@ mod tests {
                 refresh_token: "refresh-token".to_string(),
                 account_id: Some("workspace-1".to_string()),
             }),
+            gemini_accounts: Vec::new(),
+            antigravity_accounts: Vec::new(),
             last_refresh: Some(Utc::now()),
         };
         save_auth(codex_home, &auth, AuthCredentialsStoreMode::File)
@@ -158,6 +160,8 @@ mod tests {
                 auth_mode: Some(AuthMode::ApiKey),
                 openai_api_key: Some("sk-test".to_string()),
                 tokens: None,
+                gemini_accounts: Vec::new(),
+                antigravity_accounts: Vec::new(),
                 last_refresh: None,
             },
             AuthCredentialsStoreMode::File,

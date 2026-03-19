@@ -1,11 +1,13 @@
 use crate::api_bridge::CoreAuthProvider;
 use crate::auth::AuthManager;
 use crate::error::CodexErr;
+use crate::error::UnexpectedResponseError;
 use crate::model_provider_info::ModelProviderInfo;
 use crate::model_provider_info::WireApi;
 use codex_api::AuthProvider as _;
 use codex_api::Provider as ApiProvider;
 use codex_api::build_conversation_headers;
+use codex_otel::SessionTelemetry;
 use codex_protocol::ThreadId;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::protocol::SessionSource;
@@ -13,6 +15,8 @@ use codex_protocol::protocol::SubAgentSource;
 use http::HeaderMap;
 use http::HeaderValue;
 use reqwest::RequestBuilder;
+use reqwest::StatusCode;
+use std::time::Duration;
 use url::Url;
 
 pub(crate) mod anthropic;
@@ -96,6 +100,38 @@ pub(crate) fn responses_only_operation_error(operation: &str, wire_api: WireApi)
         "{operation} is only supported with Responses API providers (current wire_api: {})",
         wire_api.as_str()
     ))
+}
+
+pub(crate) fn record_native_api_request(
+    session_telemetry: &SessionTelemetry,
+    attempt: u64,
+    status: Option<u16>,
+    error: Option<&str>,
+    duration: Duration,
+    endpoint: &'static str,
+) {
+    session_telemetry.record_api_request(
+        attempt, status, error, duration, /*auth_header_attached*/ false,
+        /*auth_header_name*/ None, /*retry_after_unauthorized*/ false,
+        /*recovery_mode*/ None, /*recovery_phase*/ None, endpoint,
+        /*request_id*/ None, /*cf_ray*/ None, /*auth_error*/ None,
+        /*auth_error_code*/ None,
+    );
+}
+
+pub(crate) fn unexpected_response_error(
+    status: StatusCode,
+    body: String,
+) -> UnexpectedResponseError {
+    UnexpectedResponseError {
+        status,
+        body,
+        url: None,
+        cf_ray: None,
+        request_id: None,
+        identity_authorization_error: None,
+        identity_error_code: None,
+    }
 }
 
 pub(crate) fn max_output_tokens(model_info: &ModelInfo, hard_cap: i64) -> i64 {

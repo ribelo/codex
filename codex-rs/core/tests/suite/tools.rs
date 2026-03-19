@@ -22,6 +22,7 @@ use core_test_support::responses::mount_sse_sequence;
 use core_test_support::responses::sse;
 use core_test_support::responses::start_mock_server;
 use core_test_support::skip_if_no_network;
+use core_test_support::test_binary_path;
 use core_test_support::test_codex::test_codex;
 use regex_lite::Regex;
 use serde_json::Value;
@@ -99,7 +100,8 @@ async fn shell_escalated_permissions_rejected_then_ok() -> Result<()> {
     let mut builder = test_codex().with_model("gpt-5");
     let test = builder.build(&server).await?;
 
-    let command = ["/bin/echo", "shell ok"];
+    let echo = test_binary_path("echo");
+    let command = [echo.as_str(), "shell ok"];
     let call_id_blocked = "shell-blocked";
     let call_id_success = "shell-success";
 
@@ -200,7 +202,7 @@ async fn sandbox_denied_shell_returns_original_output() -> Result<()> {
     let target_path = fixture.workspace_path("sandbox-denied.txt");
     let sentinel = "sandbox-denied sentinel output";
     let command = vec![
-        "/bin/sh".to_string(),
+        test_binary_path("sh"),
         "-c".to_string(),
         format!(
             "printf {sentinel:?}; printf {content:?} > {path:?}",

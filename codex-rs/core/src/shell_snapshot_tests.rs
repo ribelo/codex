@@ -10,6 +10,13 @@ use std::process::Command as StdCommand;
 use tempfile::tempdir;
 
 #[cfg(unix)]
+fn bash_shell_path() -> PathBuf {
+    crate::shell::get_shell(ShellType::Bash, None)
+        .expect("bash shell should be available for shell snapshot tests")
+        .shell_path
+}
+
+#[cfg(unix)]
 struct BlockingStdinPipe {
     original: i32,
     write_end: i32,
@@ -123,7 +130,7 @@ fn snapshot_file_name_parser_supports_legacy_and_suffixed_names() {
 #[cfg(unix)]
 #[test]
 fn bash_snapshot_filters_invalid_exports() -> Result<()> {
-    let output = Command::new("/bin/bash")
+    let output = Command::new(bash_shell_path())
         .arg("-c")
         .arg(bash_snapshot_script())
         .env("BASH_ENV", "/dev/null")
@@ -148,7 +155,7 @@ fn bash_snapshot_filters_invalid_exports() -> Result<()> {
 #[test]
 fn bash_snapshot_preserves_multiline_exports() -> Result<()> {
     let multiline_cert = "-----BEGIN CERTIFICATE-----\nabc\n-----END CERTIFICATE-----";
-    let output = Command::new("/bin/bash")
+    let output = Command::new(bash_shell_path())
         .arg("-c")
         .arg(bash_snapshot_script())
         .env("BASH_ENV", "/dev/null")
@@ -167,7 +174,7 @@ fn bash_snapshot_preserves_multiline_exports() -> Result<()> {
     let snapshot_path = dir.path().join("snapshot.sh");
     std::fs::write(&snapshot_path, stdout.as_bytes())?;
 
-    let validate = Command::new("/bin/bash")
+    let validate = Command::new(bash_shell_path())
         .arg("-c")
         .arg("set -e; . \"$1\"")
         .arg("bash")
@@ -190,7 +197,7 @@ async fn try_new_creates_and_deletes_snapshot_file() -> Result<()> {
     let dir = tempdir()?;
     let shell = Shell {
         shell_type: ShellType::Bash,
-        shell_path: PathBuf::from("/bin/bash"),
+        shell_path: bash_shell_path(),
         shell_snapshot: crate::shell::empty_shell_snapshot_receiver(),
     };
 
@@ -215,7 +222,7 @@ async fn try_new_uses_distinct_generation_paths() -> Result<()> {
     let session_id = ThreadId::new();
     let shell = Shell {
         shell_type: ShellType::Bash,
-        shell_path: PathBuf::from("/bin/bash"),
+        shell_path: bash_shell_path(),
         shell_snapshot: crate::shell::empty_shell_snapshot_receiver(),
     };
 
@@ -260,7 +267,7 @@ async fn snapshot_shell_does_not_inherit_stdin() -> Result<()> {
 
     let shell = Shell {
         shell_type: ShellType::Bash,
-        shell_path: PathBuf::from("/bin/bash"),
+        shell_path: bash_shell_path(),
         shell_snapshot: crate::shell::empty_shell_snapshot_receiver(),
     };
 

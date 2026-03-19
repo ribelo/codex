@@ -250,7 +250,7 @@ async fn chat_wire_api_streams_tool_calls_and_json_schema() -> Result<()> {
         .await;
 
     let provider = provider_with_test_token(
-        built_in_model_providers()["openai"].clone(),
+        built_in_model_providers(/*openai_base_url*/ None)["openai"].clone(),
         format!("{}/v1", server.uri()),
         WireApi::Chat,
         "chat-key",
@@ -392,7 +392,7 @@ async fn anthropic_wire_api_uses_native_headers_and_events() -> Result<()> {
         .await;
 
     let provider = provider_with_test_token(
-        built_in_model_providers()["anthropic"].clone(),
+        built_in_model_providers(/*openai_base_url*/ None)["anthropic"].clone(),
         format!("{}/v1", server.uri()),
         WireApi::Anthropic,
         "anthropic-key",
@@ -507,7 +507,7 @@ async fn anthropic_compatible_provider_can_use_bearer_auth() -> Result<()> {
         .await;
 
     let mut provider = provider_with_test_token(
-        built_in_model_providers()["anthropic"].clone(),
+        built_in_model_providers(/*openai_base_url*/ None)["anthropic"].clone(),
         format!("{}/v1", server.uri()),
         WireApi::Anthropic,
         "anthropic-bearer",
@@ -597,7 +597,7 @@ async fn gemini_wire_api_uses_native_schema_and_thought_streaming() -> Result<()
         .await;
 
     let provider = provider_with_test_token(
-        built_in_model_providers()["gemini"].clone(),
+        built_in_model_providers(/*openai_base_url*/ None)["gemini"].clone(),
         format!("{}/v1beta", server.uri()),
         WireApi::Gemini,
         "gemini-key",
@@ -715,7 +715,7 @@ async fn gemini_wire_api_uses_code_assist_when_oauth_is_available() -> Result<()
         .mount(&server)
         .await;
 
-    let mut provider = built_in_model_providers()["gemini"].clone();
+    let mut provider = built_in_model_providers(/*openai_base_url*/ None)["gemini"].clone();
     provider.name = "test-gemini-oauth".to_string();
     provider.base_url = Some(server.uri());
     provider.env_key = None;
@@ -843,7 +843,7 @@ async fn gemini_3_oauth_uses_thinking_level() -> Result<()> {
         .mount(&server)
         .await;
 
-    let mut provider = built_in_model_providers()["gemini"].clone();
+    let mut provider = built_in_model_providers(/*openai_base_url*/ None)["gemini"].clone();
     provider.name = "test-gemini-3-oauth".to_string();
     provider.base_url = Some(server.uri());
     provider.env_key = None;
@@ -932,7 +932,7 @@ async fn antigravity_wire_api_uses_oauth_and_claude_request_shape() -> Result<()
         .mount(&server)
         .await;
 
-    let mut provider = built_in_model_providers()["antigravity"].clone();
+    let mut provider = built_in_model_providers(/*openai_base_url*/ None)["antigravity"].clone();
     provider.name = "test-antigravity".to_string();
     provider.base_url = Some(server.uri());
     provider.request_max_retries = Some(0);

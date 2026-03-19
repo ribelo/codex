@@ -195,7 +195,8 @@ mod tests {
                 smart: Some(CollaborationModeProfile {
                     profile: "smart".to_string(),
                     model_provider_id: "openai".to_string(),
-                    model_provider: crate::built_in_model_providers()["openai"].clone(),
+                    model_provider:
+                        crate::built_in_model_providers(/*openai_base_url*/ None)["openai"].clone(),
                     model: Some("gpt-5".to_string()),
                     model_reasoning_effort: Some(ReasoningEffort::Medium),
                 }),
@@ -203,7 +204,8 @@ mod tests {
                 rush: Some(CollaborationModeProfile {
                     profile: "rush".to_string(),
                     model_provider_id: "openai".to_string(),
-                    model_provider: crate::built_in_model_providers()["openai"].clone(),
+                    model_provider:
+                        crate::built_in_model_providers(/*openai_base_url*/ None)["openai"].clone(),
                     model: Some("gpt-5-mini".to_string()),
                     model_reasoning_effort: None,
                 }),
@@ -269,7 +271,8 @@ mod tests {
                 smart: Some(CollaborationModeProfile {
                     profile: "smart".to_string(),
                     model_provider_id: "openai".to_string(),
-                    model_provider: crate::built_in_model_providers()["openai"].clone(),
+                    model_provider:
+                        crate::built_in_model_providers(/*openai_base_url*/ None)["openai"].clone(),
                     model: Some("gpt-5".to_string()),
                     model_reasoning_effort: Some(ReasoningEffort::Medium),
                 }),
@@ -277,7 +280,8 @@ mod tests {
                 rush: Some(CollaborationModeProfile {
                     profile: "rush".to_string(),
                     model_provider_id: "openai".to_string(),
-                    model_provider: crate::built_in_model_providers()["openai"].clone(),
+                    model_provider:
+                        crate::built_in_model_providers(/*openai_base_url*/ None)["openai"].clone(),
                     model: Some("gpt-5-mini".to_string()),
                     model_reasoning_effort: None,
                 }),

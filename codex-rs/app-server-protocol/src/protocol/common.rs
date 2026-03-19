@@ -889,7 +889,9 @@ server_notification_definitions! {
     TurnDiffUpdated => "turn/diff/updated" (v2::TurnDiffUpdatedNotification),
     TurnPlanUpdated => "turn/plan/updated" (v2::TurnPlanUpdatedNotification),
     ItemStarted => "item/started" (v2::ItemStartedNotification),
+    #[experimental("item/autoApprovalReview/started")]
     ItemGuardianApprovalReviewStarted => "item/autoApprovalReview/started" (v2::ItemGuardianApprovalReviewStartedNotification),
+    #[experimental("item/autoApprovalReview/completed")]
     ItemGuardianApprovalReviewCompleted => "item/autoApprovalReview/completed" (v2::ItemGuardianApprovalReviewCompletedNotification),
     ItemCompleted => "item/completed" (v2::ItemCompletedNotification),
     /// This event is internal-only. Used by Codex Cloud.
@@ -1657,6 +1659,47 @@ mod tests {
         );
         let reason = crate::experimental_api::ExperimentalApi::experimental_reason(&notification);
         assert_eq!(reason, Some("thread/realtime/outputAudio/delta"));
+    }
+
+    #[test]
+    fn guardian_auto_approval_review_notifications_are_marked_experimental() {
+        let started = ServerNotification::ItemGuardianApprovalReviewStarted(
+            v2::ItemGuardianApprovalReviewStartedNotification {
+                thread_id: "thr_123".to_string(),
+                turn_id: "turn_123".to_string(),
+                target_item_id: "item_123".to_string(),
+                review: v2::GuardianApprovalReview {
+                    status: v2::GuardianApprovalReviewStatus::InProgress,
+                    risk_score: None,
+                    risk_level: None,
+                    rationale: None,
+                },
+                action: None,
+            },
+        );
+        let completed = ServerNotification::ItemGuardianApprovalReviewCompleted(
+            v2::ItemGuardianApprovalReviewCompletedNotification {
+                thread_id: "thr_123".to_string(),
+                turn_id: "turn_123".to_string(),
+                target_item_id: "item_123".to_string(),
+                review: v2::GuardianApprovalReview {
+                    status: v2::GuardianApprovalReviewStatus::Approved,
+                    risk_score: None,
+                    risk_level: None,
+                    rationale: None,
+                },
+                action: None,
+            },
+        );
+
+        assert_eq!(
+            crate::experimental_api::ExperimentalApi::experimental_reason(&started),
+            Some("item/autoApprovalReview/started")
+        );
+        assert_eq!(
+            crate::experimental_api::ExperimentalApi::experimental_reason(&completed),
+            Some("item/autoApprovalReview/completed")
+        );
     }
 
     #[test]

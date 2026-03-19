@@ -1,8 +1,8 @@
 use assert_matches::assert_matches;
 use std::sync::Arc;
-use std::time::Duration;
 
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::ExecCommandSource;
 use codex_protocol::protocol::Op;
 use codex_protocol::user_input::UserInput;
 use core_test_support::responses::ev_completed;
@@ -14,6 +14,7 @@ use core_test_support::responses::sse;
 use core_test_support::responses::start_mock_server;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
+use core_test_support::wait_for_event_match;
 use regex_lite::Regex;
 use serde_json::json;
 
@@ -21,7 +22,11 @@ use serde_json::json;
 /// function call, then interrupt the session and expect TurnAborted.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn interrupt_long_running_tool_emits_turn_aborted() {
-    let command = "sleep 60";
+    let command = if cfg!(windows) {
+        "Start-Sleep -Seconds 5; Write-Output done"
+    } else {
+        "sleep 5; echo done"
+    };
 
     let args = json!({
         "command": command,
@@ -56,7 +61,15 @@ async fn interrupt_long_running_tool_emits_turn_aborted() {
         .unwrap();
 
     // Wait until the exec begins to avoid a race, then interrupt.
-    wait_for_event(&codex, |ev| matches!(ev, EventMsg::ExecCommandBegin(_))).await;
+    wait_for_event_match(&codex, |ev| match ev {
+        EventMsg::ExecCommandBegin(event)
+            if event.source == ExecCommandSource::Agent && event.call_id == "call_sleep" =>
+        {
+            Some(event.clone())
+        }
+        _ => None,
+    })
+    .await;
 
     codex.submit(Op::Interrupt).await.unwrap();
 
@@ -70,7 +83,11 @@ async fn interrupt_long_running_tool_emits_turn_aborted() {
 /// responses server, and ensures the model receives the synthesized abort.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn interrupt_tool_records_history_entries() {
-    let command = "sleep 60";
+    let command = if cfg!(windows) {
+        "Start-Sleep -Seconds 5; Write-Output done"
+    } else {
+        "sleep 5; echo done"
+    };
     let call_id = "call-history";
 
     let args = json!({
@@ -109,9 +126,16 @@ async fn interrupt_tool_records_history_entries() {
         .await
         .unwrap();
 
-    wait_for_event(&codex, |ev| matches!(ev, EventMsg::ExecCommandBegin(_))).await;
+    wait_for_event_match(&codex, |ev| match ev {
+        EventMsg::ExecCommandBegin(event)
+            if event.source == ExecCommandSource::Agent && event.call_id == call_id =>
+        {
+            Some(event.clone())
+        }
+        _ => None,
+    })
+    .await;
 
-    tokio::time::sleep(Duration::from_secs_f32(0.1)).await;
     codex.submit(Op::Interrupt).await.unwrap();
 
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnAborted(_))).await;
@@ -168,7 +192,11 @@ async fn interrupt_tool_records_history_entries() {
 /// history. This test asserts that the marker is included in the next `/responses` request.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn interrupt_persists_turn_aborted_marker_in_next_request() {
-    let command = "sleep 60";
+    let command = if cfg!(windows) {
+        "Start-Sleep -Seconds 5; Write-Output done"
+    } else {
+        "sleep 5; echo done"
+    };
     let call_id = "call-turn-aborted-marker";
 
     let args = json!({
@@ -207,9 +235,16 @@ async fn interrupt_persists_turn_aborted_marker_in_next_request() {
         .await
         .unwrap();
 
-    wait_for_event(&codex, |ev| matches!(ev, EventMsg::ExecCommandBegin(_))).await;
+    wait_for_event_match(&codex, |ev| match ev {
+        EventMsg::ExecCommandBegin(event)
+            if event.source == ExecCommandSource::Agent && event.call_id == call_id =>
+        {
+            Some(event.clone())
+        }
+        _ => None,
+    })
+    .await;
 
-    tokio::time::sleep(Duration::from_secs_f32(0.1)).await;
     codex.submit(Op::Interrupt).await.unwrap();
 
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnAborted(_))).await;

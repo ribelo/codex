@@ -2980,6 +2980,7 @@ impl App {
                 default_mode_request_user_input: config
                     .features
                     .enabled(Feature::DefaultModeRequestUserInput),
+                collaboration_mode_profiles: config.collaboration_mode_profiles.clone(),
             },
         ));
         let feedback_audience = bootstrap.feedback_audience;

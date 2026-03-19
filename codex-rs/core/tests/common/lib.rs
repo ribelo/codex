@@ -12,9 +12,14 @@ use codex_core::CodexThread;
 use codex_core::config::Config;
 use codex_core::config::ConfigBuilder;
 use codex_core::config::ConfigOverrides;
+use codex_core::config_loader::ConfigLayerStack;
+use codex_core::config_loader::ConfigLayerStackOrdering;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use regex_lite::Regex;
+use std::ffi::OsString;
 use std::path::PathBuf;
+use std::process::Command;
+use std::sync::OnceLock;
 
 pub mod apps_test_server;
 pub mod context_snapshot;
@@ -112,6 +117,17 @@ pub fn test_tmp_path_buf() -> PathBuf {
     test_tmp_path().into_path_buf()
 }
 
+pub fn test_binary_path(binary: &str) -> String {
+    let path = std::env::var_os("PATH")
+        .and_then(|path| {
+            std::env::split_paths(&path)
+                .map(|dir| dir.join(binary))
+                .find(|candidate| candidate.is_file())
+        })
+        .unwrap_or_else(|| panic!("expected `{binary}` on PATH for tests"));
+    path.to_string_lossy().into_owned()
+}
+
 /// Fetch a DotSlash resource and return the resolved executable/file path.
 pub fn fetch_dotslash_file(
     dotslash_file: &std::path::Path,
@@ -152,12 +168,35 @@ pub fn fetch_dotslash_file(
 /// temporary directory. Using a per-test directory keeps tests hermetic and
 /// avoids clobbering a developer’s real `~/.codex`.
 pub async fn load_default_config_for_test(codex_home: &TempDir) -> Config {
-    ConfigBuilder::default()
+    let mut config = ConfigBuilder::default()
         .codex_home(codex_home.path().to_path_buf())
         .harness_overrides(default_test_overrides())
         .build()
         .await
-        .expect("defaults for test should always succeed")
+        .expect("defaults for test should always succeed");
+    config.config_layer_stack = hermetic_test_config_layer_stack(&config.config_layer_stack);
+    config
+}
+
+fn hermetic_test_config_layer_stack(config_layer_stack: &ConfigLayerStack) -> ConfigLayerStack {
+    let layers = config_layer_stack
+        .get_layers(
+            ConfigLayerStackOrdering::LowestPrecedenceFirst,
+            /* include_disabled */ true,
+        )
+        .into_iter()
+        // Test configs should stay hermetic to the temp codex home instead of
+        // inheriting repo/project or host-level config layers from the machine
+        // running the suite.
+        .filter(|layer| matches!(layer.name.precedence(), 20 | 30))
+        .cloned()
+        .collect();
+    ConfigLayerStack::new(
+        layers,
+        config_layer_stack.requirements().clone(),
+        config_layer_stack.requirements_toml().clone(),
+    )
+    .expect("filtering system config layers should preserve valid ordering")
 }
 
 #[cfg(target_os = "linux")]
@@ -333,7 +372,47 @@ pub fn format_with_current_shell_display_non_login(command: &str) -> String {
 }
 
 pub fn stdio_server_bin() -> Result<String, CargoBinError> {
-    codex_utils_cargo_bin::cargo_bin("test_stdio_server").map(|p| p.to_string_lossy().to_string())
+    match codex_utils_cargo_bin::cargo_bin("test_stdio_server") {
+        Ok(path) => Ok(path.to_string_lossy().to_string()),
+        Err(err) => {
+            static BUILD_RESULT: OnceLock<Result<(), String>> = OnceLock::new();
+            let build_result = BUILD_RESULT.get_or_init(|| {
+                build_workspace_bin("test_stdio_server").map_err(|build_err| build_err.to_string())
+            });
+            if let Err(build_err) = build_result {
+                eprintln!(
+                    "failed to build missing test_stdio_server helper binary for codex-core tests: {build_err}"
+                );
+            }
+            codex_utils_cargo_bin::cargo_bin("test_stdio_server")
+                .map(|path| path.to_string_lossy().to_string())
+                .map_err(|_| err)
+        }
+    }
+}
+
+fn build_workspace_bin(name: &str) -> anyhow::Result<()> {
+    let repo_root = codex_utils_cargo_bin::repo_root().context("resolve repo root")?;
+    let manifest_path = repo_root.join("codex-rs/Cargo.toml");
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
+    let output = Command::new(cargo)
+        .arg("build")
+        .arg("--manifest-path")
+        .arg(&manifest_path)
+        .arg("-p")
+        .arg("codex-rmcp-client")
+        .arg("--bin")
+        .arg(name)
+        .output()
+        .with_context(|| format!("build helper binary `{name}`"))?;
+
+    ensure!(
+        output.status.success(),
+        "cargo build for `{name}` failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout).trim(),
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+    Ok(())
 }
 
 pub mod fs_wait {

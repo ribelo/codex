@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use async_channel::Receiver;
 use codex_protocol::config_types::WebSearchMode;
+use codex_protocol::items::AgentMessageContent;
 use codex_protocol::items::TurnItem;
 use codex_protocol::protocol::AgentMessageContentDeltaEvent;
 use codex_protocol::protocol::AgentMessageDeltaEvent;
@@ -122,11 +123,13 @@ async fn process_review_events(
     event_forwarding: ReviewEventForwarding,
 ) -> Option<ReviewOutputEvent> {
     let mut prev_agent_message: Option<EventMsg> = None;
+    let mut last_agent_message: Option<String> = None;
     let forward_parent_events = event_forwarding == ReviewEventForwarding::ForwardToParent;
 
     while let Ok(event) = receiver.recv().await {
         match event.msg {
             EventMsg::AgentMessage(agent_message) => {
+                last_agent_message = Some(agent_message.message.clone());
                 if forward_parent_events {
                     if let Some(prev) = prev_agent_message.take() {
                         session.send_event(parent_turn_context.as_ref(), prev).await;
@@ -134,18 +137,20 @@ async fn process_review_events(
                     prev_agent_message = Some(EventMsg::AgentMessage(agent_message));
                 }
             }
+            EventMsg::ItemCompleted(ItemCompletedEvent {
+                item: TurnItem::AgentMessage(agent_message),
+                ..
+            }) => {
+                last_agent_message = review_item_text(&agent_message);
+            }
             // Suppress ItemCompleted only for assistant messages: forwarding it
             // would trigger legacy AgentMessage via as_legacy_events(), which this
             // review flow intentionally hides in favor of structured output.
-            EventMsg::ItemCompleted(ItemCompletedEvent {
-                item: TurnItem::AgentMessage(_),
-                ..
-            })
-            | EventMsg::AgentMessageDelta(AgentMessageDeltaEvent { .. })
+            EventMsg::AgentMessageDelta(AgentMessageDeltaEvent { .. })
             | EventMsg::AgentMessageContentDelta(AgentMessageContentDeltaEvent { .. }) => {}
             EventMsg::TurnComplete(task_complete) => {
-                let out = task_complete
-                    .last_agent_message
+                let out = last_agent_message
+                    .or(task_complete.last_agent_message)
                     .as_deref()
                     .map(parse_review_output_event);
                 return out;
@@ -164,6 +169,17 @@ async fn process_review_events(
     }
 
     None
+}
+
+fn review_item_text(agent_message: &codex_protocol::items::AgentMessageItem) -> Option<String> {
+    let text = agent_message
+        .content
+        .iter()
+        .filter_map(|content| match content {
+            AgentMessageContent::Text { text } => Some(text.as_str()),
+        })
+        .collect::<String>();
+    if text.is_empty() { None } else { Some(text) }
 }
 
 /// Parse a ReviewOutputEvent from a text blob returned by the reviewer model.
@@ -191,8 +207,65 @@ pub(crate) fn parse_review_output_event(text: &str) -> ReviewOutputEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::codex::make_session_and_context;
     use crate::config::test_config;
+    use async_channel::unbounded;
+    use codex_protocol::items::AgentMessageItem;
+    use codex_protocol::protocol::Event;
+    use codex_protocol::protocol::TurnCompleteEvent;
     use pretty_assertions::assert_eq;
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn process_review_events_uses_completed_agent_message_when_turn_complete_is_empty() {
+        let (session, turn) = make_session_and_context().await;
+        let session = Arc::new(session);
+        let turn = Arc::new(turn);
+        let (tx, rx) = unbounded();
+        let review_json = serde_json::json!({
+            "findings": [],
+            "overall_correctness": "good",
+            "overall_explanation": "Recovered from completed item",
+            "overall_confidence_score": 0.9
+        })
+        .to_string();
+
+        tx.send_blocking(Event {
+            id: "evt-1".to_string(),
+            msg: EventMsg::ItemCompleted(ItemCompletedEvent {
+                thread_id: session.conversation_id,
+                turn_id: turn.sub_id.clone(),
+                item: TurnItem::AgentMessage(AgentMessageItem {
+                    id: "msg-1".to_string(),
+                    content: vec![AgentMessageContent::Text {
+                        text: review_json.clone(),
+                    }],
+                    phase: None,
+                }),
+            }),
+        })
+        .expect("send completed item");
+        tx.send_blocking(Event {
+            id: "evt-2".to_string(),
+            msg: EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: turn.sub_id.clone(),
+                last_agent_message: None,
+            }),
+        })
+        .expect("send turn complete");
+        drop(tx);
+
+        let output = process_review_events(session, turn, rx, ReviewEventForwarding::Suppress)
+            .await
+            .expect("review output should be recovered");
+
+        assert_eq!(
+            output.overall_explanation,
+            "Recovered from completed item".to_string()
+        );
+        assert_eq!(output.overall_correctness, "good".to_string());
+        assert_eq!(output.overall_confidence_score, 0.9);
+    }
 
     #[test]
     fn inherited_review_delegate_preserves_parent_approval_policy() {

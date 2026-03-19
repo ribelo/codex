@@ -9,11 +9,9 @@
           "type": "string"
         },
         "isDirectory": {
-          "description": "Whether this entry resolves to a directory.",
           "type": "boolean"
         },
         "isFile": {
-          "description": "Whether this entry resolves to a regular file.",
           "type": "boolean"
         }
       },
@@ -25,10 +23,9 @@
       "type": "object"
     }
   },
-  "description": "Directory entries returned by `fs/readDirectory`.",
+  "description": "Successful response for `fs/readDirectory`.",
   "properties": {
     "entries": {
-      "description": "Direct child entries in the requested directory.",
       "items": {
         "$ref": "#/definitions/FsReadDirectoryEntry"
       },

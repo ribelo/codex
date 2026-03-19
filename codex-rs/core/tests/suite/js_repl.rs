@@ -589,7 +589,10 @@ async fn js_repl_can_invoke_builtin_tools() -> Result<()> {
         Some(false),
         "js_repl call failed unexpectedly: {output}"
     );
-    assert!(output.contains("function_call_output"));
+    assert!(
+        output.contains("function_call_output"),
+        "expected function_call_output in output, got: {output}"
+    );
 
     Ok(())
 }
