@@ -906,6 +906,18 @@ impl App {
         self.refresh_in_memory_config_from_disk_best_effort("changing collaboration mode")
             .await;
 
+        if self.chat_widget.has_submitted_user_turn()
+            && !self.chat_widget.can_apply_mode_in_place(&mode)
+        {
+            if let Some(message) = self
+                .chat_widget
+                .blocked_collaboration_mode_switch_message(&mode)
+            {
+                self.chat_widget.add_info_message(message, None);
+            }
+            return;
+        }
+
         let base_mode_provider_id = self.config.model_provider_id.clone();
         let draft_state = self.chat_widget.capture_session_restart_draft_state();
         let config = self.fresh_session_config_for_mode(&mode);

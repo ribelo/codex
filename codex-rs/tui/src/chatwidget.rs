@@ -1312,9 +1312,9 @@ impl ChatWidget {
         self.last_copyable_output = None;
         let forked_from_id = event.forked_from_id;
         let model_for_header = event.model.clone();
-        self.has_submitted_user_turn = initial_messages
-            .as_ref()
-            .is_some_and(|messages| !messages.is_empty());
+        if event.history_entry_count > 0 {
+            self.has_submitted_user_turn = true;
+        }
         self.session_header.set_model(&model_for_header);
         self.current_collaboration_mode = self.current_collaboration_mode.with_updates(
             Some(model_for_header.clone()),
@@ -3801,10 +3801,7 @@ impl ChatWidget {
             Self::remembered_masks_from_active(active_collaboration_mask.as_ref());
         let last_non_plan_mode_kind =
             Self::initial_last_non_plan_mode_kind(active_collaboration_mask.as_ref());
-        let has_submitted_user_turn = session_configured
-            .initial_messages
-            .as_ref()
-            .is_some_and(|messages| !messages.is_empty());
+        let has_submitted_user_turn = session_configured.history_entry_count > 0;
 
         let current_cwd = Some(session_configured.cwd.clone());
         let codex_op_tx =
