@@ -12,7 +12,7 @@ import type { ApprovalsReviewer } from "./ApprovalsReviewer";
 import type { AskForApproval } from "./AskForApproval";
 import type { ToolsV2 } from "./ToolsV2";
 
-export type ProfileV2 = {model: string | null, model_provider: string | null, smart_mode_profile: string | null, deep_mode_profile: string | null, rush_mode_profile: string | null, model_context_window: bigint | null, model_auto_compact_token_limit: bigint | null, approval_policy: AskForApproval | null, /**
+export type ProfileV2 = {model: string | null, model_provider: string | null, model_context_window: bigint | null, model_auto_compact_token_limit: bigint | null, approval_policy: AskForApproval | null, /**
  * [UNSTABLE] Optional profile-level override for where approval requests
  * are routed for review. If omitted, the enclosing config default is
  * used.

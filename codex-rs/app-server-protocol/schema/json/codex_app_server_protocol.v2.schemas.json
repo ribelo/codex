@@ -473,7 +473,7 @@
       "type": "object"
     },
     "AppSummary": {
-      "description": "EXPERIMENTAL - app metadata summary for plugin-install responses.",
+      "description": "EXPERIMENTAL - app metadata summary for plugin responses.",
       "properties": {
         "description": {
           "type": [
