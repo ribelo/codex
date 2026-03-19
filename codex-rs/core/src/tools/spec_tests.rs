@@ -806,7 +806,6 @@ fn request_user_input_description_reflects_default_mode_feature_flag() {
         request_user_input_tool.spec,
         create_request_user_input_tool(CollaborationModesConfig {
             default_mode_request_user_input: true,
-            collaboration_mode_profiles: Default::default(),
         })
     );
 }

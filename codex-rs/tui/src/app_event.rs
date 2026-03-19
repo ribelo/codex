@@ -111,11 +111,6 @@ pub(crate) enum AppEvent {
         profile: String,
     },
 
-    /// Start a fresh session already seeded with the selected collaboration mode.
-    StartFreshSessionWithMode {
-        mode: CollaborationModeMask,
-    },
-
     /// Request to exit the application.
     ///
     /// Use `ShutdownFirst` for user-initiated quits so core cleanup runs and the

@@ -1847,103 +1847,6 @@ fn non_responses_provider_requires_explicit_model() -> std::io::Result<()> {
 }
 
 #[test]
-fn provider_changing_mode_profile_requires_explicit_model_even_for_responses_provider()
--> std::io::Result<()> {
-    let codex_home = TempDir::new()?;
-    let cfg = ConfigToml {
-        smart_mode_profile: Some("smart".to_string()),
-        profiles: HashMap::from([(
-            "smart".to_string(),
-            ConfigProfile {
-                model_provider: Some("ollama".to_string()),
-                ..Default::default()
-            },
-        )]),
-        ..Default::default()
-    };
-
-    let err = Config::load_from_base_config_with_overrides(
-        cfg,
-        ConfigOverrides::default(),
-        codex_home.path().to_path_buf(),
-    )
-    .expect_err("provider-changing mode profiles should require an explicit model");
-
-    assert_eq!(err.kind(), ErrorKind::InvalidInput);
-    assert!(err.to_string().contains("Smart mode profile `smart`"));
-    assert!(err.to_string().contains("ollama"));
-    assert!(err.to_string().contains("openai"));
-    assert!(
-        err.to_string()
-            .contains("provider-changing modes cannot inherit a model from the base provider")
-    );
-
-    Ok(())
-}
-
-#[test]
-fn provider_changing_mode_profile_cannot_inherit_model_from_base_provider() -> std::io::Result<()> {
-    let codex_home = TempDir::new()?;
-    let cfg = ConfigToml {
-        model: Some("gpt-5".to_string()),
-        smart_mode_profile: Some("smart".to_string()),
-        profiles: HashMap::from([(
-            "smart".to_string(),
-            ConfigProfile {
-                model_provider: Some("ollama".to_string()),
-                ..Default::default()
-            },
-        )]),
-        ..Default::default()
-    };
-
-    let err = Config::load_from_base_config_with_overrides(
-        cfg,
-        ConfigOverrides::default(),
-        codex_home.path().to_path_buf(),
-    )
-    .expect_err("provider-changing mode profiles should not inherit a base-provider model");
-
-    assert_eq!(err.kind(), ErrorKind::InvalidInput);
-    assert!(err.to_string().contains("Smart mode profile `smart`"));
-    assert!(
-        err.to_string()
-            .contains("provider-changing modes cannot inherit a model from the base provider")
-    );
-
-    Ok(())
-}
-
-#[test]
-fn same_provider_responses_mode_profile_can_inherit_model_discovery() -> std::io::Result<()> {
-    let codex_home = TempDir::new()?;
-    let cfg = ConfigToml {
-        smart_mode_profile: Some("smart".to_string()),
-        profiles: HashMap::from([("smart".to_string(), ConfigProfile::default())]),
-        ..Default::default()
-    };
-
-    let config = Config::load_from_base_config_with_overrides(
-        cfg,
-        ConfigOverrides::default(),
-        codex_home.path().to_path_buf(),
-    )?;
-
-    assert_eq!(
-        config.collaboration_mode_profiles.smart,
-        Some(CollaborationModeProfile {
-            profile: "smart".to_string(),
-            model_provider_id: "openai".to_string(),
-            model_provider: built_in_model_providers(/*openai_base_url*/ None)["openai"].clone(),
-            model: None,
-            model_reasoning_effort: None,
-        })
-    );
-
-    Ok(())
-}
-
-#[test]
 fn bedrock_provider_rejects_api_key_and_header_knobs() -> std::io::Result<()> {
     let codex_home = TempDir::new()?;
     let cfg = ConfigToml {
@@ -4577,7 +4480,6 @@ fn test_precedence_fixture_with_o3_profile() -> std::io::Result<()> {
             model_context_window: None,
             model_auto_compact_token_limit: None,
             model_metadata: None,
-            collaboration_mode_profiles: CollaborationModeProfiles::default(),
             service_tier: None,
             model_provider_id: "openai".to_string(),
             model_provider: fixture.openai_provider.clone(),
@@ -4722,7 +4624,6 @@ fn test_precedence_fixture_with_gpt3_profile() -> std::io::Result<()> {
         model_context_window: None,
         model_auto_compact_token_limit: None,
         model_metadata: None,
-        collaboration_mode_profiles: CollaborationModeProfiles::default(),
         service_tier: None,
         model_provider_id: "openai-custom".to_string(),
         model_provider: fixture.openai_custom_provider.clone(),
@@ -4865,7 +4766,6 @@ fn test_precedence_fixture_with_zdr_profile() -> std::io::Result<()> {
         model_context_window: None,
         model_auto_compact_token_limit: None,
         model_metadata: None,
-        collaboration_mode_profiles: CollaborationModeProfiles::default(),
         service_tier: None,
         model_provider_id: "openai".to_string(),
         model_provider: fixture.openai_provider.clone(),
@@ -4994,7 +4894,6 @@ fn test_precedence_fixture_with_gpt5_profile() -> std::io::Result<()> {
         model_context_window: None,
         model_auto_compact_token_limit: None,
         model_metadata: None,
-        collaboration_mode_profiles: CollaborationModeProfiles::default(),
         service_tier: None,
         model_provider_id: "openai".to_string(),
         model_provider: fixture.openai_provider.clone(),

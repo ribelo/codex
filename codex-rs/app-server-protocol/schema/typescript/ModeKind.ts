@@ -5,4 +5,4 @@
 /**
  * Initial collaboration mode to use when the TUI starts.
  */
-export type ModeKind = "default" | "smart" | "deep" | "rush" | "plan";
+export type ModeKind = "plan" | "default";

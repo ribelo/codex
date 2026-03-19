@@ -206,25 +206,3 @@ Implementation decisions:
 - the `review` tool returns JSON-serialized `ReviewOutputEvent` data and must not emit
   `EnteredReviewMode` / `ExitedReviewMode` events or write review history artifacts into the main
   thread
-
-### How should Tau `smart` / `deep` / `rush` map into Codex collaboration modes?
-
-Keep `default` and `plan` as the existing built-in modes and add `smart`, `deep`, and `rush` as
-profile-backed modes.
-
-Implementation decisions:
-
-- add `smart_mode_profile`, `deep_mode_profile`, and `rush_mode_profile` at both the root config
-  and per-profile config scope
-- missing mappings hide those modes from the TUI and app-server listing; invalid configured
-  mappings fail config load early
-- only `model_provider`, `model`, and reasoning effort come from the mapped profile; other profile
-  behavior does not switch with the mode
-- prompt bodies for `smart`, `deep`, and `rush` are copied from Tau with only Codex-specific
-  substitutions, not rewritten
-- visible TUI order is `Default`, `Smart`, `Deep`, `Rush`, `Plan`
-- `request_user_input` and plan streaming stay Plan-only
-- the Plan implementation handoff returns to the last non-Plan visible mode instead of always
-  forcing `Default`
-- model and reasoning saves from `smart`, `deep`, and `rush` write back to their mapped mode
-  profile instead of the currently active session profile

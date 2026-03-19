@@ -1923,7 +1923,6 @@ async fn helpers_are_available_and_do_not_panic() {
     let tx = AppEventSender::new(tx_raw);
     let cfg = test_config().await;
     let resolved_model = codex_core::test_support::get_model_offline(cfg.model.as_deref());
-    let base_mode_provider_id = cfg.model_provider_id.clone();
     let session_telemetry = test_session_telemetry(&cfg, resolved_model.as_str());
     let thread_manager = Arc::new(
         codex_core::test_support::thread_manager_with_models_provider(
@@ -1945,8 +1944,6 @@ async fn helpers_are_available_and_do_not_panic() {
         is_first_run: true,
         feedback_audience: FeedbackAudience::External,
         model: Some(resolved_model),
-        initial_collaboration_mask: None,
-        base_mode_provider_id,
         startup_tooltip_override: None,
         status_line_invalid_items_warned: Arc::new(AtomicBool::new(false)),
         session_telemetry,
@@ -2023,7 +2020,6 @@ async fn make_chatwidget_manual(
     };
     let current_collaboration_mode = base_mode;
     let active_collaboration_mask = collaboration_modes::default_mask(models_manager.as_ref());
-    let base_mode_provider_id = cfg.model_provider_id.clone();
     let mut widget = ChatWidget {
         app_event_tx,
         codex_op_tx: op_tx,
@@ -2033,10 +2029,6 @@ async fn make_chatwidget_manual(
         config: cfg,
         current_collaboration_mode,
         active_collaboration_mask,
-        base_mode_provider_id,
-        remembered_collaboration_masks: HashMap::new(),
-        last_non_plan_mode_kind: ModeKind::Default,
-        has_submitted_user_turn: false,
         auth_manager,
         models_manager,
         session_telemetry,
@@ -3208,89 +3200,6 @@ async fn submit_user_message_with_mode_submits_when_plan_stream_is_not_active() 
             panic!("expected Op::UserTurn with default collab mode, got {other:?}")
         }
     }
-}
-
-#[tokio::test]
-async fn plan_implementation_prompt_returns_to_last_non_plan_mode() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5")).await;
-    chat.thread_id = Some(ThreadId::new());
-    chat.set_feature_enabled(Feature::CollaborationModes, true);
-
-    let smart_mask = CollaborationModeMask {
-        name: "Smart".to_string(),
-        mode: Some(ModeKind::Smart),
-        model: Some("gpt-5.1-codex-mini".to_string()),
-        reasoning_effort: Some(Some(ReasoningEffortConfig::Low)),
-        developer_instructions: None,
-    };
-    chat.set_collaboration_mask(smart_mask);
-    let plan_mask = collaboration_modes::plan_mask(chat.models_manager.as_ref())
-        .expect("expected plan collaboration mode");
-    chat.set_collaboration_mask(plan_mask);
-    let _ = drain_insert_history(&mut rx);
-
-    chat.open_plan_implementation_prompt();
-
-    let popup = render_bottom_popup(&chat, 80);
-    assert!(
-        popup.contains("Switch to Smart and start coding."),
-        "expected Smart-mode handoff copy, got: {popup}"
-    );
-
-    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-
-    assert_matches!(
-        rx.try_recv(),
-        Ok(AppEvent::SubmitUserMessageWithMode {
-            text,
-            collaboration_mode,
-        }) if text == PLAN_IMPLEMENTATION_CODING_MESSAGE
-            && collaboration_mode.mode == Some(ModeKind::Smart)
-            && collaboration_mode.model.as_deref() == Some("gpt-5.1-codex-mini")
-            && collaboration_mode.reasoning_effort == Some(Some(ReasoningEffortConfig::Low))
-    );
-}
-
-#[tokio::test]
-async fn provider_changing_mode_requests_fresh_session_before_first_turn() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5")).await;
-    chat.config.collaboration_mode_profiles.smart =
-        Some(codex_core::config::CollaborationModeProfile {
-            profile: "smart-profile".to_string(),
-            model_provider_id: "smart-provider".to_string(),
-            model_provider: chat.config.model_provider.clone(),
-            model: Some("gpt-5.1-codex-mini".to_string()),
-            model_reasoning_effort: Some(ReasoningEffortConfig::Low),
-        });
-
-    let smart_mask = CollaborationModeMask {
-        name: "Smart".to_string(),
-        mode: Some(ModeKind::Smart),
-        model: Some("gpt-5.1-codex-mini".to_string()),
-        reasoning_effort: Some(Some(ReasoningEffortConfig::Low)),
-        developer_instructions: None,
-    };
-
-    assert!(chat.should_restart_fresh_session_for_mode(&smart_mask));
-    assert!(!chat.can_apply_mode_in_place(&smart_mask));
-}
-
-#[tokio::test]
-async fn default_mode_is_blocked_after_first_turn_in_provider_bound_session() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5")).await;
-    chat.base_mode_provider_id = "default-provider".to_string();
-    chat.config.model_provider_id = "smart-provider".to_string();
-    chat.has_submitted_user_turn = true;
-
-    let default_mask = collaboration_modes::default_mask(chat.models_manager.as_ref())
-        .expect("expected default collaboration mode");
-
-    assert!(!chat.should_restart_fresh_session_for_mode(&default_mask));
-    assert!(!chat.can_apply_mode_in_place(&default_mask));
-    assert_eq!(
-        chat.blocked_collaboration_mode_switch_message(&default_mask),
-        Some("Default mode uses a different provider. Start a new session to use it.".to_string())
-    );
 }
 
 #[tokio::test]
@@ -6022,7 +5931,6 @@ async fn collaboration_modes_defaults_to_code_on_startup() {
         .await
         .expect("config");
     let resolved_model = codex_core::test_support::get_model_offline(cfg.model.as_deref());
-    let base_mode_provider_id = cfg.model_provider_id.clone();
     let session_telemetry = test_session_telemetry(&cfg, resolved_model.as_str());
     let thread_manager = Arc::new(
         codex_core::test_support::thread_manager_with_models_provider(
@@ -6044,8 +5952,6 @@ async fn collaboration_modes_defaults_to_code_on_startup() {
         is_first_run: true,
         feedback_audience: FeedbackAudience::External,
         model: Some(resolved_model.clone()),
-        initial_collaboration_mask: None,
-        base_mode_provider_id,
         startup_tooltip_override: None,
         status_line_invalid_items_warned: Arc::new(AtomicBool::new(false)),
         session_telemetry,
@@ -6075,7 +5981,6 @@ async fn experimental_mode_plan_is_ignored_on_startup() {
         .await
         .expect("config");
     let resolved_model = codex_core::test_support::get_model_offline(cfg.model.as_deref());
-    let base_mode_provider_id = cfg.model_provider_id.clone();
     let session_telemetry = test_session_telemetry(&cfg, resolved_model.as_str());
     let thread_manager = Arc::new(
         codex_core::test_support::thread_manager_with_models_provider(
@@ -6097,8 +6002,6 @@ async fn experimental_mode_plan_is_ignored_on_startup() {
         is_first_run: true,
         feedback_audience: FeedbackAudience::External,
         model: Some(resolved_model.clone()),
-        initial_collaboration_mask: None,
-        base_mode_provider_id,
         startup_tooltip_override: None,
         status_line_invalid_items_warned: Arc::new(AtomicBool::new(false)),
         session_telemetry,

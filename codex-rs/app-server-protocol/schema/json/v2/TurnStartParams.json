@@ -101,11 +101,8 @@
     "ModeKind": {
       "description": "Initial collaboration mode to use when the TUI starts.",
       "enum": [
-        "default",
-        "smart",
-        "deep",
-        "rush",
-        "plan"
+        "plan",
+        "default"
       ],
       "type": "string"
     },

@@ -223,7 +223,6 @@ impl ModelsManager {
                     (provider_id == default_provider_id)
                         .then(|| model_catalog.clone())
                         .flatten(),
-                    &collaboration_modes_config,
                 );
                 (provider_id, state)
             })
@@ -263,25 +262,14 @@ impl ModelsManager {
     ///
     /// Returns a static set of presets seeded with the configured model.
     pub fn list_collaboration_modes(&self) -> Vec<CollaborationModeMask> {
-        self.list_collaboration_modes_for_config(self.collaboration_modes_config.clone())
+        self.list_collaboration_modes_for_config(self.collaboration_modes_config)
     }
 
     pub fn list_collaboration_modes_for_config(
         &self,
         collaboration_modes_config: CollaborationModesConfig,
     ) -> Vec<CollaborationModeMask> {
-        let mut presets = builtin_collaboration_mode_presets(collaboration_modes_config.clone());
-        for preset in &mut presets {
-            if preset.model.is_none()
-                && let Some(mode) = preset.mode
-                && let Some(profile) = collaboration_modes_config
-                    .collaboration_mode_profiles
-                    .get(mode)
-            {
-                preset.model = self.default_model_for_profile(profile);
-            }
-        }
-        presets
+        builtin_collaboration_mode_presets(collaboration_modes_config)
     }
 
     /// Attempt to list models without blocking, using the current cached state.
@@ -474,12 +462,10 @@ impl ModelsManager {
 
         match refresh_strategy {
             RefreshStrategy::Offline => {
-                // Only try to load from cache, never fetch
                 self.try_load_cache(state).await;
                 Ok(())
             }
             RefreshStrategy::OnlineIfUncached => {
-                // Try cache first, fall back to online if unavailable
                 if self.try_load_cache(state).await {
                     info!("models cache: using cached models for OnlineIfUncached");
                     return Ok(());
@@ -487,10 +473,7 @@ impl ModelsManager {
                 info!("models cache: cache miss, fetching remote models");
                 self.fetch_and_update_models(state).await
             }
-            RefreshStrategy::Online => {
-                // Always fetch from network
-                self.fetch_and_update_models(state).await
-            }
+            RefreshStrategy::Online => self.fetch_and_update_models(state).await,
         }
     }
 
@@ -656,7 +639,6 @@ impl ModelsManager {
         provider_id: &str,
         provider: ModelProviderInfo,
         model_catalog: Option<ModelsResponse>,
-        collaboration_modes_config: &CollaborationModesConfig,
     ) -> ProviderModelsState {
         let cache_path = codex_home.join(Self::cache_file_name(default_provider_id, provider_id));
         let cache_manager = ModelsCacheManager::new(cache_path, DEFAULT_MODEL_CACHE_TTL);
@@ -665,9 +647,8 @@ impl ModelsManager {
         } else {
             CatalogMode::Default
         };
-        let remote_models = model_catalog
-            .map(|catalog| catalog.models)
-            .unwrap_or_else(|| {
+        let remote_models = model_catalog.map_or_else(
+            || {
                 if provider.wire_api != WireApi::Responses {
                     return Vec::new();
                 }
@@ -675,30 +656,10 @@ impl ModelsManager {
                     return Self::load_remote_models_from_file()
                         .unwrap_or_else(|err| panic!("failed to load bundled models.json: {err}"));
                 }
-
-                collaboration_modes_config
-                    .collaboration_mode_profiles
-                    .smart
-                    .iter()
-                    .chain(
-                        collaboration_modes_config
-                            .collaboration_mode_profiles
-                            .deep
-                            .iter(),
-                    )
-                    .chain(
-                        collaboration_modes_config
-                            .collaboration_mode_profiles
-                            .rush
-                            .iter(),
-                    )
-                    .filter(|profile| profile.model_provider_id == provider_id)
-                    .filter_map(|profile| profile.model.as_deref())
-                    .map(|model| {
-                        model_info::model_info_from_slug_for_provider(model, provider.wire_api)
-                    })
-                    .collect()
-            });
+                Vec::new()
+            },
+            |catalog| catalog.models,
+        );
         ProviderModelsState {
             remote_models: RwLock::new(remote_models),
             catalog_mode,
@@ -722,23 +683,6 @@ impl ModelsManager {
             (self.provider_states.len() == 1)
                 .then(|| self.provider_states.values().next())
                 .flatten()
-        })
-    }
-
-    fn default_model_for_profile(
-        &self,
-        profile: &crate::config::CollaborationModeProfile,
-    ) -> Option<String> {
-        profile.model.clone().or_else(|| {
-            self.try_list_models_for_provider_id(&profile.model_provider_id)
-                .ok()
-                .and_then(|available| {
-                    available
-                        .iter()
-                        .find(|model| model.is_default)
-                        .or_else(|| available.first())
-                        .map(|model| model.model.clone())
-                })
         })
     }
 
