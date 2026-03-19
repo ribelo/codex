@@ -68,6 +68,9 @@ Work is done only when:
 ## Build, Test, and Development Commands
 
 - There is no single repo-wide gate command. Use the relevant commands for the area you touched and do not claim completion until they pass.
+- On NixOS, prefer running Rust tooling through the flake dev shell so native build dependencies are present.
+  - Example: `nix develop -c cargo test -p codex-tui`
+  - Example: `nix develop -c cargo check -p codex-tui`
 - Rust format: `cd codex-rs && just fmt`
 - Rust targeted lint autofix for substantial changes: `cd codex-rs && just fix -p <project>`
 - Rust targeted tests: `cd codex-rs && cargo test -p codex-<crate>`
@@ -132,6 +135,7 @@ In the codex-rs folder where the rust code lives:
 Run `just fmt` (in `codex-rs` directory) automatically after you have finished making Rust code changes; do not ask for approval to run it. Additionally, run the tests:
 
 1. Run the test for the specific project that was changed. For example, if changes were made in `codex-rs/tui`, run `cargo test -p codex-tui`.
+   On NixOS, run it as `nix develop -c cargo test -p codex-tui`.
 2. Once those pass, if any changes were made in common, core, or protocol, run the complete test suite with `cargo test` (or `just test` if `cargo-nextest` is installed). Avoid `--all-features` for routine local runs because it expands the build matrix and can significantly increase `target/` disk usage; use it only when you specifically need full feature coverage. project-specific or individual tests can be run without asking the user, but do ask the user before running the complete test suite.
 
 Before finalizing a large change to `codex-rs`, run `just fix -p <project>` (in `codex-rs` directory) to fix any linter issues in the code. Prefer scoping with `-p` to avoid slow workspace‑wide Clippy builds; only run `just fix` without `-p` if you changed shared crates. Do not re-run tests after running `fix` or `fmt`.
