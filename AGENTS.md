@@ -87,6 +87,9 @@ Work is done only when:
 - Keep shared branch history linear. Do not create merge commits on `main` or use merge-based pull/push workflows to avoid a force push after a rebase.
 - Prefer `git pull --rebase` / `git fetch` + `git rebase` when syncing with `upstream/main`.
 - Enable and use Git `rerere` so repeated rebase conflict resolutions are recorded and reused.
+- This repo is a maintained fork: `main` must keep exact `upstream/main` commits as ancestors. Do not rewrite upstream commits under new SHAs.
+- After any rebase/sync onto `upstream/main`, verify ancestry with `git merge-base --is-ancestor upstream/main HEAD` before pushing. If it returns non-zero, stop: you have replayed upstream history incorrectly.
+- Do not rely on ahead/behind counts alone to validate fork history. Replayed upstream commits can make the branch look "behind" even when content matches.
 
 In the codex-rs folder where the rust code lives:
 
@@ -297,6 +300,7 @@ These guidelines apply to app-server protocol work in `codex-rs`, especially:
 4. **PUSH TO REMOTE** - This is MANDATORY:
    ```bash
    git pull --rebase
+   git merge-base --is-ancestor upstream/main HEAD
    bd sync
    git push
    git status  # MUST show "up to date with origin"
@@ -312,3 +316,4 @@ These guidelines apply to app-server protocol work in `codex-rs`, especially:
 - If push fails, resolve and retry until it succeeds
 - Preserve linear history while doing this. If a rebase rewrites `main`, update `origin/main` with `git push --force-with-lease` rather than introducing merge commits.
 - Keep `rerere` enabled so recurring rebase conflicts are auto-reapplied when possible.
+- Before `git push --force-with-lease` on `main`, verify `git merge-base --is-ancestor upstream/main HEAD`. Never force-push a branch where `upstream/main` is not an ancestor.
