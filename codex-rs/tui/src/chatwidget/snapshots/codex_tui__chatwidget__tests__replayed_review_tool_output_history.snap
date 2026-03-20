@@ -1,7 +1,0 @@
----
-source: tui/src/chatwidget/tests.rs
-assertion_line: 1704
-expression: rendered
----
-• Called review(current changes)
-  └ {"overall_explanation":"ignored"}

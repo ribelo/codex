@@ -1,11 +1,13 @@
 use super::*;
 use crate::AuthManager;
 use crate::CodexAuth;
+use crate::REVIEW_PROMPT;
 use crate::ThreadManager;
 use crate::built_in_model_providers;
 use crate::codex::make_session_and_context;
 use crate::config::DEFAULT_AGENT_MAX_DEPTH;
 use crate::config::types::ShellEnvironmentPolicy;
+use crate::features::Feature;
 use crate::function_tool::FunctionCallError;
 use crate::protocol::AskForApproval;
 use crate::protocol::FileSystemSandboxPolicy;
@@ -18,6 +20,7 @@ use crate::tools::context::ToolOutput;
 use crate::turn_diff_tracker::TurnDiffTracker;
 use codex_features::Feature;
 use codex_protocol::ThreadId;
+use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::ResponseInputItem;
@@ -28,6 +31,7 @@ use pretty_assertions::assert_eq;
 use serde::Deserialize;
 use serde_json::json;
 use std::collections::HashMap;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -155,6 +159,89 @@ async fn spawn_agent_rejects_when_message_and_items_are_both_set() {
             "Provide either message or items, but not both".to_string()
         )
     );
+}
+
+#[test]
+fn prepare_spawn_input_reviewer_role_resolves_structured_json_message() {
+    let prepared = prepare_spawn_input(
+        Some(crate::agent::role::REVIEWER_ROLE_NAME),
+        vec![UserInput::Text {
+            text: r#"{"type":"commit","sha":"abc123def","title":"Tighten tests"}"#.to_string(),
+            text_elements: Vec::new(),
+        }],
+        Path::new("."),
+    )
+    .expect("reviewer input should parse");
+
+    assert_eq!(prepared.prompt, "review(commit abc123d: Tighten tests)");
+    assert_eq!(
+        prepared.items,
+        vec![UserInput::Text {
+            text: "Review the code changes introduced by commit abc123def (\"Tighten tests\"). Provide prioritized, actionable findings.".to_string(),
+            text_elements: Vec::new(),
+        }]
+    );
+}
+
+#[test]
+fn prepare_spawn_input_reviewer_role_falls_back_to_custom_instructions() {
+    let prepared = prepare_spawn_input(
+        Some(crate::agent::role::REVIEWER_ROLE_NAME),
+        vec![UserInput::Text {
+            text: "Review the current patch carefully.".to_string(),
+            text_elements: Vec::new(),
+        }],
+        Path::new("."),
+    )
+    .expect("plain-text reviewer input should parse");
+
+    assert_eq!(prepared.prompt, "review(custom instructions)");
+    assert_eq!(
+        prepared.items,
+        vec![UserInput::Text {
+            text: "Review the current patch carefully.".to_string(),
+            text_elements: Vec::new(),
+        }]
+    );
+}
+
+#[tokio::test]
+async fn apply_role_specific_spawn_defaults_reviewer_uses_review_model_and_restrictions() {
+    let (session, mut turn) = make_session_and_context().await;
+    let review_model = if turn.model_info.slug == "gpt-5.1" {
+        "gpt-5.1-codex"
+    } else {
+        "gpt-5.1"
+    };
+    let mut config = (*turn.config).clone();
+    config.review_model = Some(review_model.to_string());
+    let _ = config.features.enable(Feature::Collab);
+    turn.config = Arc::new(config.clone());
+
+    apply_role_specific_spawn_defaults(
+        &session,
+        &turn,
+        &mut config,
+        Some(crate::agent::role::REVIEWER_ROLE_NAME),
+        None,
+        None,
+    )
+    .await
+    .expect("reviewer role defaults should apply");
+
+    let review_model_info = session
+        .services
+        .models_manager
+        .get_model_info(review_model, &config)
+        .await;
+    assert_eq!(config.base_instructions.as_deref(), Some(REVIEW_PROMPT));
+    assert_eq!(config.model.as_deref(), Some(review_model));
+    assert_eq!(
+        config.model_reasoning_effort,
+        review_model_info.default_reasoning_level
+    );
+    assert_eq!(config.web_search_mode.value(), WebSearchMode::Disabled);
+    assert!(!config.features.enabled(Feature::Collab));
 }
 
 #[tokio::test]

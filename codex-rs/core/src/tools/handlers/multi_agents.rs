@@ -5,16 +5,19 @@
 //! config, inherit runtime-only state such as provider, approval policy, sandbox, and cwd, and
 //! then optionally layer role-specific config on top.
 
+use crate::REVIEW_PROMPT;
 use crate::agent::AgentStatus;
 use crate::agent::agent_resolver::resolve_agent_target;
 use crate::agent::agent_resolver::resolve_agent_targets;
 use crate::agent::exceeds_thread_spawn_depth_limit;
+use crate::agent::role::REVIEWER_ROLE_NAME;
 use crate::codex::Session;
 use crate::codex::TurnContext;
 use crate::config::Config;
 use crate::error::CodexErr;
 use crate::function_tool::FunctionCallError;
 use crate::models_manager::manager::RefreshStrategy;
+use crate::review_prompts;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolOutput;
@@ -26,6 +29,7 @@ use async_trait::async_trait;
 use codex_features::Feature;
 use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
+use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::openai_models::ReasoningEffort;
@@ -230,6 +234,39 @@ fn parse_collab_input(
     }
 }
 
+pub(crate) struct PreparedSpawnInput {
+    pub(crate) items: Vec<UserInput>,
+    pub(crate) prompt: String,
+}
+
+pub(crate) fn prepare_spawn_input(
+    role_name: Option<&str>,
+    items: Vec<UserInput>,
+    cwd: &std::path::Path,
+) -> Result<PreparedSpawnInput, FunctionCallError> {
+    if role_name == Some(REVIEWER_ROLE_NAME) {
+        let [UserInput::Text { text, .. }] = items.as_slice() else {
+            return Err(FunctionCallError::RespondToModel(
+                "reviewer role requires a single text message".to_string(),
+            ));
+        };
+        let resolved = review_prompts::resolve_review_request_from_message(text, cwd)
+            .map_err(|err| FunctionCallError::RespondToModel(err.to_string()))?;
+        return Ok(PreparedSpawnInput {
+            items: vec![UserInput::Text {
+                text: resolved.prompt,
+                text_elements: Vec::new(),
+            }],
+            prompt: review_prompts::tool_invocation_summary(&resolved.target),
+        });
+    }
+
+    Ok(PreparedSpawnInput {
+        prompt: input_preview(&items),
+        items,
+    })
+}
+
 fn input_preview(items: &[UserInput]) -> String {
     let parts: Vec<String> = items
         .iter()
@@ -324,6 +361,58 @@ fn apply_spawn_agent_overrides(config: &mut Config, child_depth: i32) {
         let _ = config.features.disable(Feature::SpawnCsv);
         let _ = config.features.disable(Feature::Collab);
     }
+}
+
+pub(crate) async fn apply_role_specific_spawn_defaults(
+    session: &Session,
+    turn: &TurnContext,
+    config: &mut Config,
+    role_name: Option<&str>,
+    requested_model: Option<&str>,
+    requested_reasoning_effort: Option<ReasoningEffort>,
+) -> Result<(), FunctionCallError> {
+    if role_name != Some(REVIEWER_ROLE_NAME) {
+        return Ok(());
+    }
+
+    config.base_instructions = Some(REVIEW_PROMPT.to_string());
+    let _ = config.features.disable(Feature::Collab);
+    if let Err(err) = config.web_search_mode.set(WebSearchMode::Disabled) {
+        return Err(FunctionCallError::Fatal(format!(
+            "failed to disable web_search for reviewer role: {err}"
+        )));
+    }
+
+    if requested_model.is_some() {
+        return Ok(());
+    }
+
+    let Some(review_model) = config
+        .review_model
+        .clone()
+        .filter(|model| model != &turn.model_info.slug)
+    else {
+        return Ok(());
+    };
+
+    let review_model_info = session
+        .services
+        .models_manager
+        .get_model_info(&review_model, config)
+        .await;
+    config.model = Some(review_model);
+    if let Some(reasoning_effort) = requested_reasoning_effort {
+        validate_spawn_agent_reasoning_effort(
+            &review_model_info.slug,
+            &review_model_info.supported_reasoning_levels,
+            reasoning_effort,
+        )?;
+        config.model_reasoning_effort = Some(reasoning_effort);
+    } else {
+        config.model_reasoning_effort = review_model_info.default_reasoning_level;
+    }
+
+    Ok(())
 }
 
 async fn apply_requested_spawn_agent_model_overrides(

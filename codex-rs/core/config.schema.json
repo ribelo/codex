@@ -462,9 +462,6 @@
             "responses_websockets_v2": {
               "type": "boolean"
             },
-            "review_tool": {
-              "type": "boolean"
-            },
             "runtime_metrics": {
               "type": "boolean"
             },
@@ -2385,9 +2382,6 @@
         "responses_websockets_v2": {
           "type": "boolean"
         },
-        "review_tool": {
-          "type": "boolean"
-        },
         "runtime_metrics": {
           "type": "boolean"
         },
@@ -2737,7 +2731,7 @@
       "description": "Experimental / do not use. Realtime websocket session selection. `version` controls v1/v2 and `type` controls conversational/transcription."
     },
     "review_model": {
-      "description": "Review model override used by the `/review` feature.",
+      "description": "Review model override used by `/review` and as the default reviewer-role model.",
       "type": "string"
     },
     "sandbox_mode": {

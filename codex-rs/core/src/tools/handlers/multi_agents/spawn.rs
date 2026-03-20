@@ -36,7 +36,8 @@ impl ToolHandler for Handler {
             .map(str::trim)
             .filter(|role| !role.is_empty());
         let input_items = parse_collab_input(args.message, args.items)?;
-        let prompt = input_preview(&input_items);
+        let PreparedSpawnInput { items, prompt } =
+            prepare_spawn_input(role_name, input_items, turn.cwd.as_path())?;
         let session_source = turn.session_source.clone();
         let child_depth = next_thread_spawn_depth(&session_source);
         let max_depth = turn.config.agent_max_depth;
@@ -71,6 +72,15 @@ impl ToolHandler for Handler {
         apply_role_to_config(&mut config, role_name)
             .await
             .map_err(FunctionCallError::RespondToModel)?;
+        apply_role_specific_spawn_defaults(
+            &session,
+            turn.as_ref(),
+            &mut config,
+            role_name,
+            args.model.as_deref(),
+            args.reasoning_effort,
+        )
+        .await?;
         apply_spawn_agent_runtime_overrides(&mut config, turn.as_ref())?;
         apply_spawn_agent_overrides(&mut config, child_depth);
 
@@ -79,7 +89,7 @@ impl ToolHandler for Handler {
             .agent_control
             .spawn_agent_with_metadata(
                 config,
-                input_items,
+                items,
                 Some(thread_spawn_source(
                     session.conversation_id,
                     &turn.session_source,

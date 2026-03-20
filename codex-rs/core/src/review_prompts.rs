@@ -22,20 +22,20 @@ const COMMIT_PROMPT: &str =
 
 #[derive(Debug, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
-enum ReviewToolArgs {
+pub(crate) enum ReviewRequestArgs {
     UncommittedChanges,
     BaseBranch { branch: String },
     Commit { sha: String, title: Option<String> },
     Custom { instructions: String },
 }
 
-impl From<ReviewToolArgs> for ReviewTarget {
-    fn from(args: ReviewToolArgs) -> Self {
+impl From<ReviewRequestArgs> for ReviewTarget {
+    fn from(args: ReviewRequestArgs) -> Self {
         match args {
-            ReviewToolArgs::UncommittedChanges => ReviewTarget::UncommittedChanges,
-            ReviewToolArgs::BaseBranch { branch } => ReviewTarget::BaseBranch { branch },
-            ReviewToolArgs::Commit { sha, title } => ReviewTarget::Commit { sha, title },
-            ReviewToolArgs::Custom { instructions } => ReviewTarget::Custom { instructions },
+            ReviewRequestArgs::UncommittedChanges => ReviewTarget::UncommittedChanges,
+            ReviewRequestArgs::BaseBranch { branch } => ReviewTarget::BaseBranch { branch },
+            ReviewRequestArgs::Commit { sha, title } => ReviewTarget::Commit { sha, title },
+            ReviewRequestArgs::Custom { instructions } => ReviewTarget::Custom { instructions },
         }
     }
 }
@@ -55,6 +55,31 @@ pub fn resolve_review_request(
         prompt,
         user_facing_hint,
     })
+}
+
+pub fn resolve_review_request_from_message(
+    message: &str,
+    cwd: &Path,
+) -> anyhow::Result<ResolvedReviewRequest> {
+    let trimmed = message.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!("instructions must not be empty");
+    }
+
+    let request = match serde_json::from_str::<ReviewRequestArgs>(trimmed) {
+        Ok(args) => ReviewRequest {
+            target: ReviewTarget::from(args),
+            user_facing_hint: None,
+        },
+        Err(_) => ReviewRequest {
+            target: ReviewTarget::Custom {
+                instructions: trimmed.to_string(),
+            },
+            user_facing_hint: None,
+        },
+    };
+
+    resolve_review_request(request, cwd)
 }
 
 fn normalize_review_target(target: ReviewTarget) -> anyhow::Result<ReviewTarget> {
@@ -147,7 +172,7 @@ pub fn tool_invocation_summary(target: &ReviewTarget) -> String {
 pub fn tool_invocation_summary_from_tool_arguments(
     arguments: &str,
 ) -> Result<String, serde_json::Error> {
-    let args: ReviewToolArgs = serde_json::from_str(arguments)?;
+    let args: ReviewRequestArgs = serde_json::from_str(arguments)?;
     Ok(tool_invocation_summary(&ReviewTarget::from(args)))
 }
 
@@ -256,5 +281,48 @@ mod tests {
         .expect("parse review tool arguments");
 
         assert_eq!(summary, "review(custom instructions)");
+    }
+
+    #[test]
+    fn resolve_review_request_from_message_uses_structured_json_targets() {
+        let resolved = resolve_review_request_from_message(
+            r#"{"type":"commit","sha":"abc123def","title":"Tighten tests"}"#,
+            Path::new("."),
+        )
+        .expect("resolve structured review request");
+
+        assert_eq!(
+            resolved.target,
+            ReviewTarget::Commit {
+                sha: "abc123def".to_string(),
+                title: Some("Tighten tests".to_string()),
+            }
+        );
+        assert_eq!(resolved.user_facing_hint, "commit abc123d: Tighten tests");
+        assert_eq!(
+            resolved.prompt,
+            "Review the code changes introduced by commit abc123def (\"Tighten tests\"). Provide prioritized, actionable findings."
+        );
+    }
+
+    #[test]
+    fn resolve_review_request_from_message_falls_back_to_custom_instructions() {
+        let resolved = resolve_review_request_from_message(
+            "Review the current patch carefully.",
+            Path::new("."),
+        )
+        .expect("resolve plain-text review request");
+
+        assert_eq!(
+            resolved.target,
+            ReviewTarget::Custom {
+                instructions: "Review the current patch carefully.".to_string(),
+            }
+        );
+        assert_eq!(
+            resolved.user_facing_hint,
+            "Review the current patch carefully."
+        );
+        assert_eq!(resolved.prompt, "Review the current patch carefully.");
     }
 }

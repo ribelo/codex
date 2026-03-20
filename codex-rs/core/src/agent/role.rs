@@ -25,6 +25,7 @@ use toml::Value as TomlValue;
 
 /// The role name used when a caller omits `agent_type`.
 pub const DEFAULT_ROLE_NAME: &str = "default";
+pub const REVIEWER_ROLE_NAME: &str = "reviewer";
 const AGENT_TYPE_UNAVAILABLE_ERROR: &str = "agent type is currently not available";
 
 /// Applies a named role layer to `config` while preserving caller-owned model selection.
@@ -350,6 +351,28 @@ mod built_in {
                     DEFAULT_ROLE_NAME.to_string(),
                     AgentRoleConfig {
                         description: Some("Default agent.".to_string()),
+                        config_file: None,
+                        nickname_candidates: None,
+                    }
+                ),
+                (
+                    REVIEWER_ROLE_NAME.to_string(),
+                    AgentRoleConfig {
+                        description: Some(r#"Use for one-shot code review and second-opinion checks.
+Typical flow:
+- Spawn the reviewer with a review target.
+- Wait for it to finish.
+- Close it when you have the result.
+Input contract:
+- Prefer passing `message` as JSON matching the old review target schema:
+  - `{"type":"uncommitted_changes"}`
+  - `{"type":"base_branch","branch":"main"}`
+  - `{"type":"commit","sha":"abc123","title":"Optional title"}`
+  - `{"type":"custom","instructions":"Free-form instructions"}`
+- Plain-text `message` falls back to custom review instructions.
+Behavior:
+- The reviewer returns findings first and does not implement fixes itself.
+- The reviewer is intended for review-only work, not general coding tasks."#.to_string()),
                         config_file: None,
                         nickname_candidates: None,
                     }

@@ -95,7 +95,6 @@ use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::items::AgentMessageContent;
 use codex_protocol::items::AgentMessageItem;
 use codex_protocol::models::MessagePhase;
-use codex_protocol::models::ResponseItem;
 use codex_protocol::models::local_image_label_text;
 use codex_protocol::parse_command::ParsedCommand;
 use codex_protocol::protocol::AgentMessageDeltaEvent;
@@ -133,7 +132,6 @@ use codex_protocol::protocol::Op;
 use codex_protocol::protocol::PatchApplyBeginEvent;
 use codex_protocol::protocol::RateLimitSnapshot;
 use codex_protocol::protocol::RawResponseItemEvent;
-use codex_protocol::protocol::ReviewOutputEvent;
 use codex_protocol::protocol::ReviewRequest;
 use codex_protocol::protocol::ReviewTarget;
 use codex_protocol::protocol::SkillMetadata as ProtocolSkillMetadata;
@@ -257,7 +255,6 @@ use crate::history_cell::AgentMessageCell;
 use crate::history_cell::HistoryCell;
 use crate::history_cell::McpToolCallCell;
 use crate::history_cell::PlainHistoryCell;
-use crate::history_cell::ReviewToolCallCell;
 use crate::history_cell::WebSearchCell;
 use crate::key_hint;
 use crate::key_hint::KeyBinding;
@@ -598,7 +595,6 @@ pub(crate) struct ChatWidget {
     last_copyable_output: Option<String>,
     running_commands: HashMap<String, RunningCommand>,
     pending_collab_spawn_requests: HashMap<String, multi_agents::SpawnRequestSummary>,
-    pending_review_tool_calls: HashMap<String, String>,
     suppressed_exec_calls: HashSet<String>,
     skills_all: Vec<ProtocolSkillMetadata>,
     skills_initial_state: Option<HashMap<PathBuf, bool>>,
@@ -1630,7 +1626,6 @@ impl ChatWidget {
         self.plan_stream_controller = None;
         self.turn_runtime_metrics = RuntimeMetricsSummary::default();
         self.session_telemetry.reset_runtime_metrics();
-        self.pending_review_tool_calls.clear();
         self.bottom_pane.clear_quit_shortcut_hint();
         self.quit_shortcut_expires_at = None;
         self.quit_shortcut_key = None;
@@ -1689,7 +1684,6 @@ impl ChatWidget {
         self.turn_sleep_inhibitor.set_turn_running(false);
         self.update_task_running_state();
         self.running_commands.clear();
-        self.pending_review_tool_calls.clear();
         self.suppressed_exec_calls.clear();
         self.last_unified_wait = None;
         self.unified_exec_wait_streak = None;
@@ -1998,7 +1992,6 @@ impl ChatWidget {
         self.turn_sleep_inhibitor.set_turn_running(false);
         self.update_task_running_state();
         self.running_commands.clear();
-        self.pending_review_tool_calls.clear();
         self.suppressed_exec_calls.clear();
         self.last_unified_wait = None;
         self.unified_exec_wait_streak = None;
@@ -2627,112 +2620,7 @@ impl ChatWidget {
         self.request_redraw();
     }
 
-    fn on_raw_response_item(&mut self, event: RawResponseItemEvent, from_replay: bool) {
-        match event.item {
-            ResponseItem::FunctionCall {
-                name,
-                arguments,
-                call_id,
-                ..
-            } if name == "review" => {
-                self.on_review_tool_call(call_id, &arguments);
-            }
-            ResponseItem::FunctionCallOutput { call_id, output } => {
-                let Some(invocation) = self.pending_review_tool_calls.remove(&call_id) else {
-                    return;
-                };
-
-                let raw_output = output.body.to_text().unwrap_or_else(|| output.to_string());
-                self.on_review_tool_output(
-                    call_id,
-                    invocation,
-                    &raw_output,
-                    output.success,
-                    from_replay,
-                );
-            }
-            _ => {}
-        }
-    }
-
-    fn on_review_tool_call(&mut self, call_id: String, arguments: &str) {
-        self.flush_answer_stream_with_separator();
-        self.flush_interrupt_queue();
-        self.flush_active_cell();
-
-        let invocation =
-            codex_core::review_prompts::tool_invocation_summary_from_tool_arguments(arguments)
-                .unwrap_or_else(|err| {
-                    warn!(?err, "failed to parse review tool call arguments");
-                    let fallback = arguments.trim();
-                    if fallback.is_empty() {
-                        "review".to_string()
-                    } else {
-                        format!("review({fallback})")
-                    }
-                });
-        self.pending_review_tool_calls
-            .insert(call_id.clone(), invocation.clone());
-        self.active_cell = Some(Box::new(history_cell::new_active_review_tool_call(
-            call_id,
-            invocation,
-            self.config.animations,
-        )));
-        self.bump_active_cell_revision();
-        self.request_redraw();
-    }
-
-    fn on_review_tool_output(
-        &mut self,
-        call_id: String,
-        invocation: String,
-        raw_output: &str,
-        success: Option<bool>,
-        from_replay: bool,
-    ) {
-        self.flush_answer_stream_with_separator();
-        self.flush_interrupt_queue();
-
-        let rendered = match serde_json::from_str::<ReviewOutputEvent>(raw_output) {
-            Ok(output) => codex_core::review_format::render_review_output_text(&output),
-            Err(err) => {
-                warn!(?err, "failed to parse review tool output");
-                let trimmed = raw_output.trim();
-                if trimmed.is_empty() {
-                    "Reviewer failed to output a response.".to_string()
-                } else {
-                    trimmed.to_string()
-                }
-            }
-        };
-
-        match self
-            .active_cell
-            .as_mut()
-            .and_then(|cell| cell.as_any_mut().downcast_mut::<ReviewToolCallCell>())
-        {
-            Some(cell) if cell.call_id() == call_id => {
-                cell.complete(rendered, success);
-                self.bump_active_cell_revision();
-            }
-            _ => {
-                self.flush_active_cell();
-                let mut cell = history_cell::new_active_review_tool_call(
-                    call_id,
-                    invocation,
-                    self.config.animations,
-                );
-                cell.complete(rendered, success);
-                self.active_cell = Some(Box::new(cell));
-            }
-        }
-
-        self.flush_active_cell();
-        if !from_replay {
-            self.had_work_activity = true;
-        }
-        self.request_redraw();
-    }
+    fn on_raw_response_item(&mut self, _event: RawResponseItemEvent, _from_replay: bool) {}
 
     fn insert_agent_markdown_history_cell(&mut self, markdown: &str) {
         let mut rendered: Vec<ratatui::text::Line<'static>> = vec!["".into()];
@@ -3461,7 +3349,6 @@ impl ChatWidget {
             last_copyable_output: None,
             running_commands: HashMap::new(),
             pending_collab_spawn_requests: HashMap::new(),
-            pending_review_tool_calls: HashMap::new(),
             suppressed_exec_calls: HashSet::new(),
             last_unified_wait: None,
             unified_exec_wait_streak: None,
@@ -3665,7 +3552,6 @@ impl ChatWidget {
             last_copyable_output: None,
             running_commands: HashMap::new(),
             pending_collab_spawn_requests: HashMap::new(),
-            pending_review_tool_calls: HashMap::new(),
             suppressed_exec_calls: HashSet::new(),
             last_unified_wait: None,
             unified_exec_wait_streak: None,
@@ -3862,7 +3748,6 @@ impl ChatWidget {
             last_copyable_output: None,
             running_commands: HashMap::new(),
             pending_collab_spawn_requests: HashMap::new(),
-            pending_review_tool_calls: HashMap::new(),
             suppressed_exec_calls: HashSet::new(),
             last_unified_wait: None,
             unified_exec_wait_streak: None,

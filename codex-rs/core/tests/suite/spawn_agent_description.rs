@@ -46,6 +46,25 @@ fn spawn_agent_description(body: &Value) -> Option<String> {
         })
 }
 
+fn spawn_agent_role_description(body: &Value) -> Option<String> {
+    body.get("tools")
+        .and_then(Value::as_array)
+        .and_then(|tools| {
+            tools.iter().find_map(|tool| {
+                if tool.get("name").and_then(Value::as_str) == Some(SPAWN_AGENT_TOOL_NAME) {
+                    tool.get("parameters")
+                        .and_then(|parameters| parameters.get("properties"))
+                        .and_then(|properties| properties.get("agent_type"))
+                        .and_then(|agent_type| agent_type.get("description"))
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                } else {
+                    None
+                }
+            })
+        })
+}
+
 fn test_model_info(
     slug: &str,
     display_name: &str,
@@ -163,6 +182,8 @@ async fn spawn_agent_description_lists_visible_models_and_reasoning_efforts() ->
     let body = resp_mock.single_request().body_json();
     let description =
         spawn_agent_description(&body).expect("spawn_agent description should be present");
+    let role_description = spawn_agent_role_description(&body)
+        .expect("spawn_agent role description should be present");
 
     assert!(
         description.contains("- Visible Model (`visible-model`): Fast and capable"),
@@ -197,6 +218,18 @@ async fn spawn_agent_description_lists_visible_models_and_reasoning_efforts() ->
             "Agent-role guidance below only helps choose which agent to use after spawning is already authorized; it never authorizes spawning by itself."
         ),
         "expected agent-role clarification in spawn_agent description: {description:?}"
+    );
+    assert!(
+        role_description.contains("reviewer: {"),
+        "expected reviewer role in spawn_agent role description: {role_description:?}"
+    );
+    assert!(
+        role_description.contains(r#"`{"type":"uncommitted_changes"}`"#),
+        "expected reviewer role input contract in spawn_agent role description: {role_description:?}"
+    );
+    assert!(
+        role_description.contains("Plain-text `message` falls back to custom review instructions."),
+        "expected reviewer plain-text fallback guidance in spawn_agent role description: {role_description:?}"
     );
 
     Ok(())

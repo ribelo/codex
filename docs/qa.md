@@ -193,16 +193,19 @@ The `/statusline` preview must show the real built-in footer when no override is
 
 ### How should reviewer delegation work from the main agent?
 
-Prefer a first-class main-agent `review` tool over a dedicated reviewer subagent role.
+Prefer a collab-backed `reviewer` subagent role over a first-class main-agent `review` tool.
 
 Implementation decisions:
 
-- add an experimental `review_tool` feature that exposes `review` only to top-level/main-agent
-  sessions
+- remove the experimental `review_tool` feature and the main-agent `review` tool surface
+- add a built-in `reviewer` collab role exposed through `spawn_agent`
+- reviewer spawns accept the old structured review-target JSON in `message`, with plain-text
+  fallback treated as custom review instructions
+- route reviewer spawns through the normal collab lifecycle so transcript/history shows
+  `spawn_agent` / `wait_agent` / `close_agent` activity
 - keep `/review` as the standalone review-mode workflow with its existing lifecycle events and
   rollout/history behavior
-- share the actual reviewer-child execution path between `/review` and the tool so both use the
-  same built-in reviewer delegate and `review_model` override
-- the `review` tool returns JSON-serialized `ReviewOutputEvent` data and must not emit
-  `EnteredReviewMode` / `ExitedReviewMode` events or write review history artifacts into the main
-  thread
+- keep using the existing review prompt resolver and `review_model` default for both `/review` and
+  the `reviewer` role
+- standalone `/review` keeps `EnteredReviewMode` / `ExitedReviewMode`; collab reviewer work uses
+  ordinary collab events instead
