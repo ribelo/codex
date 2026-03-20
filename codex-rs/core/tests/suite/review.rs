@@ -4,6 +4,7 @@ use codex_core::config::Config;
 use codex_core::review_format::render_review_output_text;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::ENVIRONMENT_CONTEXT_OPEN_TAG;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ExitedReviewModeEvent;
@@ -479,6 +480,107 @@ async fn review_uses_session_model_when_review_model_unset() {
     assert_eq!(request.path(), "/v1/responses");
     let body = request.body_json();
     assert_eq!(body["model"].as_str().unwrap(), "gpt-4.1");
+
+    let _codex_home_guard = codex_home;
+    server.verify().await;
+}
+
+/// Ensure that review-specific reasoning effort overrides the global default.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn review_uses_review_reasoning_effort_from_config() {
+    skip_if_no_network!();
+
+    let sse_raw = r#"[
+        {"type":"response.completed", "response": {"id": "__ID__"}}
+    ]"#;
+    let (server, request_log) = start_responses_server_with_sse(sse_raw, 1).await;
+    let codex_home = Arc::new(TempDir::new().unwrap());
+    let codex = new_conversation_for_server(&server, codex_home.clone(), |cfg| {
+        cfg.model = Some("gpt-4.1".to_string());
+        cfg.review_model = Some("gpt-5.1".to_string());
+        cfg.model_reasoning_effort = Some(ReasoningEffort::Low);
+        cfg.review_reasoning_effort = Some(ReasoningEffort::XHigh);
+    })
+    .await;
+
+    codex
+        .submit(Op::Review {
+            review_request: ReviewRequest {
+                target: ReviewTarget::Custom {
+                    instructions: "use review reasoning effort".to_string(),
+                },
+                user_facing_hint: None,
+            },
+        })
+        .await
+        .unwrap();
+
+    let _entered = wait_for_event(&codex, |ev| matches!(ev, EventMsg::EnteredReviewMode(_))).await;
+    let _closed = wait_for_event(&codex, |ev| {
+        matches!(
+            ev,
+            EventMsg::ExitedReviewMode(ExitedReviewModeEvent {
+                review_output: None
+            })
+        )
+    })
+    .await;
+    let _complete = wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
+
+    let body = request_log.single_request().body_json();
+    assert_eq!(body["model"].as_str(), Some("gpt-5.1"));
+    assert_eq!(body["reasoning"]["effort"].as_str(), Some("xhigh"));
+
+    let _codex_home_guard = codex_home;
+    server.verify().await;
+}
+
+/// Ensure that review requests fall back to the global reasoning effort when
+/// the review-specific override is unset.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn review_uses_global_reasoning_effort_when_review_reasoning_effort_unset() {
+    skip_if_no_network!();
+
+    let sse_raw = r#"[
+        {"type":"response.completed", "response": {"id": "__ID__"}}
+    ]"#;
+    let (server, request_log) = start_responses_server_with_sse(sse_raw, 1).await;
+    let codex_home = Arc::new(TempDir::new().unwrap());
+    let codex = new_conversation_for_server(&server, codex_home.clone(), |cfg| {
+        cfg.model = Some("gpt-5.1".to_string());
+        cfg.review_model = None;
+        cfg.model_reasoning_effort = Some(ReasoningEffort::High);
+        cfg.review_reasoning_effort = None;
+    })
+    .await;
+
+    codex
+        .submit(Op::Review {
+            review_request: ReviewRequest {
+                target: ReviewTarget::Custom {
+                    instructions: "use global reasoning effort".to_string(),
+                },
+                user_facing_hint: None,
+            },
+        })
+        .await
+        .unwrap();
+
+    let _entered = wait_for_event(&codex, |ev| matches!(ev, EventMsg::EnteredReviewMode(_))).await;
+    let _closed = wait_for_event(&codex, |ev| {
+        matches!(
+            ev,
+            EventMsg::ExitedReviewMode(ExitedReviewModeEvent {
+                review_output: None
+            })
+        )
+    })
+    .await;
+    let _complete = wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
+
+    let body = request_log.single_request().body_json();
+    assert_eq!(body["model"].as_str(), Some("gpt-5.1"));
+    assert_eq!(body["reasoning"]["effort"].as_str(), Some("high"));
 
     let _codex_home_guard = codex_home;
     server.verify().await;

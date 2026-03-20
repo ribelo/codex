@@ -244,6 +244,8 @@ pub struct Config {
 
     /// Model used specifically for review sessions.
     pub review_model: Option<String>,
+    /// Optional review-specific override for `reasoning.effort`.
+    pub review_reasoning_effort: Option<ReasoningEffort>,
 
     /// Size of the context window for the model, in tokens.
     pub model_context_window: Option<i64>,
@@ -843,6 +845,10 @@ impl Config {
             .build()
             .await
     }
+
+    pub fn resolved_review_reasoning_effort(&self) -> Option<ReasoningEffort> {
+        self.review_reasoning_effort.or(self.model_reasoning_effort)
+    }
 }
 
 /// DEPRECATED: Use [Config::load_with_cli_overrides()] instead because working
@@ -1194,6 +1200,8 @@ pub struct ConfigToml {
     pub model: Option<String>,
     /// Review model override used by `/review` and as the default reviewer-role model.
     pub review_model: Option<String>,
+    /// Review-specific reasoning effort override used by `/review` and reviewer-role spawns.
+    pub review_reasoning_effort: Option<ReasoningEffort>,
 
     /// Provider to use from the model_providers map.
     pub model_provider: Option<String>,
@@ -2637,6 +2645,7 @@ impl Config {
             .or(cfg.zsh_path.map(Into::into));
 
         let review_model = override_review_model.or(cfg.review_model);
+        let review_reasoning_effort = cfg.review_reasoning_effort;
 
         let check_for_update_on_startup = cfg.check_for_update_on_startup.unwrap_or(true);
         let model_catalog = load_model_catalog(
@@ -2731,6 +2740,7 @@ impl Config {
             model,
             service_tier,
             review_model,
+            review_reasoning_effort,
             model_context_window,
             model_auto_compact_token_limit,
             model_metadata,

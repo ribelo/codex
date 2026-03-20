@@ -373,6 +373,7 @@ async fn config_read_includes_project_layers_for_cwd() -> Result<()> {
         project_config_dir.join("config.toml"),
         r#"
 model_reasoning_effort = "high"
+review_reasoning_effort = "xhigh"
 "#,
     )?;
     set_project_trust_level(codex_home.path(), workspace.path(), TrustLevel::Trusted)?;
@@ -397,8 +398,15 @@ model_reasoning_effort = "high"
     } = to_response(resp)?;
 
     assert_eq!(config.model_reasoning_effort, Some(ReasoningEffort::High));
+    assert_eq!(config.review_reasoning_effort, Some(ReasoningEffort::XHigh));
     assert_eq!(
         origins.get("model_reasoning_effort").expect("origin").name,
+        ConfigLayerSource::Project {
+            dot_codex_folder: project_config.clone()
+        }
+    );
+    assert_eq!(
+        origins.get("review_reasoning_effort").expect("origin").name,
         ConfigLayerSource::Project {
             dot_codex_folder: project_config
         }

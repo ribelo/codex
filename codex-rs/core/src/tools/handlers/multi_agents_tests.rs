@@ -25,6 +25,7 @@ use codex_protocol::models::ContentItem;
 use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::InitialHistory;
 use codex_protocol::protocol::RolloutItem;
 use pretty_assertions::assert_eq;
@@ -215,6 +216,7 @@ async fn apply_role_specific_spawn_defaults_reviewer_uses_review_model_and_restr
     };
     let mut config = (*turn.config).clone();
     config.review_model = Some(review_model.to_string());
+    config.review_reasoning_effort = Some(ReasoningEffort::XHigh);
     let _ = config.features.enable(Feature::Collab);
     turn.config = Arc::new(config.clone());
 
@@ -229,19 +231,81 @@ async fn apply_role_specific_spawn_defaults_reviewer_uses_review_model_and_restr
     .await
     .expect("reviewer role defaults should apply");
 
-    let review_model_info = session
-        .services
-        .models_manager
-        .get_model_info(review_model, &config)
-        .await;
     assert_eq!(config.base_instructions.as_deref(), Some(REVIEW_PROMPT));
     assert_eq!(config.model.as_deref(), Some(review_model));
-    assert_eq!(
-        config.model_reasoning_effort,
-        review_model_info.default_reasoning_level
-    );
+    assert_eq!(config.model_reasoning_effort, Some(ReasoningEffort::XHigh));
     assert_eq!(config.web_search_mode.value(), WebSearchMode::Disabled);
     assert!(!config.features.enabled(Feature::Collab));
+}
+
+#[tokio::test]
+async fn apply_role_specific_spawn_defaults_reviewer_requested_model_uses_review_reasoning_effort()
+{
+    let (session, mut turn) = make_session_and_context().await;
+    let requested_model = if turn.model_info.slug == "gpt-5.1" {
+        "gpt-5.1-codex"
+    } else {
+        "gpt-5.1"
+    };
+    let mut config = (*turn.config).clone();
+    config.review_reasoning_effort = Some(ReasoningEffort::XHigh);
+    let _ = config.features.enable(Feature::Collab);
+    turn.config = Arc::new(config.clone());
+
+    apply_requested_spawn_agent_model_overrides(
+        &session,
+        &turn,
+        &mut config,
+        Some(requested_model),
+        None,
+    )
+    .await
+    .expect("requested reviewer model should resolve");
+    apply_role_specific_spawn_defaults(
+        &session,
+        &turn,
+        &mut config,
+        Some(crate::agent::role::REVIEWER_ROLE_NAME),
+        Some(requested_model),
+        None,
+    )
+    .await
+    .expect("reviewer role defaults should apply");
+
+    assert_eq!(config.base_instructions.as_deref(), Some(REVIEW_PROMPT));
+    assert_eq!(config.model.as_deref(), Some(requested_model));
+    assert_eq!(config.model_reasoning_effort, Some(ReasoningEffort::XHigh));
+    assert_eq!(config.web_search_mode.value(), WebSearchMode::Disabled);
+    assert!(!config.features.enabled(Feature::Collab));
+}
+
+#[tokio::test]
+async fn apply_role_specific_spawn_defaults_reviewer_explicit_effort_wins() {
+    let (session, mut turn) = make_session_and_context().await;
+    let review_model = if turn.model_info.slug == "gpt-5.1" {
+        "gpt-5.1-codex"
+    } else {
+        "gpt-5.1"
+    };
+    let mut config = (*turn.config).clone();
+    config.review_model = Some(review_model.to_string());
+    config.review_reasoning_effort = Some(ReasoningEffort::Low);
+    let _ = config.features.enable(Feature::Collab);
+    turn.config = Arc::new(config.clone());
+
+    apply_role_specific_spawn_defaults(
+        &session,
+        &turn,
+        &mut config,
+        Some(crate::agent::role::REVIEWER_ROLE_NAME),
+        None,
+        Some(ReasoningEffort::High),
+    )
+    .await
+    .expect("reviewer role defaults should apply");
+
+    assert_eq!(config.model.as_deref(), Some(review_model));
+    assert_eq!(config.model_reasoning_effort, Some(ReasoningEffort::High));
 }
 
 #[tokio::test]

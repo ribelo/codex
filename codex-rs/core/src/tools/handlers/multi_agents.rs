@@ -383,24 +383,19 @@ pub(crate) async fn apply_role_specific_spawn_defaults(
         )));
     }
 
-    if requested_model.is_some() {
-        return Ok(());
-    }
-
-    let Some(review_model) = config
-        .review_model
-        .clone()
-        .filter(|model| model != &turn.model_info.slug)
-    else {
-        return Ok(());
-    };
+    let review_model = requested_model
+        .map(ToOwned::to_owned)
+        .or_else(|| config.review_model.clone())
+        .unwrap_or_else(|| turn.model_info.slug.clone());
 
     let review_model_info = session
         .services
         .models_manager
         .get_model_info(&review_model, config)
         .await;
-    config.model = Some(review_model);
+    if requested_model.is_none() && review_model != turn.model_info.slug {
+        config.model = Some(review_model.clone());
+    }
     if let Some(reasoning_effort) = requested_reasoning_effort {
         validate_spawn_agent_reasoning_effort(
             &review_model_info.slug,
@@ -409,7 +404,9 @@ pub(crate) async fn apply_role_specific_spawn_defaults(
         )?;
         config.model_reasoning_effort = Some(reasoning_effort);
     } else {
-        config.model_reasoning_effort = review_model_info.default_reasoning_level;
+        config.model_reasoning_effort = config
+            .resolved_review_reasoning_effort()
+            .or(review_model_info.default_reasoning_level);
     }
 
     Ok(())

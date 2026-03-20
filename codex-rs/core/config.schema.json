@@ -2734,6 +2734,14 @@
       "description": "Review model override used by `/review` and as the default reviewer-role model.",
       "type": "string"
     },
+    "review_reasoning_effort": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/ReasoningEffort"
+        }
+      ],
+      "description": "Review-specific reasoning effort override used by `/review` and reviewer-role spawns."
+    },
     "sandbox_mode": {
       "allOf": [
         {

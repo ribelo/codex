@@ -231,6 +231,14 @@ Plan preset. The string value `none` means "no reasoning" (an explicit Plan
 override), not "inherit the global default". There is currently no separate
 config value for "follow the global default in Plan mode".
 
+## Review defaults
+
+`review_reasoning_effort` lets you set a review-specific default reasoning
+effort for `/review` and reviewer-role agent spawns. When unset, review flows
+fall back to the global `model_reasoning_effort`, and when that is also unset
+they fall back to the selected review model's built-in default. Explicit
+per-request review reasoning overrides still win over both config values.
+
 ## Realtime start instructions
 
 `experimental_realtime_start_instructions` lets you replace the built-in

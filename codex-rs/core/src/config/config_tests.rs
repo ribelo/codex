@@ -4477,6 +4477,7 @@ fn test_precedence_fixture_with_o3_profile() -> std::io::Result<()> {
         Config {
             model: Some("o3".to_string()),
             review_model: None,
+            review_reasoning_effort: None,
             model_context_window: None,
             model_auto_compact_token_limit: None,
             model_metadata: None,
@@ -4621,6 +4622,7 @@ fn test_precedence_fixture_with_gpt3_profile() -> std::io::Result<()> {
     let expected_gpt3_profile_config = Config {
         model: Some("gpt-3.5-turbo".to_string()),
         review_model: None,
+        review_reasoning_effort: None,
         model_context_window: None,
         model_auto_compact_token_limit: None,
         model_metadata: None,
@@ -4763,6 +4765,7 @@ fn test_precedence_fixture_with_zdr_profile() -> std::io::Result<()> {
     let expected_zdr_profile_config = Config {
         model: Some("o3".to_string()),
         review_model: None,
+        review_reasoning_effort: None,
         model_context_window: None,
         model_auto_compact_token_limit: None,
         model_metadata: None,
@@ -4891,6 +4894,7 @@ fn test_precedence_fixture_with_gpt5_profile() -> std::io::Result<()> {
     let expected_gpt5_profile_config = Config {
         model: Some("gpt-5.1".to_string()),
         review_model: None,
+        review_reasoning_effort: None,
         model_context_window: None,
         model_auto_compact_token_limit: None,
         model_metadata: None,

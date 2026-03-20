@@ -5197,6 +5197,7 @@ async fn spawn_review_thread(
     // Build per‑turn client with the requested model/family.
     let mut per_turn_config = (*config).clone();
     per_turn_config.model = Some(model.clone());
+    per_turn_config.model_reasoning_effort = per_turn_config.resolved_review_reasoning_effort();
     per_turn_config.features = review_features.clone();
     if let Err(err) = per_turn_config.web_search_mode.set(review_web_search_mode) {
         let fallback_value = per_turn_config.web_search_mode.value();

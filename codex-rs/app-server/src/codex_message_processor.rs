@@ -6441,6 +6441,7 @@ impl CodexMessageProcessor {
         if let Some(review_model) = &config.review_model {
             config.model = Some(review_model.clone());
         }
+        config.model_reasoning_effort = config.resolved_review_reasoning_effort();
 
         let NewThread {
             thread_id,

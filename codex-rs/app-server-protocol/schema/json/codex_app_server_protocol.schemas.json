@@ -6285,6 +6285,16 @@
               "null"
             ]
           },
+          "review_reasoning_effort": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/ReasoningEffort"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "sandbox_mode": {
             "anyOf": [
               {

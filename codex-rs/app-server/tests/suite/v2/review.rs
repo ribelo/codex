@@ -26,6 +26,7 @@ use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStatus;
 use codex_app_server_protocol::UserInput as V2UserInput;
 use pretty_assertions::assert_eq;
+use serde_json::Value;
 use serde_json::json;
 use tempfile::TempDir;
 use tokio::time::timeout;
@@ -334,6 +335,84 @@ async fn review_start_with_detached_delivery_returns_new_thread_id() -> Result<(
 }
 
 #[tokio::test]
+async fn review_start_detached_uses_review_reasoning_effort() -> Result<()> {
+    let review_payload = json!({
+        "findings": [],
+        "overall_correctness": "ok",
+        "overall_explanation": "detached review",
+        "overall_confidence_score": 0.5
+    })
+    .to_string();
+    let server = create_mock_responses_server_repeating_assistant(&review_payload).await;
+
+    let codex_home = TempDir::new()?;
+    std::fs::write(
+        codex_home.path().join("config.toml"),
+        format!(
+            r#"
+model = "mock-model"
+model_reasoning_effort = "low"
+review_reasoning_effort = "xhigh"
+model_supports_reasoning_summaries = true
+approval_policy = "never"
+sandbox_mode = "read-only"
+
+model_provider = "mock_provider"
+
+[features]
+shell_snapshot = false
+
+[model_providers.mock_provider]
+name = "Mock provider"
+base_url = "{}/v1"
+wire_api = "responses"
+request_max_retries = 0
+stream_max_retries = 0
+"#,
+            server.uri()
+        ),
+    )?;
+
+    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let thread_id = start_default_thread(&mut mcp).await?;
+    materialize_thread_rollout(&mut mcp, &thread_id).await?;
+
+    let review_req = mcp
+        .send_review_start_request(ReviewStartParams {
+            thread_id,
+            delivery: Some(ReviewDelivery::Detached),
+            target: ReviewTarget::Custom {
+                instructions: "detached review".to_string(),
+            },
+        })
+        .await?;
+    let review_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(review_req)),
+    )
+    .await??;
+    let ReviewStartResponse { .. } = to_response::<ReviewStartResponse>(review_resp)?;
+
+    let response_body = timeout(DEFAULT_READ_TIMEOUT, async {
+        loop {
+            let mut bodies = responses_bodies(&server).await?;
+            if bodies.len() >= 2 {
+                let body = bodies.pop().expect("review request body");
+                return Ok::<Value, anyhow::Error>(body);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await??;
+
+    assert_eq!(response_body["reasoning"]["effort"].as_str(), Some("xhigh"));
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn review_start_rejects_empty_commit_sha() -> Result<()> {
     let server = create_mock_responses_server_repeating_assistant("Done").await;
     let codex_home = TempDir::new()?;
@@ -482,4 +561,17 @@ stream_max_retries = 0
 "#
         ),
     )
+}
+
+async fn responses_bodies(server: &wiremock::MockServer) -> Result<Vec<Value>> {
+    let requests = server
+        .received_requests()
+        .await
+        .ok_or_else(|| anyhow::anyhow!("failed to fetch received requests"))?;
+
+    requests
+        .into_iter()
+        .filter(|req| req.url.path().ends_with("/responses"))
+        .map(|req| req.body_json::<Value>().map_err(anyhow::Error::from))
+        .collect()
 }

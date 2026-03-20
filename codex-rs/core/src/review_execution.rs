@@ -113,6 +113,7 @@ fn build_review_delegate_config(
         .clone()
         .unwrap_or_else(|| parent_model_slug.to_string());
     sub_agent_config.model = Some(model);
+    sub_agent_config.model_reasoning_effort = sub_agent_config.resolved_review_reasoning_effort();
     sub_agent_config
 }
 
@@ -175,8 +176,8 @@ fn review_item_text(agent_message: &codex_protocol::items::AgentMessageItem) -> 
     let text = agent_message
         .content
         .iter()
-        .filter_map(|content| match content {
-            AgentMessageContent::Text { text } => Some(text.as_str()),
+        .map(|content| match content {
+            AgentMessageContent::Text { text } => text.as_str(),
         })
         .collect::<String>();
     if text.is_empty() { None } else { Some(text) }

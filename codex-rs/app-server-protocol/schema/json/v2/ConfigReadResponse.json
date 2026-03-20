@@ -353,6 +353,16 @@
             "null"
           ]
         },
+        "review_reasoning_effort": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ReasoningEffort"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "sandbox_mode": {
           "anyOf": [
             {

@@ -219,5 +219,8 @@ Implementation decisions:
   rollout/history behavior
 - keep using the existing review prompt resolver and `review_model` default for both `/review` and
   the `reviewer` role
+- resolve review reasoning effort consistently for `/review`, review delegates, detached reviews,
+  and reviewer-role spawns as: explicit request override > `review_reasoning_effort` >
+  `model_reasoning_effort` > selected review model default
 - standalone `/review` keeps `EnteredReviewMode` / `ExitedReviewMode`; collab reviewer work uses
   ordinary collab events instead

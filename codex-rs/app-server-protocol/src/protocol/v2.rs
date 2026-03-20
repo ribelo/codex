@@ -697,6 +697,7 @@ const fn default_include_platform_defaults() -> bool {
 pub struct Config {
     pub model: Option<String>,
     pub review_model: Option<String>,
+    pub review_reasoning_effort: Option<ReasoningEffort>,
     pub model_context_window: Option<i64>,
     pub model_auto_compact_token_limit: Option<i64>,
     pub model_metadata: Option<ModelMetadataOverrides>,
@@ -6917,6 +6918,7 @@ mod tests {
         let reason = crate::experimental_api::ExperimentalApi::experimental_reason(&Config {
             model: None,
             review_model: None,
+            review_reasoning_effort: None,
             model_context_window: None,
             model_auto_compact_token_limit: None,
             model_provider: None,
@@ -6956,6 +6958,7 @@ mod tests {
         let reason = crate::experimental_api::ExperimentalApi::experimental_reason(&Config {
             model: None,
             review_model: None,
+            review_reasoning_effort: None,
             model_context_window: None,
             model_auto_compact_token_limit: None,
             model_provider: None,
@@ -6989,6 +6992,7 @@ mod tests {
         let reason = crate::experimental_api::ExperimentalApi::experimental_reason(&Config {
             model: None,
             review_model: None,
+            review_reasoning_effort: None,
             model_context_window: None,
             model_auto_compact_token_limit: None,
             model_provider: None,
@@ -7044,6 +7048,7 @@ mod tests {
         let reason = crate::experimental_api::ExperimentalApi::experimental_reason(&Config {
             model: None,
             review_model: None,
+            review_reasoning_effort: None,
             model_context_window: None,
             model_auto_compact_token_limit: None,
             model_provider: None,
