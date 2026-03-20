@@ -4283,10 +4283,11 @@ impl ChatComposer {
                 let status_line_active =
                     configured_status_line_active && truncated_status_line.is_some();
 
-                let default_summary_candidate = passive_footer_candidate
-                    && (footer_props.status_line_enabled
-                        && footer_props.status_line_value.is_none()
-                        || !footer_props.status_line_enabled);
+                let default_summary_candidate = matches!(
+                    footer_props.mode,
+                    FooterMode::ComposerEmpty | FooterMode::ComposerHasDraft
+                ) && (!footer_props.status_line_enabled
+                    || footer_props.status_line_value.is_none());
                 let built_in_footer_line = if default_summary_candidate {
                     default_footer_line(
                         &footer_props.default_summary,

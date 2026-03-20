@@ -1,5 +1,17 @@
 # QA
 
+## 2026-03-20
+
+### How should the built-in footer behave when a turn is already running and the composer has draft text?
+
+Keep the built-in default footer stable in that state whenever it is the active footer source.
+
+Implementation decisions:
+
+- suppress the queue hint while the built-in default footer is active during running+draft states
+- keep explicit custom `/statusline` overrides on their existing behavior
+- apply the same rule when `/statusline` is configured but currently resolves to nothing and the built-in footer is the fallback renderer
+
 ## 2026-03-15
 
 ### How should `/profile` behave in the TUI?
