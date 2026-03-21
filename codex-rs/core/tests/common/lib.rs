@@ -19,7 +19,6 @@ use regex_lite::Regex;
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::OnceLock;
 
 pub mod apps_test_server;
 pub mod context_snapshot;

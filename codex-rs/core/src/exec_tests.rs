@@ -575,11 +575,18 @@ async fn kill_child_process_group_kills_grandchildren_on_timeout() -> Result<()>
         "sleep 60 & echo $!; sleep 60".to_string(),
     ];
     #[cfg(all(unix, not(any(target_os = "freebsd", target_os = "openbsd"))))]
-    let command = vec![
-        "/bin/bash".to_string(),
-        "-c".to_string(),
-        "sleep 60 & echo $!; sleep 60".to_string(),
-    ];
+    let command = {
+        let shell = if std::path::Path::new("/bin/bash").exists() {
+            "/bin/bash"
+        } else {
+            "/bin/sh"
+        };
+        vec![
+            shell.to_string(),
+            "-c".to_string(),
+            "sleep 60 & echo $!; sleep 60".to_string(),
+        ]
+    };
     let env: HashMap<String, String> = std::env::vars().collect();
     let params = ExecParams {
         command,

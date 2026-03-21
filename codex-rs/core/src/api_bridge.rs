@@ -16,6 +16,7 @@ use crate::error::RetryLimitReachedError;
 use crate::error::UnexpectedResponseError;
 use crate::error::UsageLimitReachedError;
 use crate::model_provider_info::ModelProviderInfo;
+use crate::model_provider_info::WireApi;
 use crate::token_data::PlanType;
 
 pub(crate) fn map_api_error(err: ApiError) -> CodexErr {
@@ -178,6 +179,13 @@ pub(crate) fn auth_provider_from_auth(
     if let Some(token) = provider.experimental_bearer_token.clone() {
         return Ok(CoreAuthProvider {
             token: Some(token),
+            account_id: None,
+        });
+    }
+
+    if !matches!(provider.wire_api, WireApi::Responses | WireApi::Chat) {
+        return Ok(CoreAuthProvider {
+            token: None,
             account_id: None,
         });
     }

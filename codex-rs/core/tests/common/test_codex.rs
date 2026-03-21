@@ -431,6 +431,10 @@ impl TestCodexBuilder {
         self.config_mutators.push(Box::new(move |config| {
             config.model_provider.base_url = Some(base_url_clone);
             config.model_provider.supports_websockets = true;
+            config
+                .features
+                .enable(Feature::ResponsesWebsockets)
+                .expect("test config should allow websocket feature update");
             config.experimental_realtime_ws_model = Some("realtime-test-model".to_string());
         }));
         Box::pin(self.build_with_home_and_base_url(base_url, home, /*resume_from*/ None)).await

@@ -24,6 +24,7 @@ use crate::auth::storage::AuthStorageBackend;
 use crate::auth::storage::create_auth_storage;
 use crate::auth::util::try_parse_error_message;
 use crate::default_client::create_client;
+use crate::token_data::GeminiTokenData;
 use crate::token_data::KnownPlan as InternalKnownPlan;
 use crate::token_data::PlanType as InternalPlanType;
 use crate::token_data::TokenData;
@@ -308,6 +309,8 @@ impl CodexAuth {
                 refresh_token: "test".to_string(),
                 account_id: Some("account_id".to_string()),
             }),
+            gemini_accounts: Vec::new(),
+            antigravity_accounts: Vec::new(),
             last_refresh: Some(Utc::now()),
         };
 
@@ -383,6 +386,8 @@ pub fn login_with_api_key(
         auth_mode: Some(ApiAuthMode::ApiKey),
         openai_api_key: Some(api_key.to_string()),
         tokens: None,
+        gemini_accounts: Vec::new(),
+        antigravity_accounts: Vec::new(),
         last_refresh: None,
     };
     save_auth(codex_home, &auth_dot_json, auth_credentials_store_mode)
@@ -751,8 +756,21 @@ impl AuthDotJson {
             auth_mode: Some(ApiAuthMode::ChatgptAuthTokens),
             openai_api_key: None,
             tokens: Some(tokens),
+            gemini_accounts: Vec::new(),
+            antigravity_accounts: Vec::new(),
             last_refresh: Some(Utc::now()),
         })
+    }
+
+    pub(crate) fn empty() -> Self {
+        Self {
+            auth_mode: None,
+            openai_api_key: None,
+            tokens: None,
+            gemini_accounts: Vec::new(),
+            antigravity_accounts: Vec::new(),
+            last_refresh: None,
+        }
     }
 
     fn from_external_access_token(
@@ -1320,6 +1338,58 @@ impl AuthManager {
         self.auth_cached().as_ref().map(CodexAuth::auth_mode)
     }
 
+    pub fn has_gemini_oauth(&self) -> bool {
+        self.auth_cached()
+            .as_ref()
+            .and_then(CodexAuth::get_current_auth_json)
+            .is_some_and(|auth| !auth.gemini_accounts.is_empty())
+    }
+
+    pub async fn gemini_oauth_context_for_account(
+        &self,
+        account_index: usize,
+    ) -> std::io::Result<(GeminiTokenData, String)> {
+        self.google_oauth_context_for_account(account_index, GoogleOAuthProvider::Gemini)
+    }
+
+    pub async fn antigravity_oauth_context_for_account(
+        &self,
+        account_index: usize,
+    ) -> std::io::Result<(GeminiTokenData, String)> {
+        self.google_oauth_context_for_account(account_index, GoogleOAuthProvider::Antigravity)
+    }
+
+    fn google_oauth_context_for_account(
+        &self,
+        account_index: usize,
+        provider: GoogleOAuthProvider,
+    ) -> std::io::Result<(GeminiTokenData, String)> {
+        let auth = self
+            .auth_cached()
+            .as_ref()
+            .and_then(CodexAuth::get_current_auth_json)
+            .ok_or_else(|| std::io::Error::other(format!("{provider} OAuth is not available")))?;
+
+        let token = match provider {
+            GoogleOAuthProvider::Gemini => auth.gemini_accounts.get(account_index),
+            GoogleOAuthProvider::Antigravity => auth.antigravity_accounts.get(account_index),
+        }
+        .cloned()
+        .ok_or_else(|| {
+            std::io::Error::other(format!(
+                "{provider} OAuth account {account_index} not found"
+            ))
+        })?;
+
+        let project_id = token
+            .managed_project_id
+            .clone()
+            .or_else(|| token.project_id.clone())
+            .ok_or_else(|| std::io::Error::other(format!("{provider} OAuth project id missing")))?;
+
+        Ok((token, project_id))
+    }
+
     async fn refresh_if_stale(&self, auth: &CodexAuth) -> Result<bool, RefreshTokenError> {
         let chatgpt_auth = match auth {
             CodexAuth::Chatgpt(chatgpt_auth) => chatgpt_auth,
@@ -1417,6 +1487,21 @@ impl AuthManager {
         self.reload();
 
         Ok(())
+    }
+}
+
+#[derive(Clone, Copy)]
+enum GoogleOAuthProvider {
+    Gemini,
+    Antigravity,
+}
+
+impl std::fmt::Display for GoogleOAuthProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Gemini => write!(f, "Gemini"),
+            Self::Antigravity => write!(f, "Antigravity"),
+        }
     }
 }
 

@@ -59,7 +59,9 @@ use codex_api::common::ResponsesWsRequest;
 use codex_api::create_text_param_for_request;
 use codex_api::error::ApiError;
 use codex_api::requests::responses::Compression;
+use codex_api::response_create_client_metadata;
 use codex_otel::SessionTelemetry;
+use codex_otel::current_span_w3c_trace_context;
 
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
@@ -69,6 +71,7 @@ use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::W3cTraceContext;
 use eventsource_stream::Event;
 use eventsource_stream::EventStreamError;
 use futures::StreamExt;
@@ -1121,6 +1124,7 @@ impl ModelClientSession {
         service_tier: Option<ServiceTier>,
         turn_metadata_header: Option<&str>,
         warmup: bool,
+        request_trace: Option<W3cTraceContext>,
     ) -> Result<WebsocketStreamOutcome> {
         let auth_manager = self.client.state.auth_manager.clone();
 
@@ -1147,7 +1151,10 @@ impl ModelClientSession {
                 service_tier,
             )?;
             let mut ws_payload = ResponseCreateWsRequest {
-                client_metadata: build_ws_client_metadata(turn_metadata_header),
+                client_metadata: response_create_client_metadata(
+                    build_ws_client_metadata(turn_metadata_header),
+                    request_trace.as_ref(),
+                ),
                 ..ResponseCreateWsRequest::from(&request)
             };
             if warmup {
@@ -1271,6 +1278,7 @@ impl ModelClientSession {
                 service_tier,
                 turn_metadata_header,
                 /*warmup*/ true,
+                current_span_w3c_trace_context(),
             )
             .await
         {
@@ -1314,6 +1322,7 @@ impl ModelClientSession {
         match wire_api {
             WireApi::Responses => {
                 if self.client.responses_websocket_enabled(model_info) {
+                    let request_trace = current_span_w3c_trace_context();
                     match self
                         .stream_responses_websocket(
                             prompt,
@@ -1324,6 +1333,7 @@ impl ModelClientSession {
                             service_tier,
                             turn_metadata_header,
                             /*warmup*/ false,
+                            request_trace,
                         )
                         .await?
                     {
@@ -1627,6 +1637,7 @@ impl AuthRequestTelemetryContext {
             auth_mode: auth_mode.map(|mode| match mode {
                 AuthMode::ApiKey => "ApiKey",
                 AuthMode::Chatgpt => "Chatgpt",
+                AuthMode::ChatgptAuthTokens => "ChatgptAuthTokens",
             }),
             auth_header_attached: api_auth.auth_header_attached(),
             auth_header_name: api_auth.auth_header_name(),

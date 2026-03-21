@@ -16,7 +16,6 @@ use crate::review_execution::run_review_delegate;
 use crate::review_format::format_review_findings_block;
 use crate::review_format::render_review_output_text;
 use crate::state::TaskKind;
-use codex_features::Feature;
 use codex_protocol::user_input::UserInput;
 
 use super::SessionTask;

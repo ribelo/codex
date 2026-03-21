@@ -242,7 +242,9 @@ fn build_messages(prompt: &Prompt, model_info: &ModelInfo) -> Result<Vec<Message
                 ContentBlock::ToolUse(build_tool_use_block(name, call_id, arguments)?),
             )?,
             ResponseItem::FunctionCallOutput { call_id, output }
-            | ResponseItem::CustomToolCallOutput { call_id, output } => append_user_block(
+            | ResponseItem::CustomToolCallOutput {
+                call_id, output, ..
+            } => append_user_block(
                 &mut messages,
                 ContentBlock::ToolResult(build_tool_result_block(call_id, output)?),
             )?,

@@ -242,6 +242,7 @@ mod tests {
                         text: review_json.clone(),
                     }],
                     phase: None,
+                    memory_citation: None,
                 }),
             }),
         })

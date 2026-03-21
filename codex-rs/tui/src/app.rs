@@ -61,8 +61,7 @@ use codex_core::windows_sandbox::WindowsSandboxLevelExt;
 use codex_otel::SessionTelemetry;
 use codex_otel::TelemetryAuthMode;
 use codex_protocol::ThreadId;
-#[cfg(test)]
-use codex_protocol::config_types::ApprovalsReviewer;
+use codex_protocol::config_types::CollaborationModeMask;
 use codex_protocol::config_types::Personality;
 #[cfg(target_os = "windows")]
 use codex_protocol::config_types::WindowsSandboxLevel;
@@ -83,6 +82,7 @@ use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SkillErrorInfo;
 use codex_protocol::protocol::TokenUsage;
 use codex_protocol::protocol::W3cTraceContext;
+use codex_terminal_detection::user_agent;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use color_eyre::eyre::Result;
 use color_eyre::eyre::WrapErr;
@@ -742,6 +742,7 @@ impl App {
         tui: &mut tui::Tui,
         cfg: codex_core::config::Config,
     ) -> crate::chatwidget::ChatWidgetInit {
+        let base_mode_provider_id = cfg.model_provider_id.clone();
         crate::chatwidget::ChatWidgetInit {
             config: cfg,
             frame_requester: tui.frame_requester(),
@@ -755,6 +756,8 @@ impl App {
             is_first_run: false,
             feedback_audience: self.feedback_audience,
             model: Some(self.chat_widget.current_model().to_string()),
+            initial_collaboration_mask: None,
+            base_mode_provider_id,
             startup_tooltip_override: None,
             status_line_invalid_items_warned: self.status_line_invalid_items_warned.clone(),
             session_telemetry: self.session_telemetry.clone(),
@@ -837,8 +840,20 @@ impl App {
         ));
         thread_manager
             .plugins_manager()
-            .maybe_start_curated_repo_sync_for_config(config);
+            .maybe_start_plugin_startup_tasks_for_config(config, self.auth_manager.clone());
         thread_manager
+    }
+
+    fn fresh_session_config_for_mode(&self, mode: &CollaborationModeMask) -> Config {
+        let mut config = self.fresh_session_config();
+        let effective_mode = self
+            .chat_widget
+            .current_collaboration_mode()
+            .apply_mask(mode);
+        config.model = Some(effective_mode.model().to_string());
+        config.model_reasoning_effort = effective_mode.reasoning_effort();
+        config.developer_instructions = effective_mode.settings.developer_instructions.clone();
+        config
     }
     fn open_profile_picker(&mut self, profiles: Vec<String>) {
         let current_profile = self.active_profile.clone();
@@ -1749,6 +1764,8 @@ impl App {
             is_first_run: false,
             feedback_audience: self.feedback_audience,
             model: Some(model),
+            initial_collaboration_mask: self.chat_widget.active_collaboration_mask(),
+            base_mode_provider_id: self.config.model_provider_id.clone(),
             startup_tooltip_override: None,
             status_line_invalid_items_warned: self.status_line_invalid_items_warned.clone(),
             session_telemetry: self.session_telemetry.clone(),
@@ -1898,12 +1915,11 @@ impl App {
                     .features
                     .enabled(codex_core::features::Feature::DefaultModeRequestUserInput),
             },
-            config.model_provider.clone(),
         ));
         // TODO(xl): Move into PluginManager once this no longer depends on config feature gating.
         thread_manager
             .plugins_manager()
-            .maybe_start_curated_repo_sync_for_config(&config);
+            .maybe_start_plugin_startup_tasks_for_config(&config, auth_manager.clone());
         let mut model = thread_manager
             .get_models_manager()
             .get_default_model(&config.model, RefreshStrategy::Offline)
@@ -1951,7 +1967,7 @@ impl App {
             auth_mode,
             codex_core::default_client::originator().value,
             config.otel.log_user_prompt,
-            codex_core::terminal::user_agent(),
+            user_agent(),
             SessionSource::Cli,
         );
         if config
@@ -1989,6 +2005,8 @@ impl App {
                     is_first_run,
                     feedback_audience,
                     model: Some(model.clone()),
+                    initial_collaboration_mask: None,
+                    base_mode_provider_id: config.model_provider_id.clone(),
                     startup_tooltip_override,
                     status_line_invalid_items_warned: status_line_invalid_items_warned.clone(),
                     session_telemetry: session_telemetry.clone(),
@@ -2025,6 +2043,8 @@ impl App {
                     is_first_run,
                     feedback_audience,
                     model: config.model.clone(),
+                    initial_collaboration_mask: None,
+                    base_mode_provider_id: config.model_provider_id.clone(),
                     startup_tooltip_override: None,
                     status_line_invalid_items_warned: status_line_invalid_items_warned.clone(),
                     session_telemetry: session_telemetry.clone(),
@@ -2063,6 +2083,8 @@ impl App {
                     is_first_run,
                     feedback_audience,
                     model: config.model.clone(),
+                    initial_collaboration_mask: None,
+                    base_mode_provider_id: config.model_provider_id.clone(),
                     startup_tooltip_override: None,
                     status_line_invalid_items_warned: status_line_invalid_items_warned.clone(),
                     session_telemetry: session_telemetry.clone(),
@@ -2606,6 +2628,9 @@ impl App {
                         url,
                         is_installed,
                         is_enabled,
+                        suggest_reason: None,
+                        suggestion_type: None,
+                        elicitation_target: None,
                     });
             }
             AppEvent::OpenUrlInBrowser { url } => {
@@ -2614,6 +2639,11 @@ impl App {
             AppEvent::RefreshConnectors { force_refetch } => {
                 self.chat_widget.refresh_connectors(force_refetch);
             }
+            AppEvent::FetchPluginsList { .. }
+            | AppEvent::PluginsLoaded { .. }
+            | AppEvent::OpenPluginDetailLoading { .. }
+            | AppEvent::FetchPluginDetail { .. }
+            | AppEvent::PluginDetailLoaded { .. } => {}
             AppEvent::StartFileSearch(query) => {
                 self.file_search.on_user_query(query);
             }
@@ -3517,7 +3547,7 @@ impl App {
                         lines.push(Line::from(""));
                     }
                     if let Some(rule_line) =
-                        crate::bottom_pane::format_additional_permissions_rule(&permissions)
+                        crate::bottom_pane::format_requested_permissions_rule(&permissions)
                     {
                         lines.push(Line::from(vec![
                             "Permission rule: ".into(),
@@ -3600,6 +3630,9 @@ impl App {
             AppEvent::StatusLineSetupCancelled => {
                 self.chat_widget.cancel_status_line_setup();
             }
+            AppEvent::TerminalTitleSetup { .. }
+            | AppEvent::TerminalTitleSetupPreview { .. }
+            | AppEvent::TerminalTitleSetupCancelled => {}
             AppEvent::SyntaxThemeSelected { name } => {
                 let edit = codex_core::config::edit::syntax_theme_edit(&name);
                 let apply_result = ConfigEditsBuilder::new(&self.config.codex_home)
@@ -3762,6 +3795,7 @@ impl App {
                 model_provider_id: config_snapshot.model_provider_id,
                 service_tier: config_snapshot.service_tier,
                 approval_policy: config_snapshot.approval_policy,
+                approvals_reviewer: config_snapshot.approvals_reviewer,
                 sandbox_policy: config_snapshot.sandbox_policy,
                 cwd: config_snapshot.cwd,
                 reasoning_effort: config_snapshot.reasoning_effort,
@@ -4263,6 +4297,7 @@ mod tests {
                 model_provider_id: "test-provider".to_string(),
                 service_tier: None,
                 approval_policy: AskForApproval::Never,
+                approvals_reviewer: ApprovalsReviewer::User,
                 sandbox_policy: SandboxPolicy::new_read_only_policy(),
                 cwd: PathBuf::from("/tmp/project"),
                 reasoning_effort: None,
@@ -4435,6 +4470,7 @@ mod tests {
                         model_provider_id: "test-provider".to_string(),
                         service_tier: None,
                         approval_policy: AskForApproval::Never,
+                        approvals_reviewer: ApprovalsReviewer::User,
                         sandbox_policy: SandboxPolicy::new_read_only_policy(),
                         cwd: PathBuf::from("/tmp/project"),
                         reasoning_effort: None,
@@ -4512,6 +4548,7 @@ mod tests {
                 model_provider_id: "test-provider".to_string(),
                 service_tier: None,
                 approval_policy: AskForApproval::Never,
+                approvals_reviewer: ApprovalsReviewer::User,
                 sandbox_policy: SandboxPolicy::new_read_only_policy(),
                 cwd: PathBuf::from("/tmp/project"),
                 reasoning_effort: None,
@@ -4593,6 +4630,7 @@ mod tests {
                 model_provider_id: "test-provider".to_string(),
                 service_tier: None,
                 approval_policy: AskForApproval::Never,
+                approvals_reviewer: ApprovalsReviewer::User,
                 sandbox_policy: SandboxPolicy::new_read_only_policy(),
                 cwd: PathBuf::from("/tmp/project"),
                 reasoning_effort: None,
@@ -4673,6 +4711,7 @@ mod tests {
                 model_provider_id: "test-provider".to_string(),
                 service_tier: None,
                 approval_policy: AskForApproval::Never,
+                approvals_reviewer: ApprovalsReviewer::User,
                 sandbox_policy: SandboxPolicy::new_read_only_policy(),
                 cwd: PathBuf::from("/tmp/project"),
                 reasoning_effort: None,
@@ -4747,6 +4786,7 @@ mod tests {
                 model_provider_id: "test-provider".to_string(),
                 service_tier: None,
                 approval_policy: AskForApproval::Never,
+                approvals_reviewer: ApprovalsReviewer::User,
                 sandbox_policy: SandboxPolicy::new_read_only_policy(),
                 cwd: PathBuf::from("/tmp/project"),
                 reasoning_effort: None,
@@ -4860,6 +4900,7 @@ mod tests {
                         model_provider_id: "test-provider".to_string(),
                         service_tier: None,
                         approval_policy: AskForApproval::Never,
+                        approvals_reviewer: ApprovalsReviewer::User,
                         sandbox_policy: SandboxPolicy::new_read_only_policy(),
                         cwd: PathBuf::from("/tmp/project"),
                         reasoning_effort: None,
@@ -4929,6 +4970,7 @@ mod tests {
                 model_provider_id: "test-provider".to_string(),
                 service_tier: None,
                 approval_policy: AskForApproval::Never,
+                approvals_reviewer: ApprovalsReviewer::User,
                 sandbox_policy: SandboxPolicy::new_read_only_policy(),
                 cwd: PathBuf::from("/tmp/project"),
                 reasoning_effort: None,
@@ -5032,6 +5074,7 @@ mod tests {
                 model_provider_id: "test-provider".to_string(),
                 service_tier: None,
                 approval_policy: AskForApproval::Never,
+                approvals_reviewer: ApprovalsReviewer::User,
                 sandbox_policy: SandboxPolicy::new_read_only_policy(),
                 cwd: PathBuf::from("/tmp/project"),
                 reasoning_effort: None,
@@ -5108,6 +5151,7 @@ mod tests {
                 model_provider_id: "test-provider".to_string(),
                 service_tier: None,
                 approval_policy: AskForApproval::Never,
+                approvals_reviewer: ApprovalsReviewer::User,
                 sandbox_policy: SandboxPolicy::new_read_only_policy(),
                 cwd: PathBuf::from("/tmp/project"),
                 reasoning_effort: None,
@@ -5463,6 +5507,7 @@ mod tests {
                         model_provider_id: "test-provider".to_string(),
                         service_tier: None,
                         approval_policy: AskForApproval::OnRequest,
+                        approvals_reviewer: ApprovalsReviewer::User,
                         sandbox_policy: SandboxPolicy::new_workspace_write_policy(),
                         cwd: PathBuf::from("/tmp/agent"),
                         reasoning_effort: None,
@@ -5683,6 +5728,7 @@ mod tests {
                 model_provider_id: "test-provider".to_string(),
                 service_tier: None,
                 approval_policy: AskForApproval::Never,
+                approvals_reviewer: ApprovalsReviewer::User,
                 sandbox_policy: SandboxPolicy::new_read_only_policy(),
                 cwd: PathBuf::from("/tmp/project"),
                 reasoning_effort: Some(ReasoningEffortConfig::High),
@@ -6388,6 +6434,7 @@ mod tests {
                 model_provider_id: "test-provider".to_string(),
                 service_tier: None,
                 approval_policy: AskForApproval::Never,
+                approvals_reviewer: ApprovalsReviewer::User,
                 sandbox_policy: SandboxPolicy::new_read_only_policy(),
                 cwd: next_cwd.clone(),
                 reasoning_effort: None,
@@ -6603,6 +6650,7 @@ approval_policy = "never"
                 model_provider_id: "test-provider".to_string(),
                 service_tier: None,
                 approval_policy: AskForApproval::Never,
+                approvals_reviewer: ApprovalsReviewer::User,
                 sandbox_policy: SandboxPolicy::new_read_only_policy(),
                 cwd: PathBuf::from("/home/user/project"),
                 reasoning_effort: None,
@@ -6662,6 +6710,7 @@ approval_policy = "never"
                 model_provider_id: "test-provider".to_string(),
                 service_tier: None,
                 approval_policy: AskForApproval::Never,
+                approvals_reviewer: ApprovalsReviewer::User,
                 sandbox_policy: SandboxPolicy::new_read_only_policy(),
                 cwd: PathBuf::from("/home/user/project"),
                 reasoning_effort: None,
@@ -6754,6 +6803,7 @@ approval_policy = "never"
                 model_provider_id: "test-provider".to_string(),
                 service_tier: None,
                 approval_policy: AskForApproval::Never,
+                approvals_reviewer: ApprovalsReviewer::User,
                 sandbox_policy: SandboxPolicy::new_read_only_policy(),
                 cwd: PathBuf::from("/home/user/project"),
                 reasoning_effort: None,
@@ -6819,6 +6869,7 @@ approval_policy = "never"
                 model_provider_id: "test-provider".to_string(),
                 service_tier: None,
                 approval_policy: AskForApproval::Never,
+                approvals_reviewer: ApprovalsReviewer::User,
                 sandbox_policy: SandboxPolicy::new_read_only_policy(),
                 cwd: PathBuf::from("/home/user/project"),
                 reasoning_effort: None,
@@ -6899,6 +6950,7 @@ approval_policy = "never"
                 model_provider_id: "test-provider".to_string(),
                 service_tier: None,
                 approval_policy: AskForApproval::Never,
+                approvals_reviewer: ApprovalsReviewer::User,
                 sandbox_policy: SandboxPolicy::new_read_only_policy(),
                 cwd: PathBuf::from("/home/user/project"),
                 reasoning_effort: None,
@@ -7026,6 +7078,7 @@ approval_policy = "never"
             model_provider_id: "test-provider".to_string(),
             service_tier: None,
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: ApprovalsReviewer::User,
             sandbox_policy: SandboxPolicy::new_read_only_policy(),
             cwd: PathBuf::from("/home/user/project"),
             reasoning_effort: None,
@@ -7095,6 +7148,7 @@ approval_policy = "never"
                 model_provider_id: "test-provider".to_string(),
                 service_tier: None,
                 approval_policy: AskForApproval::Never,
+                approvals_reviewer: ApprovalsReviewer::User,
                 sandbox_policy: SandboxPolicy::new_read_only_policy(),
                 cwd: PathBuf::from("/tmp/project"),
                 reasoning_effort: None,

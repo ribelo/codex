@@ -21,8 +21,9 @@ fn test_model_client(session_source: SessionSource) -> ModelClient {
         provider,
         session_source,
         None,
-        false,
-        false,
+        /*responses_websockets_enabled_by_feature*/ false,
+        /*enable_request_compression*/ false,
+        /*include_timing_metrics*/ false,
         None,
     )
 }

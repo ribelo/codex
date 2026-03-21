@@ -20,6 +20,8 @@ use std::net::TcpStream;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::thread;
 use std::time::Duration;
 
@@ -114,12 +116,29 @@ impl LoginServer {
 #[derive(Clone, Debug)]
 pub struct ShutdownHandle {
     shutdown_notify: Arc<tokio::sync::Notify>,
+    is_shutdown: Arc<AtomicBool>,
 }
 
 impl ShutdownHandle {
+    pub fn new() -> Self {
+        Self {
+            shutdown_notify: Arc::new(tokio::sync::Notify::new()),
+            is_shutdown: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
     /// Signals the login loop to terminate.
     pub fn shutdown(&self) {
+        self.is_shutdown.store(true, Ordering::SeqCst);
         self.shutdown_notify.notify_waiters();
+    }
+
+    pub fn is_shutdown(&self) -> bool {
+        self.is_shutdown.load(Ordering::SeqCst)
+    }
+
+    pub fn notifier(&self) -> Arc<tokio::sync::Notify> {
+        self.shutdown_notify.clone()
     }
 }
 
@@ -172,7 +191,8 @@ pub fn run_login_server(opts: ServerOptions) -> io::Result<LoginServer> {
         })
     };
 
-    let shutdown_notify = Arc::new(tokio::sync::Notify::new());
+    let shutdown_handle = ShutdownHandle::new();
+    let shutdown_notify = shutdown_handle.notifier();
     let server_handle = {
         let shutdown_notify = shutdown_notify.clone();
         let server = server;
@@ -232,7 +252,7 @@ pub fn run_login_server(opts: ServerOptions) -> io::Result<LoginServer> {
         auth_url,
         actual_port,
         server_handle,
-        shutdown_handle: ShutdownHandle { shutdown_notify },
+        shutdown_handle,
     })
 }
 
@@ -774,6 +794,8 @@ pub(crate) async fn persist_tokens_async(
             auth_mode: Some(AuthMode::Chatgpt),
             openai_api_key: api_key,
             tokens: Some(tokens),
+            gemini_accounts: Vec::new(),
+            antigravity_accounts: Vec::new(),
             last_refresh: Some(Utc::now()),
         };
         save_auth(&codex_home, &auth, auth_credentials_store_mode)

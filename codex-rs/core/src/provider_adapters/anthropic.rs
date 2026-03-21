@@ -319,7 +319,9 @@ fn build_messages(prompt: &Prompt) -> Result<(Vec<AnthropicMessage>, Option<Stri
                         "input": parse_tool_arguments(&input),
                     }));
             }
-            ResponseItem::CustomToolCallOutput { call_id, output } => {
+            ResponseItem::CustomToolCallOutput {
+                call_id, output, ..
+            } => {
                 flush_pending_assistant(&mut messages, &mut pending_assistant);
                 if let Some(block) = tool_result_block(&call_id, &output) {
                     messages.push(AnthropicMessage {

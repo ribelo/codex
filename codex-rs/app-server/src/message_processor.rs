@@ -231,7 +231,7 @@ impl MessageProcessor {
         // TODO(xl): Move into PluginManager once this no longer depends on config feature gating.
         thread_manager
             .plugins_manager()
-            .maybe_start_curated_repo_sync_for_config(&config);
+            .maybe_start_plugin_startup_tasks_for_config(&config, auth_manager.clone());
         let cloud_requirements = Arc::new(RwLock::new(cloud_requirements));
         let codex_message_processor = CodexMessageProcessor::new(CodexMessageProcessorArgs {
             auth_manager: auth_manager.clone(),
@@ -253,7 +253,7 @@ impl MessageProcessor {
             analytics_events_client,
         );
         let external_agent_config_api = ExternalAgentConfigApi::new(config.codex_home.clone());
-        let fs_api = FsApi;
+        let fs_api = FsApi::default();
 
         Self {
             outgoing,
@@ -789,7 +789,7 @@ impl MessageProcessor {
             Ok(response) => {
                 self.codex_message_processor.clear_plugin_related_caches();
                 self.codex_message_processor
-                    .maybe_start_curated_repo_sync_for_latest_config()
+                    .maybe_start_plugin_startup_tasks_for_latest_config()
                     .await;
                 self.outgoing.send_response(request_id, response).await;
             }
@@ -806,7 +806,7 @@ impl MessageProcessor {
             Ok(response) => {
                 self.codex_message_processor.clear_plugin_related_caches();
                 self.codex_message_processor
-                    .maybe_start_curated_repo_sync_for_latest_config()
+                    .maybe_start_plugin_startup_tasks_for_latest_config()
                     .await;
                 self.outgoing.send_response(request_id, response).await;
             }

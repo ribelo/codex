@@ -300,7 +300,9 @@ fn build_chat_payload(prompt: &Prompt, model_info: &ModelInfo) -> Result<Value> 
                     }],
                 }));
             }
-            ResponseItem::CustomToolCallOutput { call_id, output } => {
+            ResponseItem::CustomToolCallOutput {
+                call_id, output, ..
+            } => {
                 messages.push(json!({
                     "role": "tool",
                     "tool_call_id": call_id,

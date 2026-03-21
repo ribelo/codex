@@ -584,11 +584,11 @@ pub async fn run_main(
 #[allow(clippy::too_many_arguments)]
 async fn run_ratatui_app(
     cli: Cli,
-    arg0_paths: Arg0DispatchPaths,
+    _arg0_paths: Arg0DispatchPaths,
     initial_config: Config,
     overrides: ConfigOverrides,
     cli_kv_overrides: Vec<(String, toml::Value)>,
-    loader_overrides: LoaderOverrides,
+    _loader_overrides: LoaderOverrides,
     mut cloud_requirements: CloudRequirementsLoader,
     feedback: codex_feedback::CodexFeedback,
 ) -> color_eyre::Result<AppExitInfo> {
@@ -989,9 +989,6 @@ async fn run_ratatui_app(
         auth_manager,
         config,
         cli_kv_overrides.clone(),
-        arg0_paths,
-        loader_overrides,
-        cloud_requirements,
         overrides.clone(),
         active_profile,
         prompt,

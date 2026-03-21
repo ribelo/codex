@@ -1,21 +1,13 @@
+use crate::AuthCredentialsStoreMode;
+use crate::AuthDotJson;
+use crate::load_auth_dot_json;
 use crate::pkce::PkceCodes;
 use crate::pkce::generate_pkce;
+use crate::save_auth;
 use crate::server::ShutdownHandle;
+use crate::token_data::GeminiTokenData;
 use base64::Engine;
 use chrono::Utc;
-use codex_core::antigravity::ANTIGRAVITY_AUTH_URL;
-use codex_core::antigravity::ANTIGRAVITY_SCOPES;
-use codex_core::antigravity::ANTIGRAVITY_TOKEN_URL;
-use codex_core::antigravity::antigravity_client_id;
-use codex_core::antigravity::antigravity_client_secret;
-use codex_core::auth::AuthCredentialsStoreMode;
-use codex_core::auth::AuthDotJson;
-use codex_core::auth::load_auth_dot_json;
-use codex_core::auth::save_auth;
-use codex_core::gemini::GEMINI_TOKEN_URL;
-use codex_core::gemini::gemini_client_id;
-use codex_core::gemini::gemini_client_secret;
-use codex_core::token_data::GeminiTokenData;
 use rand::RngCore;
 use serde::Deserialize;
 use serde::Serialize;
@@ -33,6 +25,20 @@ use tiny_http::StatusCode;
 use url::Url;
 
 const DEFAULT_PORT: u16 = 1456;
+const GEMINI_CLIENT_ID_ENV_VAR: &str = "CODEX_GEMINI_OAUTH_CLIENT_ID";
+const GEMINI_CLIENT_SECRET_ENV_VAR: &str = "CODEX_GEMINI_OAUTH_CLIENT_SECRET";
+const GEMINI_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
+const ANTIGRAVITY_CLIENT_ID_ENV_VAR: &str = "CODEX_ANTIGRAVITY_OAUTH_CLIENT_ID";
+const ANTIGRAVITY_CLIENT_SECRET_ENV_VAR: &str = "CODEX_ANTIGRAVITY_OAUTH_CLIENT_SECRET";
+const ANTIGRAVITY_AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
+const ANTIGRAVITY_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
+const ANTIGRAVITY_SCOPES: &[&str] = &[
+    "https://www.googleapis.com/auth/cloud-platform",
+    "https://www.googleapis.com/auth/userinfo.email",
+    "https://www.googleapis.com/auth/userinfo.profile",
+    "https://www.googleapis.com/auth/cclog",
+    "https://www.googleapis.com/auth/experimentsandconfigs",
+];
 
 #[derive(Debug, Clone, Copy)]
 pub enum GoogleProviderKind {
@@ -76,6 +82,41 @@ impl GoogleLoginServer {
     pub async fn block_until_done(self) -> std::io::Result<()> {
         self.server_handle.await?
     }
+}
+
+fn read_required_env(env_var: &str, missing_message: &str) -> io::Result<String> {
+    match std::env::var(env_var) {
+        Ok(value) if !value.trim().is_empty() => Ok(value),
+        Ok(_) | Err(_) => Err(io::Error::other(missing_message)),
+    }
+}
+
+fn read_optional_env(env_var: &str) -> Option<String> {
+    std::env::var(env_var)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+}
+
+fn gemini_client_id() -> io::Result<String> {
+    read_required_env(
+        GEMINI_CLIENT_ID_ENV_VAR,
+        "Gemini OAuth requires CODEX_GEMINI_OAUTH_CLIENT_ID to be set.",
+    )
+}
+
+fn gemini_client_secret() -> Option<String> {
+    read_optional_env(GEMINI_CLIENT_SECRET_ENV_VAR)
+}
+
+fn antigravity_client_id() -> io::Result<String> {
+    read_required_env(
+        ANTIGRAVITY_CLIENT_ID_ENV_VAR,
+        "Antigravity OAuth requires CODEX_ANTIGRAVITY_OAUTH_CLIENT_ID to be set.",
+    )
+}
+
+fn antigravity_client_secret() -> Option<String> {
+    read_optional_env(ANTIGRAVITY_CLIENT_SECRET_ENV_VAR)
 }
 
 fn provider_credentials(

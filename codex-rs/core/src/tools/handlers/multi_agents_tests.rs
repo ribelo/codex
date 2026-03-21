@@ -18,7 +18,6 @@ use crate::protocol::SessionSource;
 use crate::protocol::SubAgentSource;
 use crate::tools::context::ToolOutput;
 use crate::turn_diff_tracker::TurnDiffTracker;
-use codex_features::Feature;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::models::ContentItem;

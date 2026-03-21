@@ -432,7 +432,7 @@ impl CodexMessageProcessor {
                 .plugins_manager()
                 .maybe_start_plugin_startup_tasks_for_config(
                     &config,
-                    self.thread_manager.auth_manager(),
+                    Arc::clone(&self.auth_manager),
                 ),
             Err(err) => warn!("failed to load latest config for plugin startup tasks: {err:?}"),
         }

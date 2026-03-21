@@ -52,7 +52,7 @@ fn discoverable_connector(id: &str, name: &str, description: &str) -> Discoverab
 }
 
 fn windows_shell_safety_description() -> String {
-    format!("\n\n{}", super::windows_destructive_filesystem_guidance())
+    String::new()
 }
 
 fn search_capable_model_info() -> ModelInfo {
@@ -475,10 +475,8 @@ fn test_full_toolset_specs_for_gpt5_codex_unified_exec_web_search() {
     ] {
         expected.insert(tool_name(&spec).to_string(), spec);
     }
-    if !config.multi_agent_v2 {
-        let spec = create_resume_agent_tool();
-        expected.insert(tool_name(&spec).to_string(), spec);
-    }
+    let spec = create_resume_agent_tool();
+    expected.insert(tool_name(&spec).to_string(), spec);
 
     if config.exec_permission_approvals_enabled {
         let spec = create_request_permissions_tool();
@@ -525,12 +523,11 @@ fn test_build_specs_collab_tools_enabled() {
 }
 
 #[test]
-fn test_build_specs_multi_agent_v2_uses_task_names_and_hides_resume() {
+fn test_build_specs_collab_tools_use_legacy_agent_identifiers() {
     let config = test_config();
     let model_info = ModelsManager::construct_model_info_offline_for_tests("gpt-5-codex", &config);
     let mut features = Features::with_defaults();
     features.enable(Feature::Collab);
-    features.enable(Feature::MultiAgentV2);
     let available_models = Vec::new();
     let tools_config = ToolsConfig::new(&ToolsConfigParams {
         model_info: &model_info,
@@ -544,12 +541,7 @@ fn test_build_specs_multi_agent_v2_uses_task_names_and_hides_resume() {
     let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
 
     let spawn_agent = find_tool(&tools, "spawn_agent");
-    let ToolSpec::Function(ResponsesApiTool {
-        parameters,
-        output_schema,
-        ..
-    }) = &spawn_agent.spec
-    else {
+    let ToolSpec::Function(ResponsesApiTool { parameters, .. }) = &spawn_agent.spec else {
         panic!("spawn_agent should be a function tool");
     };
     let JsonSchema::Object {
@@ -560,15 +552,8 @@ fn test_build_specs_multi_agent_v2_uses_task_names_and_hides_resume() {
     else {
         panic!("spawn_agent should use object params");
     };
-    assert!(properties.contains_key("task_name"));
+    assert!(!properties.contains_key("task_name"));
     assert_eq!(required.as_ref(), None);
-    let output_schema = output_schema
-        .as_ref()
-        .expect("spawn_agent should define output schema");
-    assert_eq!(
-        output_schema["required"],
-        json!(["agent_id", "task_name", "nickname"])
-    );
 
     let send_input = find_tool(&tools, "send_input");
     let ToolSpec::Function(ResponsesApiTool { parameters, .. }) = &send_input.spec else {
@@ -582,16 +567,11 @@ fn test_build_specs_multi_agent_v2_uses_task_names_and_hides_resume() {
     else {
         panic!("send_input should use object params");
     };
-    assert!(properties.contains_key("target"));
-    assert_eq!(required.as_ref(), Some(&vec!["target".to_string()]));
+    assert!(properties.contains_key("id"));
+    assert_eq!(required.as_ref(), Some(&vec!["id".to_string()]));
 
     let wait_agent = find_tool(&tools, "wait_agent");
-    let ToolSpec::Function(ResponsesApiTool {
-        parameters,
-        output_schema,
-        ..
-    }) = &wait_agent.spec
-    else {
+    let ToolSpec::Function(ResponsesApiTool { parameters, .. }) = &wait_agent.spec else {
         panic!("wait_agent should be a function tool");
     };
     let JsonSchema::Object {
@@ -602,16 +582,9 @@ fn test_build_specs_multi_agent_v2_uses_task_names_and_hides_resume() {
     else {
         panic!("wait_agent should use object params");
     };
-    assert!(properties.contains_key("targets"));
-    assert_eq!(required.as_ref(), Some(&vec!["targets".to_string()]));
-    let output_schema = output_schema
-        .as_ref()
-        .expect("wait_agent should define output schema");
-    assert_eq!(
-        output_schema["properties"]["status"]["description"],
-        json!("Final statuses keyed by canonical task name when available, otherwise by agent id.")
-    );
-    assert_lacks_tool_name(&tools, "resume_agent");
+    assert!(properties.contains_key("ids"));
+    assert_eq!(required.as_ref(), Some(&vec!["ids".to_string()]));
+    assert_contains_tool_names(&tools, &["resume_agent"]);
 }
 
 #[test]
@@ -2753,7 +2726,7 @@ fn code_mode_augments_builtin_tool_descriptions_with_typed_sample() {
 
     assert_eq!(
         description,
-        "View a local image from the filesystem (only use if given a full filepath by the user, and the image isn't already attached to the thread context within <image ...> tags).\n\nexec tool declaration:\n```ts\ndeclare const tools: { view_image(args: { path: string; }): Promise<{ detail: string | null; image_url: string; }>; };\n```"
+        "View a local image from the filesystem (only use if given a full filepath by the user, and the image isn't already attached to the thread context within <image ...> tags).\n\nexec tool declaration:\n```ts\ndeclare const tools: { view_image(args: { path: string; }): Promise<unknown>; };\n```"
     );
 }
 

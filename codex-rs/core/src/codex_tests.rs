@@ -236,8 +236,9 @@ fn test_model_client_session() -> crate::client::ModelClientSession {
         ),
         codex_protocol::protocol::SessionSource::Exec,
         None,
-        false,
-        false,
+        /*responses_websockets_enabled_by_feature*/ false,
+        /*enable_request_compression*/ false,
+        /*include_timing_metrics*/ false,
         None,
     )
     .new_session()
@@ -2507,6 +2508,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
             session_configuration.provider.clone(),
             session_configuration.session_source.clone(),
             config.model_verbosity,
+            crate::client::ws_version_from_features(config.as_ref()),
             config.features.enabled(Feature::EnableRequestCompression),
             config.features.enabled(Feature::RuntimeMetrics),
             Session::build_model_client_beta_features_header(config.as_ref()),
@@ -3306,6 +3308,7 @@ pub(crate) async fn make_session_and_context_with_dynamic_tools_and_rx(
             session_configuration.provider.clone(),
             session_configuration.session_source.clone(),
             config.model_verbosity,
+            crate::client::ws_version_from_features(config.as_ref()),
             config.features.enabled(Feature::EnableRequestCompression),
             config.features.enabled(Feature::RuntimeMetrics),
             Session::build_model_client_beta_features_header(config.as_ref()),

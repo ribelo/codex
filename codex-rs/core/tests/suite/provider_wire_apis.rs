@@ -151,9 +151,12 @@ fn write_provider_auth(
     save_auth(
         codex_home.path(),
         &AuthDotJson {
+            auth_mode: None,
+            openai_api_key: None,
+            tokens: None,
             gemini_accounts,
             antigravity_accounts,
-            ..AuthDotJson::empty()
+            last_refresh: None,
         },
         AuthCredentialsStoreMode::File,
     )?;

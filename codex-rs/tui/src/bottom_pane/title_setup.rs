@@ -152,7 +152,7 @@ impl TerminalTitleSetupView {
             ])
             .items(items)
             .enable_ordering()
-            .on_preview(|items| {
+            .on_preview(|items, _width| {
                 let items = parse_terminal_title_items(
                     items
                         .iter()

@@ -1,4 +1,5 @@
 use anyhow::Result;
+use codex_features::Feature;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
@@ -42,6 +43,7 @@ async fn websocket_fallback_switches_to_http_on_upgrade_required_connect() -> Re
     let mut builder = test_codex().with_config({
         let base_url = format!("{}/v1", server.uri());
         move |config| {
+            let _ = config.features.enable(Feature::ResponsesWebsockets);
             config.model_provider.base_url = Some(base_url);
             config.model_provider.wire_api = codex_core::WireApi::Responses;
             config.model_provider.supports_websockets = true;
@@ -88,6 +90,7 @@ async fn websocket_fallback_switches_to_http_after_retries_exhausted() -> Result
     let mut builder = test_codex().with_config({
         let base_url = format!("{}/v1", server.uri());
         move |config| {
+            let _ = config.features.enable(Feature::ResponsesWebsockets);
             config.model_provider.base_url = Some(base_url);
             config.model_provider.wire_api = codex_core::WireApi::Responses;
             config.model_provider.supports_websockets = true;
@@ -133,6 +136,7 @@ async fn websocket_fallback_hides_first_websocket_retry_stream_error() -> Result
     let mut builder = test_codex().with_config({
         let base_url = format!("{}/v1", server.uri());
         move |config| {
+            let _ = config.features.enable(Feature::ResponsesWebsockets);
             config.model_provider.base_url = Some(base_url);
             config.model_provider.wire_api = codex_core::WireApi::Responses;
             config.model_provider.supports_websockets = true;
@@ -208,6 +212,7 @@ async fn websocket_fallback_is_sticky_across_turns() -> Result<()> {
     let mut builder = test_codex().with_config({
         let base_url = format!("{}/v1", server.uri());
         move |config| {
+            let _ = config.features.enable(Feature::ResponsesWebsockets);
             config.model_provider.base_url = Some(base_url);
             config.model_provider.wire_api = codex_core::WireApi::Responses;
             config.model_provider.supports_websockets = true;

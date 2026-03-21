@@ -10,14 +10,11 @@ use codex_chatgpt::apply_command::run_apply_command;
 use codex_cli::LandlockCommand;
 use codex_cli::SeatbeltCommand;
 use codex_cli::WindowsCommand;
-use codex_cli::login::LogoutTarget as LoginLogoutTarget;
 use codex_cli::login::read_api_key_from_stdin;
 use codex_cli::login::run_login_status;
-use codex_cli::login::run_login_with_antigravity;
 use codex_cli::login::run_login_with_api_key;
 use codex_cli::login::run_login_with_chatgpt;
 use codex_cli::login::run_login_with_device_code;
-use codex_cli::login::run_login_with_gemini;
 use codex_cli::login::run_logout;
 use codex_cloud_tasks::Cli as CloudTasksCli;
 use codex_exec::Cli as ExecCli;
@@ -772,10 +769,12 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
                     run_login_status(login_cli.config_overrides).await;
                 }
                 Some(LoginSubcommand::Gemini) => {
-                    run_login_with_gemini(login_cli.config_overrides).await;
+                    eprintln!("Gemini login is unavailable in this build.");
+                    std::process::exit(1);
                 }
                 Some(LoginSubcommand::Antigravity) => {
-                    run_login_with_antigravity(login_cli.config_overrides).await;
+                    eprintln!("Antigravity login is unavailable in this build.");
+                    std::process::exit(1);
                 }
                 None => {
                     if login_cli.use_device_code {
@@ -786,9 +785,11 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
                         )
                         .await;
                     } else if login_cli.antigravity {
-                        run_login_with_antigravity(login_cli.config_overrides).await;
+                        eprintln!("Antigravity login is unavailable in this build.");
+                        std::process::exit(1);
                     } else if login_cli.gemini {
-                        run_login_with_gemini(login_cli.config_overrides).await;
+                        eprintln!("Gemini login is unavailable in this build.");
+                        std::process::exit(1);
                     } else if login_cli.api_key.is_some() {
                         eprintln!(
                             "The --api-key flag is no longer supported. Pipe the key instead, e.g. `printenv OPENAI_API_KEY | codex login --with-api-key`."
@@ -809,12 +810,15 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
                 &mut logout_cli.config_overrides,
                 root_config_overrides.clone(),
             );
-            let target = match logout_cli.target {
-                Some(LogoutTarget::Gemini) => LoginLogoutTarget::Gemini,
-                Some(LogoutTarget::Antigravity) => LoginLogoutTarget::Antigravity,
-                None => LoginLogoutTarget::All,
-            };
-            run_logout(logout_cli.config_overrides, target).await;
+            if let Some(target) = logout_cli.target {
+                let provider = match target {
+                    LogoutTarget::Gemini => "Gemini",
+                    LogoutTarget::Antigravity => "Antigravity",
+                };
+                eprintln!("{provider} logout is unavailable in this build.");
+                std::process::exit(1);
+            }
+            run_logout(logout_cli.config_overrides).await;
         }
         Some(Subcommand::Completion(completion_cli)) => {
             reject_remote_mode_for_subcommand(root_remote.as_deref(), "completion")?;

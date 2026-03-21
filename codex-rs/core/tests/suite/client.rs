@@ -1841,6 +1841,7 @@ async fn azure_responses_request_includes_store_and_reasoning_ids() {
         config.model_verbosity,
         false,
         false,
+        false,
         None,
     );
     let mut client_session = client.new_session();

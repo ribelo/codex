@@ -26,8 +26,6 @@ use crate::hook_runtime::PendingInputHookDisposition;
 use crate::hook_runtime::inspect_pending_input;
 use crate::hook_runtime::record_additional_contexts;
 use crate::hook_runtime::record_pending_input;
-use crate::models_manager::manager::ModelsManager;
-use crate::event_mapping::parse_turn_item;
 use crate::protocol::EventMsg;
 use crate::protocol::TokenUsage;
 use crate::protocol::TurnAbortReason;

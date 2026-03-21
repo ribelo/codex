@@ -6,8 +6,6 @@ use crate::exec::ExecCapturePolicy;
 use crate::exec::ExecParams;
 use crate::exec_policy::ExecPolicyManager;
 use crate::guardian::GUARDIAN_REVIEWER_NAME;
-use crate::guardian::GUARDIAN_SUBAGENT_NAME;
-use crate::model_provider_info::ModelProviderInfo;
 use crate::protocol::AskForApproval;
 use crate::sandboxing::SandboxPermissions;
 use crate::tools::context::FunctionToolOutput;
@@ -17,7 +15,6 @@ use codex_execpolicy::Decision;
 use codex_execpolicy::Evaluation;
 use codex_execpolicy::RuleMatch;
 use codex_features::Feature;
-use codex_protocol::models::ContentItem;
 use codex_protocol::models::NetworkPermissions;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::models::function_call_output_content_items_to_text;
@@ -79,7 +76,7 @@ async fn guardian_allows_shell_additional_permissions_requests_past_policy_valid
         .expect("test setup should allow enabling guardian approvals");
     session
         .features
-        .enable(Feature::RequestPermissions)
+        .enable(Feature::ExecPermissionApprovals)
         .expect("test setup should allow enabling request permissions");
     turn_context_raw
         .sandbox_policy
@@ -130,6 +127,10 @@ async fn guardian_allows_shell_additional_permissions_requests_past_policy_valid
         network: None,
         sandbox_permissions: SandboxPermissions::WithAdditionalPermissions,
         windows_sandbox_level: turn_context.windows_sandbox_level,
+        windows_sandbox_private_desktop: turn_context
+            .config
+            .permissions
+            .windows_sandbox_private_desktop,
         justification: Some("test".to_string()),
         arg0: None,
     };
@@ -142,6 +143,7 @@ async fn guardian_allows_shell_additional_permissions_requests_past_policy_valid
             tracker: Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new())),
             call_id: "test-call".to_string(),
             tool_name: "shell".to_string(),
+            tool_namespace: None,
             payload: ToolPayload::Function {
                 arguments: serde_json::json!({
                     "command": params.command.clone(),
@@ -195,7 +197,7 @@ async fn guardian_allows_unified_exec_additional_permissions_requests_past_polic
         .expect("test setup should allow enabling guardian approvals");
     session
         .features
-        .enable(Feature::RequestPermissions)
+        .enable(Feature::ExecPermissionApprovals)
         .expect("test setup should allow enabling request permissions");
     let session = Arc::new(session);
     let turn_context = Arc::new(turn_context_raw);
@@ -209,6 +211,7 @@ async fn guardian_allows_unified_exec_additional_permissions_requests_past_polic
             tracker: Arc::clone(&tracker),
             call_id: "exec-call".to_string(),
             tool_name: "exec_command".to_string(),
+            tool_namespace: None,
             payload: ToolPayload::Function {
                 arguments: serde_json::json!({
                     "cmd": "echo hi",
@@ -282,7 +285,6 @@ async fn guardian_subagent_does_not_inherit_parent_exec_policy_rules() {
         auth_manager.clone(),
         None,
         CollaborationModesConfig::default(),
-        ModelProviderInfo::create_openai_provider(),
     ));
     let plugins_manager = Arc::new(PluginsManager::new(config.codex_home.clone()));
     let skills_manager = Arc::new(SkillsManager::new(
@@ -303,7 +305,7 @@ async fn guardian_subagent_does_not_inherit_parent_exec_policy_rules() {
         file_watcher,
         conversation_history: InitialHistory::New,
         session_source: SessionSource::SubAgent(SubAgentSource::Other(
-            GUARDIAN_SUBAGENT_NAME.to_string(),
+            GUARDIAN_REVIEWER_NAME.to_string(),
         )),
         agent_control: AgentControl::default(),
         dynamic_tools: Vec::new(),

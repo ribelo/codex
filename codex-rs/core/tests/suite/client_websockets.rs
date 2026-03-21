@@ -1761,8 +1761,9 @@ async fn websocket_harness_with_provider_options(
         provider.clone(),
         SessionSource::Exec,
         config.model_verbosity,
-        false,
-        runtime_metrics_enabled,
+        /*responses_websockets_enabled_by_feature*/ true,
+        /*enable_request_compression*/ false,
+        /*include_timing_metrics*/ runtime_metrics_enabled,
         None,
     );
 
