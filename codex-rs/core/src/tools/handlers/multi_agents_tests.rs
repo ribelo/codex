@@ -780,7 +780,7 @@ async fn send_input_rejects_when_message_and_items_are_both_set() {
 }
 
 #[tokio::test]
-async fn send_input_rejects_invalid_id() {
+async fn send_input_rejects_invalid_target() {
     let (session, turn) = make_session_and_context().await;
     let invocation = invocation(
         Arc::new(session),

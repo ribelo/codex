@@ -1,5 +1,21 @@
 # QA
 
+## 2026-03-22
+
+### How should collab tool argument names behave in the fork?
+
+Match upstream path-style naming exactly for the collab trio instead of keeping fork-only `id/ids`
+drift.
+
+Implementation decisions:
+
+- `send_input` uses `target`
+- `wait_agent` uses `targets`
+- `close_agent` uses `target`
+- `resume_agent` keeps `id`
+- do not add compatibility aliases for the accidental fork-only `id/ids` schema
+- treat the `id/ids` exposure from `86d4be47ce` as spec drift; keep the existing handler behavior
+
 ## 2026-03-20
 
 ### How should the built-in footer behave when a turn is already running and the composer has draft text?

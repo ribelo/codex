@@ -523,7 +523,7 @@ fn test_build_specs_collab_tools_enabled() {
 }
 
 #[test]
-fn test_build_specs_collab_tools_use_legacy_agent_identifiers() {
+fn test_build_specs_collab_tools_use_upstream_path_identifiers() {
     let config = test_config();
     let model_info = ModelsManager::construct_model_info_offline_for_tests("gpt-5-codex", &config);
     let mut features = Features::with_defaults();
@@ -567,8 +567,8 @@ fn test_build_specs_collab_tools_use_legacy_agent_identifiers() {
     else {
         panic!("send_input should use object params");
     };
-    assert!(properties.contains_key("id"));
-    assert_eq!(required.as_ref(), Some(&vec!["id".to_string()]));
+    assert!(properties.contains_key("target"));
+    assert_eq!(required.as_ref(), Some(&vec!["target".to_string()]));
 
     let wait_agent = find_tool(&tools, "wait_agent");
     let ToolSpec::Function(ResponsesApiTool { parameters, .. }) = &wait_agent.spec else {
@@ -582,8 +582,24 @@ fn test_build_specs_collab_tools_use_legacy_agent_identifiers() {
     else {
         panic!("wait_agent should use object params");
     };
-    assert!(properties.contains_key("ids"));
-    assert_eq!(required.as_ref(), Some(&vec!["ids".to_string()]));
+    assert!(properties.contains_key("targets"));
+    assert_eq!(required.as_ref(), Some(&vec!["targets".to_string()]));
+
+    let close_agent = find_tool(&tools, "close_agent");
+    let ToolSpec::Function(ResponsesApiTool { parameters, .. }) = &close_agent.spec else {
+        panic!("close_agent should be a function tool");
+    };
+    let JsonSchema::Object {
+        properties,
+        required,
+        ..
+    } = parameters
+    else {
+        panic!("close_agent should use object params");
+    };
+    assert!(properties.contains_key("target"));
+    assert_eq!(required.as_ref(), Some(&vec!["target".to_string()]));
+
     assert_contains_tool_names(&tools, &["resume_agent"]);
 }
 

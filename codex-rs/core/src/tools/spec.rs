@@ -1199,9 +1199,11 @@ fn create_report_agent_job_result_tool() -> ToolSpec {
 fn create_send_input_tool() -> ToolSpec {
     let properties = BTreeMap::from([
         (
-            "id".to_string(),
+            "target".to_string(),
             JsonSchema::String {
-                description: Some("Agent id to message (from spawn_agent).".to_string()),
+                description: Some(
+                    "Agent id or canonical task name to message (from spawn_agent).".to_string(),
+                ),
             },
         ),
         (
@@ -1233,7 +1235,7 @@ fn create_send_input_tool() -> ToolSpec {
         defer_loading: None,
         parameters: JsonSchema::Object {
             properties,
-            required: Some(vec!["id".to_string()]),
+            required: Some(vec!["target".to_string()]),
             additional_properties: Some(false.into()),
         },
         output_schema: None,
@@ -1252,7 +1254,7 @@ fn create_resume_agent_tool() -> ToolSpec {
     ToolSpec::Function(ResponsesApiTool {
         name: "resume_agent".to_string(),
         description:
-            "Resume a previously closed agent by id so it can receive send_input and wait calls."
+            "Resume a previously closed agent by id so it can receive send_input and wait_agent calls."
                 .to_string(),
         strict: false,
         defer_loading: None,
@@ -1268,11 +1270,11 @@ fn create_resume_agent_tool() -> ToolSpec {
 fn create_wait_agent_tool() -> ToolSpec {
     let mut properties = BTreeMap::new();
     properties.insert(
-        "ids".to_string(),
+        "targets".to_string(),
         JsonSchema::Array {
             items: Box::new(JsonSchema::String { description: None }),
             description: Some(
-                "Agent ids to wait on. Pass multiple ids to wait for whichever finishes first."
+                "Agent ids or canonical task names to wait on. Pass multiple targets to wait for whichever finishes first."
                     .to_string(),
             ),
         },
@@ -1294,7 +1296,7 @@ fn create_wait_agent_tool() -> ToolSpec {
         defer_loading: None,
         parameters: JsonSchema::Object {
             properties,
-            required: Some(vec!["ids".to_string()]),
+            required: Some(vec!["targets".to_string()]),
             additional_properties: Some(false.into()),
         },
         output_schema: None,
@@ -1420,9 +1422,11 @@ fn create_request_permissions_tool() -> ToolSpec {
 fn create_close_agent_tool() -> ToolSpec {
     let mut properties = BTreeMap::new();
     properties.insert(
-        "id".to_string(),
+        "target".to_string(),
         JsonSchema::String {
-            description: Some("Agent id to close (from spawn_agent).".to_string()),
+            description: Some(
+                "Agent id or canonical task name to close (from spawn_agent).".to_string(),
+            ),
         },
     );
 
@@ -1433,7 +1437,7 @@ fn create_close_agent_tool() -> ToolSpec {
         defer_loading: None,
         parameters: JsonSchema::Object {
             properties,
-            required: Some(vec!["id".to_string()]),
+            required: Some(vec!["target".to_string()]),
             additional_properties: Some(false.into()),
         },
         output_schema: None,
